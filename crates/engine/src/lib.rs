@@ -98,6 +98,7 @@ pub mod plugin_cmds;
 pub mod prefs;
 pub mod preset_import_cmds;
 pub mod preset_store;
+pub mod custom_shape_cmds;
 pub mod presets;
 pub mod print_cmds;
 pub mod proof_sim;
