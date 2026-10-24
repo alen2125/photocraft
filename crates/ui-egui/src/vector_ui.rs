@@ -74,7 +74,7 @@ fn hex(c: [f32; 4]) -> String {
     format!("#{:02x}{:02x}{:02x}", c.r(), c.g(), c.b())
 }
 
-fn stroke_param(app: &PhotocraftApp) -> Value {
+pub(crate) fn stroke_param(app: &PhotocraftApp) -> Value {
     let o = &app.ui.tool_options;
     if o.stroke_width <= 0.0 {
         return Value::Null;
@@ -137,6 +137,9 @@ pub fn shape_bounds(o: &ToolOptions, tool: Tool, start: [f64; 2], end: [f64; 2],
 
 /// Finish a Shape-tool drag: ⇧ constrains proportions, ⌥ draws from the centre.
 pub fn finish_shape(app: &mut PhotocraftApp, tool: Tool, start: [f64; 2], end: [f64; 2], mods: egui::Modifiers) {
+    if tool == Tool::CustomShape {
+        return crate::custom_shape_ui::finish(app, start, end, mods);
+    }
     let Some(mut p) = shape_geometry(&app.ui.tool_options, tool, start, end, mods) else { return };
     if tool == Tool::CustomShape {
         // ⇧ keeps the shape's proportions (the rect is already squared).
@@ -152,7 +155,7 @@ pub fn finish_shape(app: &mut PhotocraftApp, tool: Tool, start: [f64; 2], end: [
     }
 }
 
-fn fill_param(app: &PhotocraftApp) -> Value {
+pub(crate) fn fill_param(app: &PhotocraftApp) -> Value {
     if app.ui.tool_options.shape_fill { json!(app.session.tools.foreground) } else { Value::Null }
 }
 

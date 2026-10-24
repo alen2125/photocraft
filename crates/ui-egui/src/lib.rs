@@ -178,6 +178,7 @@ pub mod plugin_ui;
 pub mod point_curve;
 pub mod prefs_ui;
 pub mod preset_files_ui;
+pub mod custom_shape_ui;
 pub mod preset_panels;
 pub mod press_menu;
 mod pressure_curve_ui;
