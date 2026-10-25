@@ -716,6 +716,8 @@ pub struct ToolOptions {
     pub line_weight: f32,
     /// Custom Shape: side (px) of the shape a click without a drag places; 0 = a click does nothing.
     pub custom_shape_default_size: f32,
+    /// Custom Shape: "shape" (a vector shape layer) or "pixels" (painted on a pixel layer).
+    pub custom_shape_mode: String,
     /// Freeform Pen › Curve Fit: how far (px) the fitted path may stray from the pointer trace.
     #[serde(default = "default_curve_fit")]
     pub curve_fit: f32,
@@ -1000,6 +1002,7 @@ impl Default for ToolOptions {
             polygon_sides: 5,
             line_weight: 3.0,
             custom_shape_default_size: 0.0,
+            custom_shape_mode: "shape".into(),
             curve_fit: default_curve_fit(),
             pen_auto_add_delete: true,
             marquee_style: default_marquee_style(),

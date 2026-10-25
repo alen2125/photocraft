@@ -74,6 +74,8 @@ pub struct PresetState {
     pub gradient: gradients::GradientPreset,
     pub styles: Vec<Group<styles::StylePreset>>,
     pub shapes: Vec<Group<shapes::ShapePreset>>,
+    /// Shape libraries parsed on demand (imported `.csh`), see `shape_index`.
+    pub lazy_shapes: crate::shape_index::LazyShapes,
     /// Pattern groups: pattern names per folder (patterns themselves live in the library).
     pub pattern_groups: Vec<Group<String>>,
     /// The pattern the Patterns panel selected (Fill, Pattern fill layers default to it).
@@ -104,6 +106,7 @@ impl Default for PresetState {
             gradient: gradients::GradientPreset::foreground_to_background(),
             styles: styles::builtin(),
             shapes: shapes::builtin(),
+            lazy_shapes: Default::default(),
             pattern_groups: patterns::builtin_groups(),
             pattern: None,
             tool_presets: tools::builtin(),

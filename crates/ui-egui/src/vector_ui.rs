@@ -1391,8 +1391,12 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
         }
         return true;
     }
-    let mut mode = "shape".to_string();
-    crate::widgets::dropdown(ui, "shape-mode", &mut mode, &[("shape".to_string(), tl!("Shape"))], 80.0);
+    if tool == Tool::CustomShape {
+        crate::custom_shape_ui::mode_dropdown(&mut o.custom_shape_mode, ui);
+    } else {
+        let mut mode = "shape".to_string();
+        crate::widgets::dropdown(ui, "shape-mode", &mut mode, &[("shape".to_string(), tl!("Shape"))], 80.0);
+    }
     crate::widgets::vline(ui, 22.0);
     // Fill and Stroke edit the selected shape layer too (#3347), and still set the next shape's.
     let (fg, bg) = (app.session.tools.foreground, app.session.tools.background);

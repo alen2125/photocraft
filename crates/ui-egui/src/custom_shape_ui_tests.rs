@@ -64,3 +64,37 @@ fn a_shape_wholly_outside_the_canvas_is_skipped_silently() {
     assert!(app.ui.status.is_empty() && !app.ui.status_error);
     assert!(app.ui.dialogs.is_empty());
 }
+
+fn alpha_at(app: &PhotocraftApp, x: i32, y: i32) -> f32 {
+    let st = app.session.active().unwrap();
+    st.doc.layer(st.active_layer.unwrap()).unwrap().surface().unwrap().rgba(x, y)[3]
+}
+
+#[test]
+fn pixels_mode_paints_the_active_pixel_layer_instead_of_making_a_shape_layer() {
+    let mut app = app();
+    app.run("layer.new.layer", json!({})).unwrap();
+    app.ui.tool_options.custom_shape_mode = "pixels".into();
+    let before = layers(&app);
+    press(&mut app, [100.0, 100.0], [220.0, 200.0]);
+    assert_eq!(layers(&app), before, "no new layer: the active one is a pixel layer");
+    assert!(app.ui.dialogs.is_empty());
+    let painted = (100..220).any(|x| alpha_at(&app, x, 150) > 0.5);
+    assert!(painted, "the shape was painted into the layer");
+}
+
+#[test]
+fn pixels_mode_from_the_pasteboard_paints_the_part_on_the_canvas() {
+    let mut app = app();
+    app.run("layer.new.layer", json!({})).unwrap();
+    app.ui.tool_options.custom_shape_mode = "pixels".into();
+    press(&mut app, [-80.0, -80.0], [120.0, 120.0]);
+    assert!(!app.ui.status_error, "{}", app.ui.status);
+    assert!(alpha_at(&app, 40, 40) > 0.5);
+}
+
+#[test]
+fn old_prefs_without_the_mode_load_as_shape() {
+    let o: crate::state::ToolOptions = serde_json::from_value(json!({})).unwrap();
+    assert_eq!(o.custom_shape_mode, "shape");
+}

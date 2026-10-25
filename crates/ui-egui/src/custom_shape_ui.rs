@@ -14,8 +14,27 @@ pub fn finish(app: &mut PhotocraftApp, start: [f64; 2], end: [f64; 2], mods: egu
         // Nothing of it lands on the canvas: skip silently, no message.
         return;
     }
+    if app.ui.tool_options.custom_shape_mode == PIXELS {
+        fill_pixels(app, rect, mods.shift);
+        return;
+    }
     let (fill, stroke) = (crate::vector_ui::fill_param(app), crate::vector_ui::stroke_param(app));
     crate::preset_panels::finish_custom_shape(app, rect, mods.shift, fill, stroke);
+}
+
+const PIXELS: &str = "pixels";
+
+/// Pixels mode: paint the shape on the active pixel layer (`shape.presets.fillPixels`).
+fn fill_pixels(app: &mut PhotocraftApp, rect: [f64; 4], keep: bool) {
+    let name = app.ui.presets_ui.shape().to_string();
+    // The command reports a failure (locked layer, unknown shape) in the status bar.
+    let _ = app.run("shape.presets.fillPixels", serde_json::json!({"preset": name, "rect": rect, "keepAspect": keep}));
+}
+
+/// The options bar's Shape / Pixels switch for the Custom Shape tool.
+pub fn mode_dropdown(mode: &mut String, ui: &mut egui::Ui) {
+    let items = [("shape".to_string(), tl!("Shape")), (PIXELS.to_string(), tl!("Pixels"))];
+    crate::widgets::dropdown(ui, "custom-shape-mode", mode, &items, 80.0);
 }
 
 /// The `[x, y, w, h]` a drag covers, or the click-placed default square, `None` for neither.

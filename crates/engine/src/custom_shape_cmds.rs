@@ -23,13 +23,7 @@ fn num(p: &Value, k: &str) -> Option<f64> {
 fn fill_pixels(s: &mut Session, p: &Value) -> Result<Value> {
     let name = p.get("preset").and_then(Value::as_str).ok_or_else(|| bad(FILL_PIXELS, "`preset` is required"))?;
     let group = p.get("group").and_then(Value::as_str);
-    let groups = shapes::all_groups(s);
-    let shape = groups
-        .iter()
-        .filter(|g| group.is_none_or(|n| g.name == n))
-        .flat_map(|g| &g.items)
-        .find(|sh| sh.name == name)
-        .ok_or_else(|| bad(FILL_PIXELS, format!("no shape \"{name}\" (see shape.presets.list)")))?;
+    let shape = crate::shape_index::find_shape(s, name, group).ok_or_else(|| bad(FILL_PIXELS, format!("no shape \"{name}\" (see shape.presets.list)")))?;
     let d = s.active().ok_or(EngineError::NoDocument)?;
     let bounds = d.doc.bounds();
     let (w, h) = (f64::from(d.doc.size.width), f64::from(d.doc.size.height));

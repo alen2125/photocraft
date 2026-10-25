@@ -285,9 +285,7 @@ pub fn all_groups(s: &Session) -> Vec<Group<ShapePreset>> {
 }
 
 fn lookup(s: &Session, name: &str, group: Option<&str>, cmd: &str) -> Result<ShapePreset> {
-    let groups = all_groups(s);
-    let (gi, ii) = find(&groups, name, group).ok_or_else(|| bad(cmd, format!("no shape \"{name}\" (see shape.presets.list)")))?;
-    Ok(groups[gi].items[ii].clone())
+    crate::shape_index::find_shape(s, name, group).ok_or_else(|| bad(cmd, format!("no shape \"{name}\" (see shape.presets.list)")))
 }
 
 /// Coverage (0..1) of `path` fitted into a `size`² swatch with a small margin.
