@@ -718,6 +718,20 @@ pub struct ToolOptions {
     pub custom_shape_default_size: f32,
     /// Custom Shape: "shape" (a vector shape layer) or "pixels" (painted on a pixel layer).
     pub custom_shape_mode: String,
+    /// Custom Shape: "box" (fit the dragged box) or "leaf" (bend onto a leaf from A to B).
+    pub custom_shape_fit: String,
+    /// Leaf width across the middle as a multiple of the length AB, and how full its sides are.
+    pub leaf_width: f32,
+    pub leaf_fullness: f32,
+    /// Custom Shape > Randomize: after every N shapes placed the shape changes to a random one
+    /// (0 = off, 1 = every time), drawn from the whole "library", the current "group" or the "set".
+    pub shape_random_every: u32,
+    pub shape_random_source: String,
+    pub shape_random_set: Vec<String>,
+    /// A fixed seed makes the picks repeatable (tests, scripts); none = a different run each time.
+    pub shape_random_seed: Option<u64>,
+    #[serde(skip)]
+    pub shape_random: crate::custom_shape_ui::RandomizeState,
     /// Freeform Pen › Curve Fit: how far (px) the fitted path may stray from the pointer trace.
     #[serde(default = "default_curve_fit")]
     pub curve_fit: f32,
@@ -1003,6 +1017,14 @@ impl Default for ToolOptions {
             line_weight: 3.0,
             custom_shape_default_size: 0.0,
             custom_shape_mode: "shape".into(),
+            custom_shape_fit: "box".into(),
+            leaf_width: 0.5,
+            leaf_fullness: 1.0,
+            shape_random_every: 0,
+            shape_random_source: "library".into(),
+            shape_random_set: Vec::new(),
+            shape_random_seed: None,
+            shape_random: Default::default(),
             curve_fit: default_curve_fit(),
             pen_auto_add_delete: true,
             marquee_style: default_marquee_style(),

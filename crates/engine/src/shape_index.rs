@@ -144,7 +144,8 @@ pub struct IndexGroup {
 /// Every shape the panels show, by name: the presets, Define Custom Shape results and the lazy
 /// libraries. Unlike `shapes::all_groups` it clones no paths and parses nothing.
 pub fn index(s: &Session) -> Vec<IndexGroup> {
-    let mut out: Vec<IndexGroup> = s.presets.shapes.iter().map(|g| IndexGroup { name: g.name.clone(), items: g.items.iter().map(|i| i.name.clone()).collect() }).collect();
+    let mut out: Vec<IndexGroup> =
+        s.presets.shapes.iter().map(|g| IndexGroup { name: g.name.clone(), items: g.items.iter().map(|i| i.name.clone()).collect() }).collect();
     if !s.edit_state.custom_shapes.is_empty() {
         out.push(IndexGroup { name: CUSTOM_GROUP.into(), items: s.edit_state.custom_shapes.iter().map(|c| c.name.clone()).collect() });
     }

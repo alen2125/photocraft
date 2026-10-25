@@ -119,3 +119,57 @@ fn bad_params_and_disabled_state() {
     assert!(!none.is_enabled("shape.presets.fillPixels"));
     assert!(none.execute("shape.presets.fillPixels", json!({"preset": "Heart"})).is_err());
 }
+
+fn leaf(a: [f64; 2], b: [f64; 2]) -> serde_json::Value {
+    json!({"a": a, "b": b, "width": 0.5})
+}
+
+#[test]
+fn fill_pixels_on_a_leaf_paints_inside_the_leaf_only() {
+    for depth in [8, 16, 32] {
+        let mut s = session(depth);
+        // A leaf from (10, 50) to (90, 50): its middle is 40 px wide, its ends are points.
+        s.execute("shape.presets.fillPixels", json!({"preset": "Heart", "leaf": leaf([10.0, 50.0], [90.0, 50.0]), "color": "#ff0000"})).unwrap();
+        assert!(alpha(&s, 50, 50) > 0.99, "{depth}: the middle is covered");
+        assert_eq!(alpha(&s, 50, 5), 0.0, "{depth}: far above the leaf");
+        assert_eq!(alpha(&s, 5, 50), 0.0, "{depth}: beyond A");
+        assert_eq!(alpha(&s, 95, 50), 0.0, "{depth}: beyond B");
+        assert_eq!(alpha(&s, 50, 80), 0.0, "{depth}: far below the leaf");
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(alpha(&s, 50, 50), 0.0, "{depth}: undone in one step");
+    }
+}
+
+#[test]
+fn place_leaf_makes_one_shape_layer_inside_the_leaf() {
+    let mut s = session(8);
+    let before = layers(&s);
+    s.execute("shape.presets.placeLeaf", json!({"preset": "Heart", "leaf": leaf([10.0, 50.0], [90.0, 50.0])})).unwrap();
+    assert_eq!(layers(&s), before + 1);
+    let d = s.active().unwrap();
+    let l = d.doc.layer(d.active_layer.unwrap()).unwrap();
+    let photocraft_doc::LayerContent::Shape(sh) = &l.content else { panic!("not a shape layer") };
+    let (x0, y0, x1, y1) = sh.path.control_bounds().unwrap();
+    assert!(x0 >= 9.9 && x1 <= 90.1 && y0 >= 49.9 - 25.0 && y1 <= 50.1 + 25.0, "{x0} {y0} {x1} {y1}");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(layers(&s), before);
+}
+
+#[test]
+fn a_leaf_with_a_zero_width_is_a_line_and_does_not_fail() {
+    let mut s = session(8);
+    let mut l = leaf([10.0, 50.0], [90.0, 50.0]);
+    l["width"] = json!(0.0);
+    s.execute("shape.presets.fillPixels", json!({"preset": "Heart", "leaf": l})).unwrap();
+}
+
+#[test]
+fn bad_leaves_are_refused() {
+    let mut s = session(8);
+    for l in [leaf([5.0, 5.0], [5.0, 5.0]), json!({"a": [1, 2]}), json!({"a": [1, 2], "b": "x"}), json!({"a": [1, 2], "b": [1]})] {
+        assert!(s.execute("shape.presets.fillPixels", json!({"preset": "Heart", "leaf": l.clone()})).is_err(), "{l}");
+        assert!(s.execute("shape.presets.placeLeaf", json!({"preset": "Heart", "leaf": l.clone()})).is_err(), "{l}");
+    }
+    assert!(s.execute("shape.presets.placeLeaf", json!({"preset": "Heart"})).is_err(), "a leaf is required");
+    assert!(s.execute("shape.presets.placeLeaf", json!({"preset": "Nope", "leaf": leaf([0.0, 0.0], [9.0, 9.0])})).is_err());
+}

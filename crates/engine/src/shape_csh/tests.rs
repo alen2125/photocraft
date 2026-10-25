@@ -21,14 +21,19 @@ fn load(s: &mut Session, bytes: &[u8], extra: Value) -> crate::Result<Value> {
 }
 
 fn square_file(n: usize) -> Vec<u8> {
-    let sub = |k: &mut Vec<photocraft_psd::path::PsdKnot>, x: f64, y: f64| k.push(photocraft_psd::path::PsdKnot { linked: false, pre: (x, y), anchor: (x, y), post: (x, y) });
+    let sub = |k: &mut Vec<photocraft_psd::path::PsdKnot>, x: f64, y: f64| {
+        k.push(photocraft_psd::path::PsdKnot { linked: false, pre: (x, y), anchor: (x, y), post: (x, y) })
+    };
     let shapes: Vec<(String, CshShape)> = (0..n)
         .map(|i| {
             let mut knots = Vec::new();
             for (x, y) in [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)] {
                 sub(&mut knots, x, y);
             }
-            (format!("Sq{i}"), CshShape { bounds: [0, 0, 30, 20 + (i % 7) as i32], subpaths: vec![photocraft_psd::path::PsdSubpath { closed: true, operation: 1, knots }] })
+            (
+                format!("Sq{i}"),
+                CshShape { bounds: [0, 0, 30, 20 + (i % 7) as i32], subpaths: vec![photocraft_psd::path::PsdSubpath { closed: true, operation: 1, knots }] },
+            )
         })
         .collect();
     csh::write(&shapes).unwrap()

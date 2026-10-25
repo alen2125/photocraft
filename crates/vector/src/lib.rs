@@ -28,6 +28,7 @@ pub mod raster;
 pub mod shapes;
 pub mod stroke;
 pub mod trace;
+pub mod warp;
 
 use photocraft_color::{ColorMode, PixelFormat};
 use photocraft_doc::{Fill, FillRule, GradientStyle, Path, PathOp, ShapeLayer, ShapeStroke, StrokeAlign, VectorMask};

@@ -170,8 +170,11 @@ pub fn create_shape(app: &mut PhotocraftApp, mut geometry: Value) -> Result<Valu
 /// The preview and command both use the full float tool colours, including transparent paint.
 fn shape_preview(app: &PhotocraftApp, tool: Tool, start: [f64; 2], end: [f64; 2], mods: egui::Modifiers) -> Option<photocraft_doc::ShapeLayer> {
     let o = &app.ui.tool_options;
-    let geometry = shape_geometry(o, tool, start, end, mods)?;
-    let path = if tool == Tool::CustomShape {
+    let leaf = crate::custom_shape_ui::leaf_path(app, tool, start, end, mods);
+    let geometry = if leaf.is_some() { Value::Null } else { shape_geometry(o, tool, start, end, mods)? };
+    let path = if let Some(leaf) = leaf {
+        leaf
+    } else if tool == Tool::CustomShape {
         let rect = geometry.get("rect").and_then(|r| serde_json::from_value::<[f64; 4]>(r.clone()).ok())?;
         let shape = photocraft_engine::shape_index::find_shape(&app.session, app.ui.presets_ui.shape(), None)?;
         photocraft_engine::presets::shapes::fit(&shape.path, rect, mods.shift)
@@ -1471,6 +1474,7 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
         Tool::CustomShape => {
             crate::widgets::vline(ui, 22.0);
             crate::preset_panels::shape_picker(app, ui);
+            crate::custom_shape_ui::options(app, ui);
         }
         _ if matches!(tool, Tool::PathSelection | Tool::DirectSelection) => {
             if let Some(photocraft_doc::LiveShape::Rect { radii, .. }) = target.as_ref().and_then(|s| s.live.as_ref()) {

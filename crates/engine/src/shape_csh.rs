@@ -155,8 +155,13 @@ fn save(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// The libraries to keep in the preferences: (name, base64 file bytes).
 pub(crate) fn to_json(s: &Session) -> Value {
-    let libs: Vec<Value> =
-        s.presets.lazy_shapes.groups().iter().filter_map(|g| g.source.raw().map(|raw| json!({"name": g.name, "data": photocraft_paint::tile::b64_encode(raw)}))).collect();
+    let libs: Vec<Value> = s
+        .presets
+        .lazy_shapes
+        .groups()
+        .iter()
+        .filter_map(|g| g.source.raw().map(|raw| json!({"name": g.name, "data": photocraft_paint::tile::b64_encode(raw)})))
+        .collect();
     Value::Array(libs)
 }
 

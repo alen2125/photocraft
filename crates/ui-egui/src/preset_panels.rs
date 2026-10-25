@@ -873,10 +873,8 @@ pub fn styles_panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
 
 pub fn shapes_panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let src = photocraft_engine::shape_index::index(&app.session);
-    let groups: Vec<GroupView> = src
-        .iter()
-        .map(|g| GroupView { name: g.name.clone(), items: g.items.iter().map(|n| ItemView { key: n.clone(), name: n.clone() }).collect() })
-        .collect();
+    let groups: Vec<GroupView> =
+        src.iter().map(|g| GroupView { name: g.name.clone(), items: g.items.iter().map(|n| ItemView { key: n.clone(), name: n.clone() }).collect() }).collect();
     let session = &app.session;
     let canvas = canvas_drop_rect(app);
     let mut st = std::mem::take(&mut app.ui.presets_ui);
@@ -898,6 +896,7 @@ pub fn shapes_panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         },
     );
     app.ui.presets_ui = st;
+    crate::custom_shape_ui::library_row(app, ui);
     let fill = shape_fill(app);
     for e in events {
         match &e {
