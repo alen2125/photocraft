@@ -144,3 +144,21 @@ fn libraries_survive_a_restart_without_being_decoded() {
 fn an_empty_or_unmeasurable_path_has_no_csh_form() {
     assert!(shape_from_path(&Path::default()).is_none());
 }
+
+#[test]
+fn replace_swaps_out_the_built_in_shapes_and_reset_brings_them_back() {
+    let mut s = session();
+    assert!(find_shape(&s, "Heart", None).is_some());
+    let r = load(&mut s, &square_file(3), json!({"name": "Mine", "mode": "replace"})).unwrap();
+    assert_eq!(r["first"], json!("Sq0"));
+    assert!(find_shape(&s, "Heart", None).is_none(), "the built-in groups are gone");
+    assert_eq!(index(&s).iter().map(|g| g.name.as_str()).collect::<Vec<_>>(), ["Mine"]);
+    assert!(s.execute("shape.presets.place", json!({"preset": "Heart"})).is_err());
+    s.execute("shape.presets.place", json!({"preset": "Sq1", "rect": [5, 5, 30, 30]})).unwrap();
+    s.execute("shape.presets.reset", json!({"append": true})).unwrap();
+    assert!(find_shape(&s, "Heart", None).is_some(), "reset restores the defaults next to the loaded library");
+    // Appending keeps what was there.
+    let mut t = session();
+    load(&mut t, &square_file(3), json!({"name": "Extra"})).unwrap();
+    assert!(find_shape(&t, "Heart", None).is_some());
+}

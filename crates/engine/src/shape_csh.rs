@@ -114,12 +114,15 @@ fn load(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let count = source.len();
     if replace {
+        // Replace swaps the whole library, the built-in groups too (`shape.presets.reset` brings them back).
         s.presets.lazy_shapes.clear();
+        s.presets.shapes.clear();
     }
     let name = str_param(p, "name").map(str::to_string).filter(|n| !n.is_empty()).unwrap_or(stem);
+    let first = source.name(0).map(str::to_string);
     let group = add_library(s, &name, source);
     s.presets_changed();
-    Ok(json!({"group": group, "count": count}))
+    Ok(json!({"group": group, "count": count, "first": first}))
 }
 
 fn save(s: &mut Session, p: &Value) -> Result<Value> {
@@ -185,7 +188,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Load Shapes…",
             menu: &[],
             shortcut: None,
-            params: r##"{"path":".csh file"?,"data":base64 bytes?,"mode":"append"|"replace"="append","name":group name?=file name} → {group,count}. Only the names are read; a shape's path is decoded when it is used. Replace drops the other loaded libraries."##,
+            params: r##"{"path":".csh file"?,"data":base64 bytes?,"mode":"append"|"replace"="append","name":group name?=file name} → {group,count,first}. Only the names are read; a shape's path is decoded when it is used. Replace drops the other loaded libraries and the built-in groups (shape.presets.reset restores them)."##,
             enabled: always,
             run: load,
             journal: false,

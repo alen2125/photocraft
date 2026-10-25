@@ -299,6 +299,12 @@ fn library_action(app: &mut PhotocraftApp, act: Act) {
                 p["name"] = serde_json::json!(stem);
             }
             let r = app.run("shape.presets.cshLoad", p)?;
+            // After Replace the built-in shape is gone: start on the file's first one.
+            if act == Act::Replace
+                && let Some(first) = r["first"].as_str()
+            {
+                app.ui.presets_ui.custom_shape = first.to_string();
+            }
             let template = "Loaded shapes from {file}";
             app.ui.status_error = false;
             app.ui.status = crate::i18n::fmt(tl!(template), &[("file", &shown)]);
