@@ -262,3 +262,87 @@ fn a_real_library_loads_by_path_and_its_shapes_place_and_fill() {
     assert_eq!(r["empty"], json!(false));
     println!("{count} shapes: indexed in {loaded:?}; first = {knots} knots, read in {parsed:?}; place {placed:?}; fill {filled:?}");
 }
+
+/// How long the whole fill takes for a traced drawing at several sizes:
+/// `CSH_SAMPLE=<real .csh> cargo test -p photocraft-engine --lib fill_profile -- --ignored --nocapture`.
+#[test]
+#[ignore = "needs a real Photoshop .csh file in CSH_SAMPLE"]
+fn fill_profile() {
+    let Some(path) = std::env::var_os("CSH_SAMPLE") else { return };
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 2480, "height": 3508})).unwrap();
+    s.execute("layer.new.layer", json!({})).unwrap();
+    let r = s.execute("shape.presets.cshLoad", json!({"path": path.to_string_lossy()})).unwrap();
+    let name = r["first"].as_str().unwrap().to_string();
+    // The first fill reads the shape from disk; the rest come from the cache.
+    for (size, leaf) in [(400.0, false), (400.0, false), (900.0, false), (1800.0, false), (900.0, true)] {
+        let mut p = json!({"preset": name, "color": "#000000"});
+        if leaf {
+            p["leaf"] = json!({"a": [200, 300], "b": [1100, 1300], "width": 0.5});
+        } else {
+            p["rect"] = json!([100, 100, size, size]);
+        }
+        let t = std::time::Instant::now();
+        s.execute("shape.presets.fillPixels", p).unwrap();
+        println!("fill {size:>6} px{}: {:?}", if leaf { " leaf" } else { "" }, t.elapsed());
+    }
+}
+
+/// The same fill piece by piece: `CSH_SAMPLE=<real .csh> cargo test -p photocraft-engine --lib fill_pieces -- --ignored --nocapture`.
+#[test]
+#[ignore = "needs a real Photoshop .csh file in CSH_SAMPLE"]
+fn fill_pieces() {
+    let Some(path) = std::env::var_os("CSH_SAMPLE") else { return };
+    let mut s = session();
+    let r = s.execute("shape.presets.cshLoad", json!({"path": path.to_string_lossy()})).unwrap();
+    let name = r["first"].as_str().unwrap().to_string();
+    let shape = crate::shape_index::shape_path(&s, &name, None).unwrap();
+    for size in [400.0, 1800.0] {
+        println!("--- {size} px");
+        let lap = |label: &str, t: std::time::Instant| println!("{label:>20}: {:?}", t.elapsed());
+        let t = std::time::Instant::now();
+        let fitted = crate::presets::shapes::fit(&shape, [0.0, 0.0, size, size], true);
+        lap("fit", t);
+        let t = std::time::Instant::now();
+        let flat = photocraft_vector::thin::flatten(&fitted, 0.05);
+        lap("flatten", t);
+        let n0: usize = flat.subpaths.iter().map(|s| s.knots.len()).sum();
+        let t = std::time::Instant::now();
+        let thin = photocraft_vector::thin::thin(&flat, 0.1);
+        let n1: usize = thin.subpaths.iter().map(|s| s.knots.len()).sum();
+        lap(&format!("thin {n0}->{n1}"), t);
+        let t = std::time::Instant::now();
+        let r = photocraft_vector::fill_rasterizer(&thin, photocraft_vector::DEFAULT_TOLERANCE);
+        lap("fill_rasterizer", t);
+        let area = r.pixel_bounds().unwrap();
+        let t = std::time::Instant::now();
+        let cov = r.render(area);
+        lap(&format!("render {}x{}", area.width(), area.height()), t);
+        assert!(!cov.is_empty());
+    }
+}
+
+/// The drag preview: a shape thinned for the zoom it is shown at, then drawn on screen.
+#[test]
+#[ignore = "needs a real Photoshop .csh file in CSH_SAMPLE"]
+fn preview_profile() {
+    let Some(path) = std::env::var_os("CSH_SAMPLE") else { return };
+    let mut s = session();
+    let r = s.execute("shape.presets.cshLoad", json!({"path": path.to_string_lossy()})).unwrap();
+    let name = r["first"].as_str().unwrap().to_string();
+    let shape = crate::shape_index::shape_path(&s, &name, None).unwrap();
+    for (size, zoom) in [(1800.0, 0.234_f64), (1800.0, 0.5), (900.0, 1.0), (400.0, 2.0)] {
+        let t = std::time::Instant::now();
+        let fitted = crate::presets::shapes::fit(&shape, [0.0, 0.0, size, size], true);
+        let simple = photocraft_vector::thin::simplify(&fitted, 0.1 / zoom, 0.4 / zoom);
+        let n: usize = simple.subpaths.iter().map(|s| s.knots.len()).sum();
+        let prep = t.elapsed();
+        let on_screen = simple.transform(&photocraft_geom::Affine { m: [zoom, 0.0, 0.0, zoom, 0.0, 0.0] });
+        let t = std::time::Instant::now();
+        let r = photocraft_vector::fill_rasterizer(&on_screen, photocraft_vector::DEFAULT_TOLERANCE);
+        let area = r.pixel_bounds().unwrap();
+        let cov = r.render(area);
+        println!("{size} px at {zoom}: {n} points, prepared in {prep:?}, drawn {}x{} in {:?}", area.width(), area.height(), t.elapsed());
+        assert!(!cov.is_empty());
+    }
+}

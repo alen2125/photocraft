@@ -27,11 +27,12 @@ fn num(p: &Value, k: &str) -> Option<f64> {
 fn fill_pixels(s: &mut Session, p: &Value) -> Result<Value> {
     let name = p.get("preset").and_then(Value::as_str).ok_or_else(|| bad(FILL_PIXELS, "`preset` is required"))?;
     let group = p.get("group").and_then(Value::as_str);
-    let shape = crate::shape_index::find_shape(s, name, group).ok_or_else(|| bad(FILL_PIXELS, format!("no shape \"{name}\" (see shape.presets.list)")))?;
+    let shape = crate::shape_index::shape_path(s, name, group).ok_or_else(|| bad(FILL_PIXELS, format!("no shape \"{name}\" (see shape.presets.list)")))?;
     let d = s.active().ok_or(EngineError::NoDocument)?;
     let bounds = d.doc.bounds();
     let (w, h) = (f64::from(d.doc.size.width), f64::from(d.doc.size.height));
-    let path = target_path(p, &shape.path, (w, h), FILL_PIXELS)?;
+    // A traced drawing has far more curves than pixels: draw it from points a quarter of a pixel apart.
+    let path = photocraft_vector::thin::simplify(&target_path(p, &shape, (w, h), FILL_PIXELS)?, 0.1, 0.25);
 
     let fg = s.tools.foreground;
     let c = p.get("color").and_then(crate::vector_cmds::color).unwrap_or(photocraft_color::Color::rgba(fg[0], fg[1], fg[2], fg[3]));
@@ -81,7 +82,7 @@ fn fill_pixels(s: &mut Session, p: &Value) -> Result<Value> {
         Ok(())
     })?;
     let LayerId(id) = painted;
-    Ok(json!({"layer": id, "empty": false, "preset": shape.name}))
+    Ok(json!({"layer": id, "empty": false, "preset": name}))
 }
 
 /// A leaf from a `leaf` param: `{"a":[x,y],"b":[x,y],"width":0..4=0.5,"fullness":0.1..3=1}`.

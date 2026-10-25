@@ -13,10 +13,12 @@
 use photocraft_doc::{Knot, Path, Subpath};
 use photocraft_geom::Point;
 
-use crate::map::map_path;
+use crate::thin::{flatten, subdivide};
 
-/// How far (px) the warped curve may stray from the exact image of the shape.
-const TOLERANCE: f64 = 0.05;
+/// How far a curve may stray when flattened before the warp, and the longest straight piece left
+/// uncut, both as a share of the shape's box diagonal.
+const FLATTEN: f64 = 2.0e-4;
+const PIECE: f64 = 1.0 / 96.0;
 /// Widest leaf, as a multiple of the length AB.
 const MAX_WIDTH: f64 = 4.0;
 /// Range of the fullness control.
@@ -114,7 +116,14 @@ pub fn warp_path(path: &Path, leaf: &Leaf) -> Option<Path> {
     let (x0, y0, x1, y1) = path.control_bounds().filter(|b| [b.0, b.1, b.2, b.3].iter().all(|v| v.is_finite()))?;
     let (w, h) = ((x1 - x0).max(1e-9), (y1 - y0).max(1e-9));
     let f = |p: Point| leaf.at(((p.x - x0) / w).clamp(0.0, 1.0), ((p.y - y0) / h).clamp(0.0, 1.0)).unwrap_or(p);
-    Some(map_path(path, f, TOLERANCE))
+    // Points are mapped, not control points: near A and B the map pinches space, and a handle
+    // carried across a pinch throws a curve far out of the leaf. Curves are flattened first and
+    // long pieces cut so the straight ones bend too.
+    let diag = w.hypot(h);
+    let flat = subdivide(&flatten(path, diag * FLATTEN), diag * PIECE);
+    let subpaths =
+        flat.subpaths.into_iter().map(|sp| Subpath { knots: sp.knots.iter().map(|k| Knot::corner(f(k.anchor).x, f(k.anchor).y)).collect(), ..sp }).collect();
+    Some(Path { subpaths, fill_rule: path.fill_rule, inverted: path.inverted })
 }
 
 #[cfg(test)]

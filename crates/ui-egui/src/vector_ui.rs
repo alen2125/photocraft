@@ -181,6 +181,13 @@ fn shape_preview(app: &PhotocraftApp, tool: Tool, start: [f64; 2], end: [f64; 2]
     } else {
         photocraft_engine::vector_cmds::shape_path(&geometry).ok()?
     };
+    // A traced drawing is drawn from points under half a screen pixel apart: much the same picture
+    // at a fraction of the cost.
+    let path = if tool == Tool::CustomShape {
+        photocraft_vector::thin::simplify(&path, 0.1 / f64::from(app.point_zoom()).max(1e-3), 0.4 / f64::from(app.point_zoom()).max(1e-3))
+    } else {
+        path
+    };
     Some(photocraft_doc::ShapeLayer {
         path,
         fill: o.shape_fill.then(|| solid_paint(app.session.tools.foreground)),
@@ -191,6 +198,9 @@ fn shape_preview(app: &PhotocraftApp, tool: Tool, start: [f64; 2], end: [f64; 2]
 
 /// Shape-tool drag preview using the same path and vector stroke geometry as the commit.
 pub fn draw_shape_preview(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform, tool: Tool, start: [f64; 2], end: [f64; 2], mods: egui::Modifiers) {
+    if crate::custom_shape_ui::draw_dense_box_preview(app, painter, xf, tool, start, end, mods) {
+        return;
+    }
     let Some(mut shape) = shape_preview(app, tool, start, end, mods) else { return };
     let path = shape.path.clone();
     let origin = xf.to_screen(0.0, 0.0);
@@ -204,6 +214,10 @@ pub fn draw_shape_preview(app: &PhotocraftApp, painter: &egui::Painter, xf: &Vie
     // This lightweight screen overlay retains the existing display-colour behaviour; document
     // rendering still goes through its format/profile path when the shape is committed.
     crate::shape_stroke_ui::paint_shape_preview(painter, &shape);
+    // The outline of a dense shape is a smear of points; its filled picture says more.
+    if path.subpaths.iter().map(|s| s.knots.len()).sum::<usize>() > photocraft_vector::thin::DENSE / 3 {
+        return;
+    }
     let accent = Tokens::get(painter.ctx()).accent;
     for (pts, _) in path_lines(&path, &|q| xf.to_screen(q[0] as f32, q[1] as f32)) {
         // The accent path over a dark halo: visible on any pixels (#172).

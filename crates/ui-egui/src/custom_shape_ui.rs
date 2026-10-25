@@ -1,6 +1,8 @@
 //! Custom Shape tool additions kept out of the shared tool files: what a click or an off-canvas
 //! drag does (fork-local, see MY_CHANGES.md).
 
+use std::sync::{Arc, Mutex, PoisonError};
+
 use photocraft_doc::Path;
 use photocraft_geom::Point;
 use photocraft_vector::warp::{Leaf, warp_path};
@@ -67,9 +69,95 @@ pub fn leaf_path(app: &PhotocraftApp, tool: crate::state::Tool, start: [f64; 2],
         return None;
     }
     let leaf = leaf_of_drag(app, start, end, mods)?;
-    let shape = photocraft_engine::shape_index::shape_path(&app.session, app.ui.presets_ui.shape(), None)?;
+    let (shape, _) = proxy_path(app)?;
     warp_path(&shape, &leaf)
 }
+
+/// The thinned shape kept for the drag preview: its key (name, library revision), the path and
+/// whether the shape is dense.
+type Proxy = ((String, u64), Arc<Path>, bool);
+
+/// The selected shape as the drag preview draws it, and whether it is a dense (traced) drawing: a
+/// dense shape is thinned to a couple of points per thousandth of its size, which looks the same
+/// on screen and draws in a fraction of the time. Kept for as long as the shape and the shapes
+/// library stay the same.
+fn proxy_path(app: &PhotocraftApp) -> Option<(Arc<Path>, bool)> {
+    static PROXY: Mutex<Option<Proxy>> = Mutex::new(None);
+    let name = app.ui.presets_ui.shape();
+    let key = (name.to_string(), app.session.presets.rev);
+    if let Some((k, path, dense)) = PROXY.lock().unwrap_or_else(PoisonError::into_inner).as_ref()
+        && *k == key
+    {
+        return Some((path.clone(), *dense));
+    }
+    let full = photocraft_engine::shape_index::shape_path(&app.session, name, None)?;
+    let dense = full.subpaths.iter().map(|s| s.knots.len()).sum::<usize>() > photocraft_vector::thin::DENSE;
+    let proxy = match full.control_bounds() {
+        Some((x0, y0, x1, y1)) if dense => {
+            let diag = (x1 - x0).hypot(y1 - y0);
+            Arc::new(photocraft_vector::thin::thin(&photocraft_vector::thin::flatten(&full, diag * 1e-3), diag * 2e-3))
+        }
+        _ => full,
+    };
+    *PROXY.lock().unwrap_or_else(PoisonError::into_inner) = Some((key, proxy.clone(), dense));
+    Some((proxy, dense))
+}
+
+/// Longest side (px) the picture of a dense shape is drawn at for the drag preview.
+const PREVIEW_SIDE: f64 = 512.0;
+
+/// The drag preview of a dense shape in Box mode: the shape is drawn once into a picture, and the
+/// picture is stretched into the dragged box, so each pointer move costs nothing. `true` when it
+/// handled the preview (other shapes keep the exact outline-and-fill preview).
+pub fn draw_dense_box_preview(
+    app: &PhotocraftApp,
+    painter: &egui::Painter,
+    xf: &crate::canvas::ViewXform,
+    tool: crate::state::Tool,
+    start: [f64; 2],
+    end: [f64; 2],
+    mods: egui::Modifiers,
+) -> bool {
+    if tool != crate::state::Tool::CustomShape || is_leaf(app) {
+        return false;
+    }
+    let Some((path, true)) = proxy_path(app) else { return false };
+    let Some([x0, y0, x1, y1]) = crate::vector_ui::shape_bounds(&app.ui.tool_options, tool, start, end, mods) else { return true };
+    let fg = app.session.tools.foreground;
+    let id = egui::Id::new("custom-shape-dense-preview");
+    let key = (app.ui.presets_ui.shape().to_string(), app.session.presets.rev, fg.map(f32::to_bits));
+    let cached = painter.ctx().data(|d| d.get_temp::<(Key, egui::TextureHandle, f32)>(id));
+    let (tex, aspect) = match cached.filter(|c| c.0 == key) {
+        Some((_, tex, aspect)) => (tex, aspect),
+        None => {
+            let Some((bx0, by0, bx1, by1)) = path.control_bounds() else { return true };
+            let (w, h) = ((bx1 - bx0).max(1e-6), (by1 - by0).max(1e-6));
+            let s = PREVIEW_SIDE / w.max(h);
+            let (rw, rh) = (((w * s).ceil() as i32).clamp(1, 4096), ((h * s).ceil() as i32).clamp(1, 4096));
+            let fitted = photocraft_engine::presets::shapes::fit(&path, [0.0, 0.0, f64::from(rw), f64::from(rh)], false);
+            let cov = photocraft_vector::path_coverage(&fitted, photocraft_geom::Rect::new(0, 0, rw, rh));
+            let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+            let pixels = cov.iter().map(|a| egui::Color32::from_rgba_unmultiplied(q(fg[0]), q(fg[1]), q(fg[2]), q(a * fg[3]))).collect();
+            let image = egui::ColorImage::new([rw as usize, rh as usize], pixels);
+            let tex = painter.ctx().load_texture("custom-shape-dense", image, egui::TextureOptions::LINEAR);
+            let aspect = (w / h) as f32;
+            painter.ctx().data_mut(|d| d.insert_temp(id, (key, tex.clone(), aspect)));
+            (tex, aspect)
+        }
+    };
+    let (a, b) = (xf.to_screen(x0 as f32, y0 as f32), xf.to_screen(x1 as f32, y1 as f32));
+    let mut dest = egui::Rect::from_two_pos(a, b);
+    if mods.shift {
+        // ⇧ keeps the shape's proportions, centred in the box.
+        let size = dest.size();
+        let fit = if size.x / size.y.max(1e-3) > aspect { egui::vec2(size.y * aspect, size.y) } else { egui::vec2(size.x, size.x / aspect.max(1e-3)) };
+        dest = egui::Rect::from_center_size(dest.center(), fit);
+    }
+    painter.image(tex.id(), dest, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
+    true
+}
+
+type Key = (String, u64, [u32; 4]);
 
 /// End of a Leaf-mode drag: a leaf shorter than 1 px (a click) places nothing.
 fn finish_leaf(app: &mut PhotocraftApp, start: [f64; 2], end: [f64; 2], mods: egui::Modifiers) {

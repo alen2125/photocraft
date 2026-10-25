@@ -348,3 +348,30 @@ fn a_shape_too_detailed_for_a_vector_layer_says_to_use_pixels_mode() {
     assert!(app.ui.status.is_empty(), "{}", app.ui.status);
     assert!((20..120).any(|x| alpha_at(&app, x, 60) > 0.5));
 }
+
+#[test]
+fn a_dense_shape_previews_from_a_thinned_copy_and_an_ordinary_one_from_itself() {
+    let mut app = app();
+    let (ordinary, dense) = proxy_path(&app).map(|(p, d)| (p, d)).unwrap();
+    assert!(!dense && ordinary.subpaths.iter().map(|s| s.knots.len()).sum::<usize>() < 100, "Heart is not dense");
+    let k = |x: f64, y: f64| photocraft_psd::path::PsdKnot { linked: false, pre: (x, y), anchor: (x, y), post: (x, y) };
+    let knots = (0..20_000)
+        .map(|i| {
+            let a = f64::from(i) / 20_000.0 * std::f64::consts::TAU;
+            k(0.5 + 0.4 * a.cos(), 0.5 + 0.4 * a.sin())
+        })
+        .collect();
+    let shape =
+        photocraft_psd::csh::CshShape { bounds: [0, 0, 1000, 1000], subpaths: vec![photocraft_psd::path::PsdSubpath { closed: true, operation: 1, knots }] };
+    let bytes = photocraft_psd::csh::write(&[("Ring".to_string(), shape)]).unwrap();
+    app.run("shape.presets.cshLoad", json!({"data": photocraft_engine::paint::tile::b64_encode(&bytes), "mode": "replace"})).unwrap();
+    app.ui.presets_ui.custom_shape = "Ring".into();
+    let (thinned, dense) = proxy_path(&app).unwrap();
+    assert!(dense);
+    let n: usize = thinned.subpaths.iter().map(|s| s.knots.len()).sum();
+    assert!((100..2000).contains(&n), "thinned from 20000 to {n}");
+    // The leaf preview of it is built from the thinned copy and stays inside the leaf.
+    app.ui.tool_options.custom_shape_fit = "leaf".into();
+    let p = leaf_path(&app, Tool::CustomShape, [50.0, 100.0], [250.0, 100.0], egui::Modifiers::NONE).unwrap();
+    assert!(p.subpaths.iter().map(|s| s.knots.len()).sum::<usize>() < 4000);
+}

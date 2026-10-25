@@ -27,6 +27,7 @@ pub mod map;
 pub mod raster;
 pub mod shapes;
 pub mod stroke;
+pub mod thin;
 pub mod trace;
 pub mod warp;
 
