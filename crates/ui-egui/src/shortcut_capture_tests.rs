@@ -425,3 +425,37 @@ fn accept_takes_the_key_from_every_command_holding_it() {
     let o = field(&h, id, "overrides");
     assert_eq!((o["edit.cut"].clone(), o["edit.copy"].clone(), o["edit.paste"].clone()), (json!(""), json!(""), json!("Cmd+X")), "{o}");
 }
+
+#[test]
+fn custom_shape_options_are_listed_in_the_shortcuts_tab_and_can_be_bound() {
+    let (mut h, id) = dialog(1.0, "ui.customShape.fit.cycle", "Fit");
+    // The tab lists them although they have no menu and no key yet.
+    for label in ["Custom Shape: Fit Box", "Custom Shape: Fit Leaf", "Custom Shape: Fit Zipper"] {
+        assert!(h.query_by_label_contains(label).is_some(), "{label} is not in the list");
+    }
+    // Capture a key for Cycle Fit.
+    h.get_by_label_contains("Cycle Fit").click();
+    h.run_steps(2);
+    let f = &mut h.state_mut().ui.dialog_mut(id).unwrap().fields;
+    f.insert("capture".into(), json!(true));
+    h.run_steps(2);
+    h.key_press(Key::F7);
+    h.run_steps(2);
+    assert_eq!(field(&h, id, "overrides")["ui.customShape.fit.cycle"], json!("F7"));
+    crate::dialogs::confirm(h.state_mut(), id).unwrap();
+    h.run_steps(2);
+    // The key now changes the fit, and survives a restart.
+    assert_eq!(h.state().ui.tool_options.custom_shape_fit, "box");
+    let saved = h.state().session.prefs_to_json();
+    let mut session = photocraft_engine::Session::new();
+    session.load_prefs_json(&saved).unwrap();
+    let mut restarted = PhotocraftApp::new(session, crate::Services::default());
+    let ctx = egui::Context::default();
+    ctx.begin_pass(egui::RawInput {
+        events: vec![Event::Key { key: Key::F7, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE }],
+        ..Default::default()
+    });
+    crate::shortcuts::handle(&mut restarted, &ctx);
+    ctx.end_pass().textures_delta.clear();
+    assert_eq!(restarted.ui.tool_options.custom_shape_fit, "leaf", "F7 cycled Box to Leaf");
+}

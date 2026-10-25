@@ -21,6 +21,8 @@
 | Файл | Место | Что изменено |
 |---|---|---|
 | `crates/engine/src/shell_commands.rs` | `SHELL_COMMANDS`, после `tool.resetAll` | 8 строк `ui.customShape.*` (режимы Shape/Pixels, Fit Box/Leaf/Zipper, Randomize): так они попадают в Правка → Сочетания клавиш. Ключей по умолчанию нет |
+| `crates/ui-egui/src/prefs_ui.rs` | список вкладки «Комбинации клавиш» (условие `tab == 0 && path.is_empty() && def.is_none() …`) | добавлено `&& !custom_shape_ui::handles(id)`: команды без меню и без клавиши по умолчанию иначе скрыты в этой вкладке |
+| `crates/ui-egui/src/shortcut_capture_tests.rs` | конец файла | один тест (назначение клавиши команде Custom Shape) |
 | `crates/ui-egui/src/menus.rs` | `invoke_unguarded` и `is_enabled` | по 3 строки: вызов `custom_shape_ui::invoke` и `custom_shape_ui::handles` |
 | `crates/engine/src/lib.rs` | список `pub mod` | `pub mod custom_shape_cmds;`, `pub mod shape_csh;`, `pub mod shape_index;` (3 строки) |
 | `crates/engine/src/commands.rs` | `build()`, после `presets::specs()` | `v.extend(crate::custom_shape_cmds::specs());` (команды `.csh` регистрируются внутри этого `specs()`) |

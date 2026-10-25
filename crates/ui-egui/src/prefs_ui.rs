@@ -2063,7 +2063,7 @@ fn shortcuts_body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String
                 if !needle.is_empty() && !hay.contains(&needle) && !id.to_ascii_lowercase().contains(&needle) {
                     continue;
                 }
-                if tab == 0 && path.is_empty() && def.is_none() && cur.is_none() && alts.is_empty() {
+                if tab == 0 && path.is_empty() && def.is_none() && cur.is_none() && alts.is_empty() && !crate::custom_shape_ui::handles(id) {
                     continue;
                 }
                 let top = shown_path.first().cloned().unwrap_or_else(|| tl!("Other").into());
