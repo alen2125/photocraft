@@ -7,7 +7,7 @@ use photocraft_doc::vector::Path;
 use photocraft_doc::{Layer, LayerId};
 use photocraft_geom::Point;
 use photocraft_vector as vector;
-use photocraft_vector::warp::{Leaf, warp_path};
+use photocraft_vector::warp::{Leaf, clip_to_leaf, warp_path};
 use serde_json::{Value, json};
 
 use crate::commands::{CommandSpec, blend_from_str};
@@ -87,8 +87,9 @@ fn fill_pixels(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"layer": id, "empty": false, "preset": name}))
 }
 
-/// A leaf from a `leaf` param: `{"a":[x,y],"b":[x,y],"width":0..4=0.5,"fullness":0.1..3=1}`.
-fn leaf_param(p: &Value, cmd: &str) -> Result<Option<Leaf>> {
+/// A leaf from a `leaf` param: `{"a":[x,y],"b":[x,y],"width":0..4=0.5,"fullness":0.1..3=1,"clip":bool=false}`,
+/// and whether it is a zipper (`clip`): the shape cut off by the leaf instead of bent onto it.
+fn leaf_param(p: &Value, cmd: &str) -> Result<Option<(Leaf, bool)>> {
     let Some(l) = p.get("leaf").filter(|l| !l.is_null()) else { return Ok(None) };
     let pt = |k: &str| -> Result<Point> {
         let a = l.get(k).and_then(Value::as_array).filter(|a| a.len() == 2).ok_or_else(|| bad(cmd, format!("`leaf.{k}` must be [x, y]")))?;
@@ -97,14 +98,16 @@ fn leaf_param(p: &Value, cmd: &str) -> Result<Option<Leaf>> {
             _ => Err(bad(cmd, format!("`leaf.{k}` must be two finite numbers"))),
         }
     };
-    Ok(Some(Leaf { a: pt("a")?, b: pt("b")?, width: num(l, "width").unwrap_or(0.5), fullness: num(l, "fullness").unwrap_or(1.0) }))
+    let leaf = Leaf { a: pt("a")?, b: pt("b")?, width: num(l, "width").unwrap_or(0.5), fullness: num(l, "fullness").unwrap_or(1.0) };
+    Ok(Some((leaf, l.get("clip").and_then(Value::as_bool).unwrap_or(false))))
 }
 
 /// The shape's path where it goes: bent onto the `leaf` param, else fitted into `rect`
 /// (`keepAspect`; by default the middle of the canvas).
 fn target_path(p: &Value, shape: &Path, canvas: (f64, f64), cmd: &str) -> Result<Path> {
-    if let Some(leaf) = leaf_param(p, cmd)? {
-        return warp_path(shape, &leaf).ok_or_else(|| bad(cmd, "the leaf has no length (A and B coincide) or the shape is empty"));
+    if let Some((leaf, clip)) = leaf_param(p, cmd)? {
+        let done = if clip { clip_to_leaf(shape, &leaf) } else { warp_path(shape, &leaf) };
+        return done.ok_or_else(|| bad(cmd, "the leaf has no length (A and B coincide) or the shape is empty"));
     }
     let keep = p.get("keepAspect").and_then(Value::as_bool).unwrap_or(true);
     let rect = match p.get("rect").and_then(Value::as_array) {
@@ -151,7 +154,7 @@ pub fn specs() -> Vec<CommandSpec> {
         label: "Fill Shape (Pixels)",
         menu: &[],
         shortcut: None,
-        params: r##"{"preset":name,"group":name?,"rect":[x,y,w,h]?,"keepAspect":bool=true,"color":"#rrggbb"|[r,g,b,a]?=foreground,"opacity":0..100=100,"mode":blend="Normal","feather":px=0,"antiAlias":bool=true,"leaf":{"a":[x,y],"b":[x,y],"width":0..4=0.5,"fullness":0.1..3=1}? (bends the shape onto a leaf instead of fitting `rect`),"layer":id?} → {layer,empty,preset}. Paints on the pixel layer (a new one above a non-pixel layer); empty:true when nothing lands on the canvas (no history step)."##,
+        params: r##"{"preset":name,"group":name?,"rect":[x,y,w,h]?,"keepAspect":bool=true,"color":"#rrggbb"|[r,g,b,a]?=foreground,"opacity":0..100=100,"mode":blend="Normal","feather":px=0,"antiAlias":bool=true,"leaf":{"a":[x,y],"b":[x,y],"width":0..4=0.5,"fullness":0.1..3=1,"clip":bool=false}? (bends the shape onto a leaf instead of fitting `rect`; with `clip` the shape is laid undeformed in the leaf's box and cut off by the leaf),"layer":id?} → {layer,empty,preset}. Paints on the pixel layer (a new one above a non-pixel layer); empty:true when nothing lands on the canvas (no history step)."##,
         enabled: has_layer,
         run: fill_pixels,
         journal: true,

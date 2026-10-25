@@ -173,3 +173,38 @@ fn bad_leaves_are_refused() {
     assert!(s.execute("shape.presets.placeLeaf", json!({"preset": "Heart"})).is_err(), "a leaf is required");
     assert!(s.execute("shape.presets.placeLeaf", json!({"preset": "Nope", "leaf": leaf([0.0, 0.0], [9.0, 9.0])})).is_err());
 }
+
+#[test]
+fn a_zipper_fill_is_the_shape_laid_straight_and_cut_by_the_leaf() {
+    let mut s = session(8);
+    // Heart in the leaf's box without bending: the bottom point stays on the bottom edge of the
+    // box, which the leaf's pointed ends do not reach at x = 15.
+    let mut leaf = leaf([10.0, 50.0], [90.0, 50.0]);
+    leaf["clip"] = json!(true);
+    leaf["width"] = json!(0.5);
+    s.execute("shape.presets.fillPixels", json!({"preset": "Heart", "leaf": leaf.clone(), "color": "#000000"})).unwrap();
+    assert!(alpha(&s, 50, 50) > 0.99, "the middle of the heart is filled");
+    assert_eq!(alpha(&s, 12, 32), 0.0, "the corner of the box, where the leaf is pointed, is cut off");
+    assert_eq!(alpha(&s, 50, 5), 0.0, "nothing beyond the box");
+    // Bent, the same leaf gives a different picture.
+    let mut t = session(8);
+    leaf["clip"] = json!(false);
+    t.execute("shape.presets.fillPixels", json!({"preset": "Heart", "leaf": leaf, "color": "#000000"})).unwrap();
+    let area = |s: &Session| -> f32 { (0..100).flat_map(|x| (0..100).map(move |y| (x, y))).map(|(x, y)| alpha(s, x, y)).sum() };
+    assert!((area(&s) - area(&t)).abs() > 20.0, "zipper {} vs leaf {}", area(&s), area(&t));
+}
+
+#[test]
+fn a_zipper_vector_shape_is_one_layer_with_the_leaf_as_an_intersecting_subpath() {
+    let mut s = session(8);
+    let before = layers(&s);
+    let mut l = leaf([10.0, 50.0], [90.0, 50.0]);
+    l["clip"] = json!(true);
+    s.execute("shape.presets.placeLeaf", json!({"preset": "Heart", "leaf": l})).unwrap();
+    assert_eq!(layers(&s), before + 1);
+    let d = s.active().unwrap();
+    let photocraft_doc::LayerContent::Shape(sh) = &d.doc.layer(d.active_layer.unwrap()).unwrap().content else { panic!("not a shape layer") };
+    assert!(sh.path.subpaths.iter().any(|sp| sp.op == photocraft_doc::PathOp::Intersect));
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(layers(&s), before);
+}

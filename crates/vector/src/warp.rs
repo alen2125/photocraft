@@ -10,7 +10,7 @@
 //! leaf's sides. With edges like that the patch is the blend `(1 - v)·side₀(u) + v·side₁(u)`:
 //! every point of the shape lands inside the leaf, and the shape's ends are pinched into A and B.
 
-use photocraft_doc::{Knot, Path, Subpath};
+use photocraft_doc::{Knot, Path, PathOp, Subpath};
 use photocraft_geom::Point;
 
 use crate::thin::{flatten, subdivide};
@@ -98,6 +98,16 @@ impl Leaf {
         Some(LeafMap { minus: self.side(-1.0)?, plus: self.side(1.0)? })
     }
 
+    /// Where `p` is in the leaf's box: `u` along AB and `v` across it (0..1 each, 0.5 on AB), the
+    /// box being A to B long and as wide as the leaf is at its widest. `None` for an unusable leaf.
+    pub fn box_coords(&self, p: Point) -> Option<(f64, f64)> {
+        let (len, along, across) = self.frame()?;
+        let width = self.width.clamp(0.0, MAX_WIDTH) * len;
+        let (dx, dy) = (p.x - self.a.x, p.y - self.a.y);
+        let v = if width > 1e-12 { (dx * across.x + dy * across.y) / width + 0.5 } else { 0.5 };
+        Some(((dx * along.x + dy * along.y) / len, v))
+    }
+
     /// The leaf's outline, A → side → B → side → A: corners at A and B, smooth side points.
     pub fn outline(&self) -> Option<Path> {
         let (minus, plus) = (self.side(-1.0)?, self.side(1.0)?);
@@ -152,6 +162,28 @@ pub fn warp_path(path: &Path, leaf: &Leaf) -> Option<Path> {
         Some(Subpath { knots, ..sp.clone() })
     });
     Some(Path { subpaths, fill_rule: path.fill_rule, inverted: path.inverted })
+}
+
+/// The zipper: `path` laid into the leaf's box (A to B long, as wide as the leaf is at its widest)
+/// without bending it, and cut off by the leaf's outline: the shape is whole where the leaf is,
+/// and the box's corners are trimmed to the leaf's pointed ends. The cut is a path operation
+/// (the outline is a last subpath that intersects what came before), so it works for vector
+/// shapes and fills alike. `None` as for [`warp_path`].
+pub fn clip_to_leaf(path: &Path, leaf: &Leaf) -> Option<Path> {
+    let (len, along, across) = leaf.frame()?;
+    let outline = leaf.outline()?;
+    let (x0, y0, x1, y1) = path.control_bounds().filter(|b| [b.0, b.1, b.2, b.3].iter().all(|v| v.is_finite()))?;
+    let (w, h) = ((x1 - x0).max(1e-9), (y1 - y0).max(1e-9));
+    let width = leaf.width.clamp(0.0, MAX_WIDTH) * len;
+    let (m0, m1) = (len * along.x / w, len * along.y / w);
+    let (m2, m3) = (width * across.x / h, width * across.y / h);
+    let m4 = leaf.a.x - x0 * m0 - y0 * m2 - 0.5 * width * across.x;
+    let m5 = leaf.a.y - x0 * m1 - y0 * m3 - 0.5 * width * across.y;
+    let mut out = path.transform(&photocraft_geom::Affine { m: [m0, m1, m2, m3, m4, m5] });
+    for sp in outline.subpaths {
+        out.subpaths.push(Subpath { op: PathOp::Intersect, ..sp });
+    }
+    Some(out)
 }
 
 #[cfg(test)]

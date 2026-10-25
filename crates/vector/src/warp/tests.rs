@@ -149,3 +149,79 @@ fn from_drag_snaps_to_45_degrees_and_draws_from_the_centre() {
     let centred = Leaf::from_drag(s, e, false, true, 0.5, 1.0);
     assert!(near(centred.a, Point::new(-100.0, -10.0)) && near(centred.b, e));
 }
+
+fn coverage(path: &Path) -> (Vec<f32>, photocraft_geom::Rect) {
+    let r = crate::fill_rasterizer(path, crate::DEFAULT_TOLERANCE);
+    let area = photocraft_geom::Rect::new(0, 0, 400, 400);
+    (r.render(area), area)
+}
+
+fn rectangle(w: f64, h: f64) -> Path {
+    let mut sp = Subpath::polygon(&[(0.0, 0.0), (w, 0.0), (w, h), (0.0, h)]);
+    sp.closed = true;
+    Path { subpaths: vec![sp], ..Default::default() }
+}
+
+#[test]
+fn a_zipper_of_a_shape_that_fills_its_box_is_the_leaf_itself() {
+    let l = Leaf { a: Point::new(50.0, 200.0), b: Point::new(350.0, 200.0), width: 0.5, fullness: 1.0 };
+    let zipper = clip_to_leaf(&rectangle(10.0, 10.0), &l).unwrap();
+    let (cov, _) = coverage(&zipper);
+    let (leaf_cov, _) = coverage(&l.outline().unwrap());
+    let (a, b): (f32, f32) = (cov.iter().sum(), leaf_cov.iter().sum());
+    assert!(b > 10_000.0 && (a - b).abs() / b < 0.01, "zipper {a} vs leaf {b}");
+    // Never outside the leaf.
+    assert!(cov.iter().zip(&leaf_cov).all(|(z, l)| *z <= *l + 0.02));
+}
+
+#[test]
+fn a_zipper_does_not_bend_the_shape() {
+    // A straight vertical bar in the middle of a 10 x 10 box (an open diagonal line, which has no
+    // area, only fixes the box). It stays straight and keeps its width.
+    let l = Leaf { a: Point::new(50.0, 200.0), b: Point::new(350.0, 200.0), width: 0.5, fullness: 1.0 };
+    let mut bar = Subpath::polygon(&[(4.0, 0.0), (6.0, 0.0), (6.0, 10.0), (4.0, 10.0)]);
+    bar.closed = true;
+    let frame = Subpath::polyline(&[(0.0, 0.0), (10.0, 10.0)]);
+    let z = clip_to_leaf(&Path { subpaths: vec![bar, frame], ..Default::default() }, &l).unwrap();
+    let (cov, _) = coverage(&z);
+    let at = |x: usize, y: usize| cov[y * 400 + x];
+    // The box is 300 long, so the bar is 60 px wide (x 170..230) and as tall as the leaf there.
+    assert!(at(200, 200) > 0.99 && at(200, 150) > 0.99 && at(200, 250) > 0.99);
+    assert!(at(160, 200) < 0.01 && at(240, 200) < 0.01, "the bar's sides are straight");
+    assert!(at(172, 150) > 0.99 && at(228, 150) > 0.99 && at(168, 150) < 0.01, "and stay vertical away from the axis");
+}
+
+#[test]
+fn a_zipper_cuts_the_box_corners_where_the_leaf_is_pointed() {
+    let l = Leaf { a: Point::new(50.0, 200.0), b: Point::new(350.0, 200.0), width: 0.5, fullness: 1.0 };
+    let (cov, _) = coverage(&clip_to_leaf(&rectangle(10.0, 10.0), &l).unwrap());
+    let at = |x: usize, y: usize| cov[y * 400 + x];
+    assert!(at(200, 200) > 0.99, "the middle is filled");
+    assert!(at(55, 130) < 0.01 && at(345, 130) < 0.01 && at(55, 270) < 0.01 && at(345, 270) < 0.01, "the four corners of the box are cut away");
+    assert!(at(200, 130) > 0.99, "the box reaches its full width at the middle");
+}
+
+#[test]
+fn a_zipper_follows_a_slanted_axis_and_a_flat_leaf_without_nan() {
+    let slanted = Leaf { a: Point::new(60.0, 60.0), b: Point::new(340.0, 340.0), width: 0.4, fullness: 1.0 };
+    let (cov, _) = coverage(&clip_to_leaf(&rectangle(10.0, 4.0), &slanted).unwrap());
+    assert!(cov[200 * 400 + 200] > 0.99);
+    assert!(cov[60 * 400 + 340] < 0.01, "off the leaf's axis");
+    let flat = Leaf { width: 0.0, ..slanted };
+    let z = clip_to_leaf(&rectangle(10.0, 4.0), &flat).unwrap();
+    assert!(points(&z).iter().all(|p| p.x.is_finite() && p.y.is_finite()));
+    assert!(clip_to_leaf(&rectangle(10.0, 4.0), &Leaf { b: slanted.a, ..slanted }).is_none(), "A and B coincide");
+    assert!(clip_to_leaf(&Path::default(), &slanted).is_none(), "an empty path");
+}
+
+#[test]
+fn box_coords_are_the_inverse_of_the_box() {
+    let l = leaf(0.5);
+    let (u, v) = l.box_coords(l.a).unwrap();
+    assert!((u - 0.0).abs() < 1e-9 && (v - 0.5).abs() < 1e-9);
+    let (u, v) = l.box_coords(l.b).unwrap();
+    assert!((u - 1.0).abs() < 1e-9 && (v - 0.5).abs() < 1e-9);
+    let mid = l.at(0.5, 1.0).unwrap();
+    let (u, v) = l.box_coords(mid).unwrap();
+    assert!((u - 0.5).abs() < 1e-6 && (v - 1.0).abs() < 1e-6, "{u} {v}");
+}

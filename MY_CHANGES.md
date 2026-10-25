@@ -20,6 +20,8 @@
 
 | Файл | Место | Что изменено |
 |---|---|---|
+| `crates/engine/src/shell_commands.rs` | `SHELL_COMMANDS`, после `tool.resetAll` | 8 строк `ui.customShape.*` (режимы Shape/Pixels, Fit Box/Leaf/Zipper, Randomize): так они попадают в Правка → Сочетания клавиш. Ключей по умолчанию нет |
+| `crates/ui-egui/src/menus.rs` | `invoke_unguarded` и `is_enabled` | по 3 строки: вызов `custom_shape_ui::invoke` и `custom_shape_ui::handles` |
 | `crates/engine/src/lib.rs` | список `pub mod` | `pub mod custom_shape_cmds;`, `pub mod shape_csh;`, `pub mod shape_index;` (3 строки) |
 | `crates/engine/src/commands.rs` | `build()`, после `presets::specs()` | `v.extend(crate::custom_shape_cmds::specs());` (команды `.csh` регистрируются внутри этого `specs()`) |
 | `crates/engine/src/presets/mod.rs` | `struct PresetState` и его `Default` | поле `lazy_shapes` + его инициализация (2 места) |
@@ -49,6 +51,8 @@
 - **Pixels** (п. 3): опция `custom_shape_mode`; команда `shape.presets.fillPixels` (одна запись в истории; на не пиксельном слое создаёт новый слой в том же шаге).
 - **Ленивые библиотеки** (п. 4): `PresetState.lazy_shapes`; встроенные фигуры остаются как были. Панели используют `shape_index::index` (только имена) и разбирают путь, когда он нужен. `shape.presets.list` лениво загруженные библиотеки пока не показывает.
 - **`.csh`** (п. 5): панель Shapes, строка кнопок Load / Replace / Save Shapes. Файл читается не целиком: строится индекс имён (148 МБ за 6 мс), а каждая фигура читается с диска, когда нужна. В настройках хранится путь к файлу. **Replace Shapes** убирает и встроенные группы (`shape.presets.reset` их возвращает).
+- **Молния (Fit: Zipper)**: как листик, но фигура кладётся в прямоугольник вдоль AB (длина AB, ширина листа в самом широком месте) без деформации и обрезается контуром листика. В векторе это операция «пересечение» (контур листика идёт последним подконтуром). Команды те же: параметр `clip: true` в `leaf`.
+- **Хоткеи**: Правка → Сочетания клавиш → искать «Custom Shape». Команды `ui.customShape.mode.shape|pixels|toggle`, `.fit.box|leaf|zipper|cycle`, `.random.toggle`; по умолчанию без клавиш. При нажатии в строке состояния пишется новое значение.
 - **Листик** (п. 6): `Fit: Box | Leaf`, ширина и полнота. ⇧ ставит ось AB по 45°, ⌥ делает точку нажатия серединой AB. Работает и в Shape, и в Pixels.
 - **Randomize** (п. 7): «Randomize every N» (0 выкл., 1 каждый раз), источник Library / Group / Set. Счётчик живёт в `ToolOptions.shape_random` и не сохраняется. `shape_random_seed` фиксирует последовательность (для тестов).
 

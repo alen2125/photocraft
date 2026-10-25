@@ -11,6 +11,15 @@ pub const SHELL_COMMANDS: &[(&str, &str, &[&str], Option<&str>)] = &[
     // Right-click the options bar's tool icon (#2825); `tool.resetAll` asks first.
     ("tool.reset", "Reset Tool", &[], None),
     ("tool.resetAll", "Reset All Tools", &[], None),
+    // Custom Shape tool options, for the keys the user gives them (`custom_shape_ui::invoke`).
+    ("ui.customShape.mode.shape", "Custom Shape: Shape Layers", &[], None),
+    ("ui.customShape.mode.pixels", "Custom Shape: Pixels", &[], None),
+    ("ui.customShape.mode.toggle", "Custom Shape: Toggle Shape / Pixels", &[], None),
+    ("ui.customShape.fit.box", "Custom Shape: Fit Box", &[], None),
+    ("ui.customShape.fit.leaf", "Custom Shape: Fit Leaf", &[], None),
+    ("ui.customShape.fit.zipper", "Custom Shape: Fit Zipper", &[], None),
+    ("ui.customShape.fit.cycle", "Custom Shape: Cycle Fit (Box / Leaf / Zipper)", &[], None),
+    ("ui.customShape.random.toggle", "Custom Shape: Toggle Randomize", &[], None),
     ("window.panel.group", "Change Panel Group", &[], None),
     ("window.panel.layout", "Change Panel Layout", &[], None),
     ("window.panel.move", "Move Panel", &[], None),

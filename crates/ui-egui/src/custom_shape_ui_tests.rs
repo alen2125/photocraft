@@ -459,3 +459,119 @@ fn the_shape_picked_at_random_is_read_in_the_background() {
     }
     assert_eq!(app.session.presets.lazy_shapes.parse_count(), 1, "read once, ahead of the drag");
 }
+
+fn press_command(app: &mut PhotocraftApp, id: &str) {
+    let ctx = egui::Context::default();
+    crate::shortcut_dispatch::dispatch(app, &ctx, id);
+}
+
+#[test]
+fn the_options_can_be_changed_from_keys_and_each_says_what_it_is_now() {
+    let mut app = app();
+    assert_eq!((app.ui.tool_options.custom_shape_mode.as_str(), app.ui.tool_options.custom_shape_fit.as_str()), ("shape", "box"));
+    press_command(&mut app, "ui.customShape.mode.toggle");
+    assert_eq!(app.ui.tool_options.custom_shape_mode, "pixels");
+    assert!(app.ui.status.contains("Pixels") && !app.ui.status_error, "{}", app.ui.status);
+    press_command(&mut app, "ui.customShape.mode.toggle");
+    assert_eq!(app.ui.tool_options.custom_shape_mode, "shape");
+    press_command(&mut app, "ui.customShape.mode.pixels");
+    press_command(&mut app, "ui.customShape.mode.pixels");
+    assert_eq!(app.ui.tool_options.custom_shape_mode, "pixels", "setting twice is the same as once");
+    press_command(&mut app, "ui.customShape.mode.shape");
+    assert_eq!(app.ui.tool_options.custom_shape_mode, "shape");
+    let mut seen = Vec::new();
+    for _ in 0..4 {
+        press_command(&mut app, "ui.customShape.fit.cycle");
+        seen.push(app.ui.tool_options.custom_shape_fit.clone());
+    }
+    assert_eq!(seen, ["leaf", "zipper", "box", "leaf"]);
+    for fit in ["box", "leaf", "zipper"] {
+        press_command(&mut app, &format!("ui.customShape.fit.{fit}"));
+        assert_eq!(app.ui.tool_options.custom_shape_fit, fit);
+    }
+}
+
+#[test]
+fn randomize_toggles_off_and_back_on_to_the_same_n() {
+    let mut app = app();
+    press_command(&mut app, "ui.customShape.random.toggle");
+    assert_eq!(app.ui.tool_options.shape_random_every, 1, "on from off starts at every shape");
+    app.ui.tool_options.shape_random_every = 4;
+    press_command(&mut app, "ui.customShape.random.toggle");
+    assert_eq!(app.ui.tool_options.shape_random_every, 0);
+    assert!(app.ui.status.contains("off"), "{}", app.ui.status);
+    press_command(&mut app, "ui.customShape.random.toggle");
+    assert_eq!(app.ui.tool_options.shape_random_every, 4, "back to the N it had");
+    assert!(app.ui.status.contains('4'), "{}", app.ui.status);
+}
+
+#[test]
+fn the_commands_are_listed_for_the_keyboard_shortcuts_editor_and_work_with_any_tool() {
+    let mut app = app();
+    app.ui.tool = Tool::Brush;
+    let listed: Vec<String> = crate::prefs_ui::shortcut_items(&app).into_iter().map(|i| i.0).collect();
+    for id in COMMANDS {
+        assert!(listed.iter().any(|l| l == id), "{id} is not in the editor's list");
+        assert!(crate::menus::is_enabled(&app, id), "{id} is disabled");
+    }
+    press_command(&mut app, "ui.customShape.mode.toggle");
+    assert_eq!(app.ui.tool_options.custom_shape_mode, "pixels", "no matter which tool is active");
+    assert!(!app.ui.status_error);
+}
+
+/// A library of one shape, "Box": a square that fills its box.
+fn use_a_box(app: &mut PhotocraftApp) {
+    let k = |x: f64, y: f64| photocraft_psd::path::PsdKnot { linked: false, pre: (x, y), anchor: (x, y), post: (x, y) };
+    let sp = photocraft_psd::path::PsdSubpath { closed: true, operation: 1, knots: vec![k(0.0, 0.0), k(1.0, 0.0), k(1.0, 1.0), k(0.0, 1.0)] };
+    let bytes = photocraft_psd::csh::write(&[("Box".to_string(), photocraft_psd::csh::CshShape { bounds: [0, 0, 100, 100], subpaths: vec![sp] })]).unwrap();
+    app.run("shape.presets.cshLoad", json!({"data": photocraft_engine::paint::tile::b64_encode(&bytes), "mode": "replace"})).unwrap();
+    app.ui.presets_ui.custom_shape = "Box".into();
+}
+
+#[test]
+fn zipper_mode_lays_the_shape_straight_in_the_leaf_and_cuts_it_off() {
+    let mut app = app();
+    app.run("layer.new.layer", json!({})).unwrap();
+    app.ui.tool_options.custom_shape_fit = "zipper".into();
+    app.ui.tool_options.custom_shape_mode = "pixels".into();
+    // A square is the box itself: the zipper of it is the leaf, with the box's corners cut.
+    use_a_box(&mut app);
+    press(&mut app, [50.0, 200.0], [350.0, 200.0]);
+    assert!(alpha_at(&app, 200, 200) > 0.99, "the middle is filled");
+    assert!(alpha_at(&app, 200, 130) > 0.99, "the box reaches its width in the middle");
+    assert_eq!(alpha_at(&app, 55, 130), 0.0, "the corners of the box are cut by the leaf's pointed ends");
+    assert_eq!(alpha_at(&app, 345, 270), 0.0);
+    // The same drag in Leaf mode gives the same outline for a rectangle (a bent square is the leaf).
+    let zipper_area: f32 = (0..400).flat_map(|x| (0..300).map(move |y| (x, y))).map(|(x, y)| alpha_at(&app, x, y)).sum();
+    app.run("layer.new.layer", json!({})).unwrap();
+    app.ui.tool_options.custom_shape_fit = "leaf".into();
+    press(&mut app, [50.0, 200.0], [350.0, 200.0]);
+    let leaf_area: f32 = (0..400).flat_map(|x| (0..300).map(move |y| (x, y))).map(|(x, y)| alpha_at(&app, x, y)).sum();
+    assert!((zipper_area - leaf_area).abs() / leaf_area < 0.03, "{zipper_area} vs {leaf_area}");
+}
+
+#[test]
+fn zipper_mode_in_shape_mode_makes_one_vector_layer_cut_by_the_leaf() {
+    let mut app = app();
+    app.ui.tool_options.custom_shape_fit = "zipper".into();
+    use_a_box(&mut app);
+    let before = layers(&app);
+    press(&mut app, [50.0, 200.0], [350.0, 200.0]);
+    assert_eq!(layers(&app), before + 1);
+    assert!(!app.ui.status_error, "{}", app.ui.status);
+    let st = app.session.active().unwrap();
+    let LayerContent::Shape(sh) = &st.doc.layer(st.active_layer.unwrap()).unwrap().content else { panic!("not a shape layer") };
+    assert!(sh.path.subpaths.iter().any(|s| s.op == photocraft_doc::PathOp::Intersect), "the leaf intersects the shape");
+}
+
+#[test]
+fn zipper_preview_has_the_leaf_outline_and_old_prefs_still_load() {
+    let mut app = app();
+    app.ui.tool_options.custom_shape_fit = "zipper".into();
+    let mods = egui::Modifiers::NONE;
+    let outline = leaf_outline(&app, Tool::CustomShape, [50.0, 100.0], [250.0, 100.0], mods).unwrap();
+    assert!(outline.control_bounds().is_some());
+    let preview = leaf_path(&app, Tool::CustomShape, [50.0, 100.0], [250.0, 100.0], mods).unwrap();
+    assert!(preview.subpaths.iter().any(|s| s.op == photocraft_doc::PathOp::Intersect));
+    assert!(leaf_path(&app, Tool::CustomShape, [50.0, 100.0], [50.0, 100.0], mods).is_none());
+}

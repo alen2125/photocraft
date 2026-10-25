@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use photocraft_doc::Path;
 use photocraft_geom::Point;
-use photocraft_vector::warp::{Leaf, warp_path};
+use photocraft_vector::warp::{Leaf, clip_to_leaf, warp_path};
 
 use crate::PhotocraftApp;
 
@@ -47,9 +47,16 @@ fn place_box(app: &mut PhotocraftApp, rect: [f64; 4], keep: bool) -> bool {
 
 const PIXELS: &str = "pixels";
 const LEAF: &str = "leaf";
+const ZIPPER: &str = "zipper";
 
+/// Leaf or zipper: the drag is two points, A and B, and the shape goes in the leaf they make.
 fn is_leaf(app: &PhotocraftApp) -> bool {
-    app.ui.tool_options.custom_shape_fit == LEAF
+    matches!(app.ui.tool_options.custom_shape_fit.as_str(), LEAF | ZIPPER)
+}
+
+/// The zipper: the shape is laid in the leaf undeformed and cut off by the leaf's outline.
+fn is_zipper(app: &PhotocraftApp) -> bool {
+    app.ui.tool_options.custom_shape_fit == ZIPPER
 }
 
 /// The leaf a drag from `start` to `end` makes with the options bar's width and fullness: ⇧ turns
@@ -70,7 +77,7 @@ pub fn leaf_path(app: &PhotocraftApp, tool: crate::state::Tool, start: [f64; 2],
     }
     let leaf = leaf_of_drag(app, start, end, mods)?;
     let (shape, _) = proxy_path(app)?;
-    warp_path(&shape, &leaf)
+    if is_zipper(app) { clip_to_leaf(&shape, &leaf) } else { warp_path(&shape, &leaf) }
 }
 
 /// The thinned shape kept for the drag preview: its key (name, library revision), the path and
@@ -159,9 +166,12 @@ pub fn draw_dense_preview(
             for i in 0..=MESH {
                 let (u, v) = (i as f64 / MESH as f64, j as f64 / MESH as f64);
                 let Some(p) = leaf.at(u, v) else { return true };
+                // Leaf: the picture follows the mesh. Zipper: it lies straight in the leaf's box and
+                // the mesh, which covers only the leaf, shows the part inside.
+                let uv = if is_zipper(app) { leaf.box_coords(p).map_or((u, v), |(bu, bv)| (bu.clamp(0.0, 1.0), bv.clamp(0.0, 1.0))) } else { (u, v) };
                 mesh.vertices.push(egui::epaint::Vertex {
                     pos: xf.to_screen(p.x as f32, p.y as f32),
-                    uv: egui::pos2(u as f32, v as f32),
+                    uv: egui::pos2(uv.0 as f32, uv.1 as f32),
                     color: egui::Color32::WHITE,
                 });
             }
@@ -213,7 +223,7 @@ fn finish_leaf(app: &mut PhotocraftApp, start: [f64; 2], end: [f64; 2], mods: eg
     }
     let mut p = serde_json::json!({
         "preset": app.ui.presets_ui.shape(),
-        "leaf": {"a": [leaf.a.x, leaf.a.y], "b": [leaf.b.x, leaf.b.y], "width": leaf.width, "fullness": leaf.fullness},
+        "leaf": {"a": [leaf.a.x, leaf.a.y], "b": [leaf.b.x, leaf.b.y], "width": leaf.width, "fullness": leaf.fullness, "clip": is_zipper(app)},
     });
     let command = if app.ui.tool_options.custom_shape_mode == PIXELS {
         "shape.presets.fillPixels"
@@ -247,9 +257,9 @@ pub fn options(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     crate::widgets::vline(ui, 22.0);
     label(ui, tl!("Fit:"));
     let o = &mut app.ui.tool_options;
-    let fits = [("box".to_string(), tl!("Box")), (LEAF.to_string(), tl!("Leaf"))];
+    let fits = [("box".to_string(), tl!("Box")), (LEAF.to_string(), tl!("Leaf")), (ZIPPER.to_string(), tl!("Zipper"))];
     crate::widgets::dropdown(ui, "custom-shape-fit", &mut o.custom_shape_fit, &fits, 70.0);
-    if o.custom_shape_fit == LEAF {
+    if matches!(o.custom_shape_fit.as_str(), LEAF | ZIPPER) {
         label(ui, tl!("Width:"));
         crate::widgets::value_field(ui, &mut o.leaf_width, 0.0..=4.0, "", 52.0);
         label(ui, tl!("Fullness:"));
@@ -286,12 +296,93 @@ const SOURCE_SET: &str = "set";
 /// Most shapes in the random set.
 const MAX_SET: usize = 10_000;
 
+/// The Custom Shape options the user can give keys to (listed in `SHELL_COMMANDS`, so Edit ›
+/// Keyboard Shortcuts shows them; none has a key by default).
+const COMMANDS: &[&str] = &[
+    "ui.customShape.mode.shape",
+    "ui.customShape.mode.pixels",
+    "ui.customShape.mode.toggle",
+    "ui.customShape.fit.box",
+    "ui.customShape.fit.leaf",
+    "ui.customShape.fit.zipper",
+    "ui.customShape.fit.cycle",
+    "ui.customShape.random.toggle",
+];
+
+/// Is `id` one of the Custom Shape option commands? They work whatever tool is active.
+pub fn handles(id: &str) -> bool {
+    COMMANDS.contains(&id)
+}
+
+/// Change a Custom Shape option from a key, and say what it is now in the status bar (the options
+/// bar shows it only while the tool is selected). `None` for any other command.
+pub fn invoke(app: &mut PhotocraftApp, id: &str) -> Option<Result<serde_json::Value, String>> {
+    if !handles(id) {
+        return None;
+    }
+    let o = &mut app.ui.tool_options;
+    let said = match id {
+        "ui.customShape.mode.shape" => {
+            o.custom_shape_mode = "shape".into();
+            tl!("Custom Shape: Shape layers").to_string()
+        }
+        "ui.customShape.mode.pixels" => {
+            o.custom_shape_mode = PIXELS.into();
+            tl!("Custom Shape: Pixels").to_string()
+        }
+        "ui.customShape.mode.toggle" => {
+            let pixels = o.custom_shape_mode != PIXELS;
+            o.custom_shape_mode = if pixels { PIXELS } else { "shape" }.into();
+            if pixels { tl!("Custom Shape: Pixels") } else { tl!("Custom Shape: Shape layers") }.to_string()
+        }
+        "ui.customShape.fit.box" => {
+            o.custom_shape_fit = "box".into();
+            tl!("Custom Shape: Box").to_string()
+        }
+        "ui.customShape.fit.leaf" => {
+            o.custom_shape_fit = LEAF.into();
+            tl!("Custom Shape: Leaf").to_string()
+        }
+        "ui.customShape.fit.zipper" => {
+            o.custom_shape_fit = ZIPPER.into();
+            tl!("Custom Shape: Zipper").to_string()
+        }
+        "ui.customShape.fit.cycle" => {
+            let (next, said) = match o.custom_shape_fit.as_str() {
+                "box" => (LEAF, tl!("Custom Shape: Leaf")),
+                LEAF => (ZIPPER, tl!("Custom Shape: Zipper")),
+                _ => ("box", tl!("Custom Shape: Box")),
+            };
+            o.custom_shape_fit = next.into();
+            said.to_string()
+        }
+        _ => {
+            // Randomize off remembers its N, so on brings the same one back.
+            if o.shape_random_every > 0 {
+                o.shape_random.last_every = o.shape_random_every;
+                o.shape_random_every = 0;
+                o.shape_random.placed = 0;
+                tl!("Custom Shape: Randomize off").to_string()
+            } else {
+                o.shape_random_every = o.shape_random.last_every.max(1);
+                let template = "Custom Shape: Randomize every {n}";
+                crate::i18n::fmt(tl!(template), &[("n", &o.shape_random_every.to_string())])
+            }
+        }
+    };
+    app.ui.status = said;
+    app.ui.status_error = false;
+    Some(Ok(serde_json::Value::Null))
+}
+
 /// Where Randomize is: shapes placed since the last change and the generator. Not saved, and equal
 /// to any other so that counting a shape does not look like a change to the options.
 #[derive(Clone, Debug, Default)]
 pub struct RandomizeState {
     placed: u32,
     rng: Option<u64>,
+    /// The N Randomize had when a key turned it off.
+    last_every: u32,
 }
 
 impl PartialEq for RandomizeState {
