@@ -94,3 +94,16 @@ fn hostile_numbers_do_not_panic_or_blow_up() {
     let _ = flatten(&p, f64::NAN);
     assert!(flatten(&Path::default(), 0.1).subpaths.is_empty());
 }
+
+#[test]
+fn simplify_to_caps_the_points_by_merging_further() {
+    let p = ring(40_000, 400.0);
+    let plain = simplify(&p, 0.05, 0.05);
+    let capped = simplify_to(&p, 0.05, 0.05, 3_000);
+    let (a, b) = (plain.subpaths[0].knots.len(), capped.subpaths[0].knots.len());
+    assert!(b < a && b <= 3_000, "{a} -> {b}");
+    assert!(area(&capped) > 0.98 * std::f64::consts::PI * 400.0 * 400.0, "the shape is kept");
+    // A path that is already small is not touched.
+    let small = ring(100, 5.0);
+    assert_eq!(simplify_to(&small, 0.05, 0.05, 1_000), small);
+}

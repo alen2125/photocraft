@@ -89,9 +89,13 @@ impl Leaf {
     /// The point of the leaf at `u` along AB and `v` across it (both 0..1; `v` 0 is one side, 1
     /// the other). `u` 0 is A and `u` 1 is B whatever `v` is.
     pub fn at(&self, u: f64, v: f64) -> Option<Point> {
-        let pick = |side: [Cubic; 2], u: f64| if u <= 0.5 { cubic(&side[0], u * 2.0) } else { cubic(&side[1], u * 2.0 - 1.0) };
-        let (s0, s1) = (pick(self.side(-1.0)?, u), pick(self.side(1.0)?, u));
-        Some(lerp(s0, s1, v))
+        Some(self.map()?.at(u, v))
+    }
+
+    /// The map of the leaf's box onto the leaf, with the sides worked out once: use it to map many
+    /// points.
+    pub fn map(&self) -> Option<LeafMap> {
+        Some(LeafMap { minus: self.side(-1.0)?, plus: self.side(1.0)? })
     }
 
     /// The leaf's outline, A → side → B → side → A: corners at A and B, smooth side points.
@@ -108,21 +112,45 @@ impl Leaf {
     }
 }
 
+/// A leaf's sides, ready to map points of the box (0..1 each way) onto the leaf.
+#[derive(Clone, Copy, Debug)]
+pub struct LeafMap {
+    minus: [Cubic; 2],
+    plus: [Cubic; 2],
+}
+
+impl LeafMap {
+    /// The point of the leaf at `u` along AB and `v` across it (both 0..1).
+    pub fn at(&self, u: f64, v: f64) -> Point {
+        let pick = |side: &[Cubic; 2]| if u <= 0.5 { cubic(&side[0], u * 2.0) } else { cubic(&side[1], u * 2.0 - 1.0) };
+        lerp(pick(&self.minus), pick(&self.plus), v)
+    }
+}
+
 /// Bend `path` onto `leaf`: its control box becomes the leaf's (u, v) square. `None` for an empty
 /// path, a box with no extent in either direction counted as one point, or an unusable leaf (A
 /// and B coincide, a number not finite).
 pub fn warp_path(path: &Path, leaf: &Leaf) -> Option<Path> {
-    leaf.frame()?;
+    let map = leaf.map()?;
     let (x0, y0, x1, y1) = path.control_bounds().filter(|b| [b.0, b.1, b.2, b.3].iter().all(|v| v.is_finite()))?;
     let (w, h) = ((x1 - x0).max(1e-9), (y1 - y0).max(1e-9));
-    let f = |p: Point| leaf.at(((p.x - x0) / w).clamp(0.0, 1.0), ((p.y - y0) / h).clamp(0.0, 1.0)).unwrap_or(p);
+    let f = |p: Point| map.at(((p.x - x0) / w).clamp(0.0, 1.0), ((p.y - y0) / h).clamp(0.0, 1.0));
     // Points are mapped, not control points: near A and B the map pinches space, and a handle
     // carried across a pinch throws a curve far out of the leaf. Curves are flattened first and
     // long pieces cut so the straight ones bend too.
     let diag = w.hypot(h);
     let flat = subdivide(&flatten(path, diag * FLATTEN), diag * PIECE);
-    let subpaths =
-        flat.subpaths.into_iter().map(|sp| Subpath { knots: sp.knots.iter().map(|k| Knot::corner(f(k.anchor).x, f(k.anchor).y)).collect(), ..sp }).collect();
+    let subpaths = crate::thin::each_subpath(&flat.subpaths, |sp| {
+        let knots = sp
+            .knots
+            .iter()
+            .map(|k| {
+                let q = f(k.anchor);
+                Knot::corner(q.x, q.y)
+            })
+            .collect();
+        Some(Subpath { knots, ..sp.clone() })
+    });
     Some(Path { subpaths, fill_rule: path.fill_rule, inverted: path.inverted })
 }
 

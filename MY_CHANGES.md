@@ -11,7 +11,8 @@
 | `crates/engine/src/shape_index.rs` (+ `shape_index/tests.rs`) | лёгкий индекс фигур, LRU-кэш путей, `find_shape` |
 | `crates/engine/src/shape_csh.rs` (+ `shape_csh/tests.rs`) | источник `.csh`, команды `shape.presets.cshLoad` / `cshSave`, сохранение библиотек в настройках |
 | `crates/psd/src/csh.rs` (+ `csh/tests.rs`) | чтение (индекс + разбор одной фигуры) и запись `.csh` |
-| `crates/vector/src/warp.rs` (+ `warp/tests.rs`) | `Leaf`, `warp_path`, контур листика |
+| `crates/vector/src/warp.rs` (+ `warp/tests.rs`) | `Leaf`, `LeafMap`, `warp_path`, контур листика |
+| `crates/vector/src/thin.rs` (+ `thin/tests.rs`) | `flatten`, `subdivide`, `thin`, `simplify`, `simplify_to`: упрощение плотных контуров (заливка, превью, листик) |
 
 ## Точки касания в чужих файлах
 
@@ -26,12 +27,14 @@
 | `crates/engine/src/presets/shapes.rs` | `fn lookup` | тело заменено на один вызов `shape_index::find_shape` (раньше клонировал все группы ради одной фигуры) |
 | `crates/engine/src/vector_cmds.rs` | `fn paint_coverage` | `pub(crate)` вместо приватной (одно слово) |
 | `crates/psd/src/lib.rs` | список `pub mod` | `pub mod csh;` |
-| `crates/vector/src/lib.rs` | список `pub mod` | `pub mod warp;` |
+| `crates/vector/src/lib.rs` | список `pub mod` | `pub mod thin;`, `pub mod warp;` |
 | `crates/ui-egui/src/lib.rs` | список `pub mod` | `pub mod custom_shape_ui;` |
 | `crates/ui-egui/src/state.rs` | `struct ToolOptions` и `impl Default` | 11 полей: `custom_shape_default_size`, `custom_shape_mode`, `custom_shape_fit`, `leaf_width`, `leaf_fullness`, `shape_random_every`, `shape_random_source`, `shape_random_set`, `shape_random_seed`, `shape_random` (не сохраняется), и такие же 10 строк в `Default`. Старые настройки грузятся (на структуре уже стоит `#[serde(default)]`) |
 | `crates/ui-egui/src/vector_ui.rs` | `finish_shape` | в начале: `if tool == Tool::CustomShape { return custom_shape_ui::finish(...) }`. Старая ветка Custom Shape ниже осталась как есть и больше не выполняется |
 | `crates/ui-egui/src/vector_ui.rs` | `fill_param`, `stroke_param` | `pub(crate)` вместо приватных |
-| `crates/ui-egui/src/vector_ui.rs` | `shape_preview` | превью «листика» (3 строки до `let path`) и `find_shape` вместо `all_groups` |
+| `crates/ui-egui/src/vector_ui.rs` | `shape_preview` | превью «листика» (3 строки до `let path`), `shape_path` вместо `all_groups`, упрощение плотного пути; функция стала `pub(crate)` |
+| `crates/ui-egui/src/vector_ui.rs` | `draw_shape_preview` | в начале вызов `custom_shape_ui::draw_dense_preview` (картинка вместо контура для плотных фигур); контур листика вместо контура изогнутой фигуры |
+| `crates/ui-egui/src/canvas.rs` | `alt_samples` | в список инструментов добавлен `Tool::CustomShape`: Alt перед нажатием даёт пипетку |
 | `crates/ui-egui/src/vector_ui.rs` | `options_bar`, dropdown режима | для Custom Shape вызывается `custom_shape_ui::mode_dropdown`, для остальных инструментов прежний код |
 | `crates/ui-egui/src/vector_ui.rs` | `options_bar`, ветка `Tool::CustomShape` | строка `custom_shape_ui::options(app, ui);` после `shape_picker` |
 | `crates/ui-egui/src/preset_panels.rs` | `shapes_panel` | список строится из `shape_index::index`, миниатюры только для видимых ячеек, строка `custom_shape_ui::library_row(app, ui);` |

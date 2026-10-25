@@ -16,6 +16,8 @@ use crate::{EngineError, Result, Session};
 
 const FILL_PIXELS: &str = "shape.presets.fillPixels";
 const PLACE_LEAF: &str = "shape.presets.placeLeaf";
+/// The most points a fill is drawn from: past it nearby points are merged, which the eye cannot see.
+const MAX_FILL_POINTS: usize = 120_000;
 
 fn num(p: &Value, k: &str) -> Option<f64> {
     p.get(k).and_then(Value::as_f64)
@@ -32,7 +34,7 @@ fn fill_pixels(s: &mut Session, p: &Value) -> Result<Value> {
     let bounds = d.doc.bounds();
     let (w, h) = (f64::from(d.doc.size.width), f64::from(d.doc.size.height));
     // A traced drawing has far more curves than pixels: draw it from points a quarter of a pixel apart.
-    let path = photocraft_vector::thin::simplify(&target_path(p, &shape, (w, h), FILL_PIXELS)?, 0.1, 0.25);
+    let path = photocraft_vector::thin::simplify_to(&target_path(p, &shape, (w, h), FILL_PIXELS)?, 0.1, 0.25, MAX_FILL_POINTS);
 
     let fg = s.tools.foreground;
     let c = p.get("color").and_then(crate::vector_cmds::color).unwrap_or(photocraft_color::Color::rgba(fg[0], fg[1], fg[2], fg[3]));

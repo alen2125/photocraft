@@ -346,3 +346,92 @@ fn preview_profile() {
         assert!(!cov.is_empty());
     }
 }
+
+/// Does a leaf of a few pixels keep a traced drawing inside it?
+#[test]
+#[ignore = "needs a real Photoshop .csh file in CSH_SAMPLE"]
+fn tiny_leaf_stays_inside() {
+    use photocraft_geom::Point;
+    let Some(path) = std::env::var_os("CSH_SAMPLE") else { return };
+    let mut s = session();
+    let r = s.execute("shape.presets.cshLoad", json!({"path": path.to_string_lossy()})).unwrap();
+    let name = r["first"].as_str().unwrap().to_string();
+    let shape = crate::shape_index::shape_path(&s, &name, None).unwrap();
+    for (a, b) in [([100.0, 100.0], [103.0, 101.0]), ([100.0, 100.0], [102.0, 100.0]), ([100.0, 100.0], [100.0, 140.0]), ([100.0, 100.0], [101.0, 101.0])] {
+        let leaf = photocraft_vector::warp::Leaf { a: Point::new(a[0], a[1]), b: Point::new(b[0], b[1]), width: 0.5, fullness: 1.0 };
+        let outline = leaf.outline().unwrap().control_bounds().unwrap();
+        let w = photocraft_vector::warp::warp_path(&shape, &leaf).unwrap();
+        let (x0, y0, x1, y1) = w.control_bounds().unwrap();
+        let longest = w
+            .subpaths
+            .iter()
+            .flat_map(|sp| sp.knots.windows(2).map(|k| (k[0].anchor.x - k[1].anchor.x).hypot(k[0].anchor.y - k[1].anchor.y)))
+            .fold(0.0, f64::max);
+        println!(
+            "{a:?}->{b:?}: leaf box {outline:?}\n   warped box {:?}, longest piece {longest:.2}, knots {}",
+            (x0, y0, x1, y1),
+            w.subpaths.iter().map(|s| s.knots.len()).sum::<usize>()
+        );
+        let simple = photocraft_vector::thin::simplify(&w, 0.1, 0.25);
+        let r = photocraft_vector::fill_rasterizer(&simple, photocraft_vector::DEFAULT_TOLERANCE);
+        println!("   fill bounds {:?}", r.pixel_bounds());
+    }
+}
+
+/// Dump the committed fill of small leaves as raw alpha to look at it (see the scratchpad script).
+#[test]
+#[ignore = "needs a real Photoshop .csh file in CSH_SAMPLE and CSH_DUMP_DIR"]
+fn dump_leaf_fills() {
+    let (Some(path), Some(dir)) = (std::env::var_os("CSH_SAMPLE"), std::env::var_os("CSH_DUMP_DIR")) else { return };
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 400, "height": 300, "background": "white"})).unwrap();
+    let r = s.execute("shape.presets.cshLoad", json!({"path": path.to_string_lossy(), "mode": "replace"})).unwrap();
+    let name = r["first"].as_str().unwrap().to_string();
+    for (i, (a, b)) in [([100.0, 100.0], [103.0, 101.0]), ([100.0, 100.0], [112.0, 104.0]), ([100.0, 100.0], [130.0, 140.0]), ([100.0, 100.0], [300.0, 230.0])]
+        .into_iter()
+        .enumerate()
+    {
+        s.execute("layer.new.layer", json!({})).unwrap();
+        s.execute("shape.presets.fillPixels", json!({"preset": name, "leaf": {"a": a, "b": b, "width": 0.5}, "color": "#000000"})).unwrap();
+        let d = s.active().unwrap();
+        let surf = d.doc.layer(d.active_layer.unwrap()).unwrap().surface().unwrap();
+        let mut bytes = Vec::new();
+        for y in 0..300 {
+            for x in 0..400 {
+                bytes.push((surf.rgba(x, y)[3].clamp(0.0, 1.0) * 255.0) as u8);
+            }
+        }
+        std::fs::write(std::path::Path::new(&dir).join(format!("leaf{i}.raw")), bytes).unwrap();
+    }
+}
+
+/// The leaf fill piece by piece.
+#[test]
+#[ignore = "needs a real Photoshop .csh file in CSH_SAMPLE"]
+fn leaf_fill_pieces() {
+    use photocraft_geom::Point;
+    let Some(path) = std::env::var_os("CSH_SAMPLE") else { return };
+    let mut s = session();
+    let r = s.execute("shape.presets.cshLoad", json!({"path": path.to_string_lossy()})).unwrap();
+    let name = r["first"].as_str().unwrap().to_string();
+    let shape = crate::shape_index::shape_path(&s, &name, None).unwrap();
+    let leaf = photocraft_vector::warp::Leaf { a: Point::new(200.0, 300.0), b: Point::new(1100.0, 1300.0), width: 0.5, fullness: 1.0 };
+    let lap = |label: &str, t: std::time::Instant| println!("{label:>20}: {:?}", t.elapsed());
+    for _ in 0..2 {
+        let t = std::time::Instant::now();
+        let w = photocraft_vector::warp::warp_path(&shape, &leaf).unwrap();
+        lap("warp_path", t);
+        let t = std::time::Instant::now();
+        let simple = photocraft_vector::thin::simplify(&w, 0.1, 0.25);
+        let n: usize = simple.subpaths.iter().map(|s| s.knots.len()).sum();
+        lap(&format!("simplify ->{n}"), t);
+        let t = std::time::Instant::now();
+        let r = photocraft_vector::fill_rasterizer(&simple, photocraft_vector::DEFAULT_TOLERANCE);
+        lap("fill_rasterizer", t);
+        let area = r.pixel_bounds().unwrap();
+        let t = std::time::Instant::now();
+        let cov = r.render(area);
+        lap(&format!("render {}x{}", area.width(), area.height()), t);
+        assert!(!cov.is_empty());
+    }
+}

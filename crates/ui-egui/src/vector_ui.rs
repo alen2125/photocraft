@@ -168,7 +168,7 @@ pub fn create_shape(app: &mut PhotocraftApp, mut geometry: Value) -> Result<Valu
 }
 
 /// The preview and command both use the full float tool colours, including transparent paint.
-fn shape_preview(app: &PhotocraftApp, tool: Tool, start: [f64; 2], end: [f64; 2], mods: egui::Modifiers) -> Option<photocraft_doc::ShapeLayer> {
+pub(crate) fn shape_preview(app: &PhotocraftApp, tool: Tool, start: [f64; 2], end: [f64; 2], mods: egui::Modifiers) -> Option<photocraft_doc::ShapeLayer> {
     let o = &app.ui.tool_options;
     let leaf = crate::custom_shape_ui::leaf_path(app, tool, start, end, mods);
     let geometry = if leaf.is_some() { Value::Null } else { shape_geometry(o, tool, start, end, mods)? };
@@ -198,7 +198,7 @@ fn shape_preview(app: &PhotocraftApp, tool: Tool, start: [f64; 2], end: [f64; 2]
 
 /// Shape-tool drag preview using the same path and vector stroke geometry as the commit.
 pub fn draw_shape_preview(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform, tool: Tool, start: [f64; 2], end: [f64; 2], mods: egui::Modifiers) {
-    if crate::custom_shape_ui::draw_dense_box_preview(app, painter, xf, tool, start, end, mods) {
+    if crate::custom_shape_ui::draw_dense_preview(app, painter, xf, tool, start, end, mods) {
         return;
     }
     let Some(mut shape) = shape_preview(app, tool, start, end, mods) else { return };
@@ -214,12 +214,15 @@ pub fn draw_shape_preview(app: &PhotocraftApp, painter: &egui::Painter, xf: &Vie
     // This lightweight screen overlay retains the existing display-colour behaviour; document
     // rendering still goes through its format/profile path when the shape is committed.
     crate::shape_stroke_ui::paint_shape_preview(painter, &shape);
-    // The outline of a dense shape is a smear of points; its filled picture says more.
-    if path.subpaths.iter().map(|s| s.knots.len()).sum::<usize>() > photocraft_vector::thin::DENSE / 3 {
+    let accent = Tokens::get(painter.ctx()).accent;
+    // A leaf is outlined by its own shape, not by the bent drawing inside it: a traced drawing is
+    // thousands of slivers, and a thick line round them throws spikes across the canvas.
+    let outline = crate::custom_shape_ui::leaf_outline(app, tool, start, end, mods);
+    // The outline of any other dense shape is a smear of points; its filled picture says more.
+    if outline.is_none() && path.subpaths.iter().map(|s| s.knots.len()).sum::<usize>() > photocraft_vector::thin::DENSE / 3 {
         return;
     }
-    let accent = Tokens::get(painter.ctx()).accent;
-    for (pts, _) in path_lines(&path, &|q| xf.to_screen(q[0] as f32, q[1] as f32)) {
+    for (pts, _) in path_lines(outline.as_ref().unwrap_or(&path), &|q| xf.to_screen(q[0] as f32, q[1] as f32)) {
         // The accent path over a dark halo: visible on any pixels (#172).
         painter.extend(crate::tool_feedback::contrast_path(pts, true, accent));
     }

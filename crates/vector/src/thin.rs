@@ -43,24 +43,31 @@ fn polyline(pts: &[Point], closed: bool, op: photocraft_doc::PathOp) -> Subpath 
     Subpath { closed, op, knots: pts.iter().map(|p| Knot::corner(p.x, p.y)).collect() }
 }
 
+/// `f` on every subpath, dropping the ones it gives up on, in order. The subpaths of a traced
+/// drawing are independent and numerous, so a big path is split over the cores (not on wasm).
+pub(crate) fn each_subpath(subpaths: &[Subpath], f: impl Fn(&Subpath) -> Option<Subpath> + Sync + Send) -> Vec<Subpath> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if subpaths.len() > 256 {
+        use rayon::prelude::*;
+        return subpaths.par_iter().filter_map(f).collect();
+    }
+    subpaths.iter().filter_map(f).collect()
+}
+
 /// `path` with every curve replaced by straight pieces within `tol` of it: corner knots only.
 pub fn flatten(path: &Path, tol: f64) -> Path {
-    let subpaths = path
-        .subpaths
-        .iter()
-        .filter_map(|sp| {
-            let first = sp.knots.first()?;
-            let mut pts = vec![first.anchor];
-            for seg in sp.segments() {
-                sample(&seg, tol, &mut pts);
-            }
-            // The closing piece of a closed subpath ends on its first point.
-            if sp.closed && pts.len() > 1 && pts.last() == pts.first() {
-                pts.pop();
-            }
-            Some(polyline(&pts, sp.closed, sp.op))
-        })
-        .collect();
+    let subpaths = each_subpath(&path.subpaths, |sp| {
+        let first = sp.knots.first()?;
+        let mut pts = vec![first.anchor];
+        for seg in sp.segments() {
+            sample(&seg, tol, &mut pts);
+        }
+        // The closing piece of a closed subpath ends on its first point.
+        if sp.closed && pts.len() > 1 && pts.last() == pts.first() {
+            pts.pop();
+        }
+        Some(polyline(&pts, sp.closed, sp.op))
+    });
     Path { subpaths, fill_rule: path.fill_rule, inverted: path.inverted }
 }
 
@@ -98,27 +105,23 @@ pub fn subdivide(path: &Path, max_len: f64) -> Path {
 /// Drop the points of a polyline path that lie within `min_dist` of the last point kept; a closed
 /// subpath left with fewer than three points (a speck) is dropped.
 pub fn thin(path: &Path, min_dist: f64) -> Path {
-    let subpaths = path
-        .subpaths
-        .iter()
-        .filter_map(|sp| {
-            let mut kept: Vec<Point> = Vec::with_capacity(sp.knots.len());
-            for k in &sp.knots {
-                if kept.last().is_none_or(|l| (k.anchor.x - l.x).hypot(k.anchor.y - l.y) >= min_dist) {
-                    kept.push(k.anchor);
-                }
+    let subpaths = each_subpath(&path.subpaths, |sp| {
+        let mut kept: Vec<Point> = Vec::with_capacity(sp.knots.len());
+        for k in &sp.knots {
+            if kept.last().is_none_or(|l| (k.anchor.x - l.x).hypot(k.anchor.y - l.y) >= min_dist) {
+                kept.push(k.anchor);
             }
-            // An open line keeps its end.
-            if !sp.closed
-                && let (Some(end), Some(last)) = (sp.knots.last(), kept.last())
-                && end.anchor != *last
-            {
-                kept.push(end.anchor);
-            }
-            let enough = if sp.closed { kept.len() >= 3 } else { kept.len() >= 2 };
-            enough.then(|| polyline(&kept, sp.closed, sp.op))
-        })
-        .collect();
+        }
+        // An open line keeps its end.
+        if !sp.closed
+            && let (Some(end), Some(last)) = (sp.knots.last(), kept.last())
+            && end.anchor != *last
+        {
+            kept.push(end.anchor);
+        }
+        let enough = if sp.closed { kept.len() >= 3 } else { kept.len() >= 2 };
+        enough.then(|| polyline(&kept, sp.closed, sp.op))
+    });
     Path { subpaths, fill_rule: path.fill_rule, inverted: path.inverted }
 }
 
@@ -130,6 +133,18 @@ pub fn simplify(path: &Path, tol: f64, min_dist: f64) -> Path {
         return path.clone();
     }
     thin(&flatten(path, tol), min_dist)
+}
+
+/// [`simplify`], then merge points further apart (up to 8 times `min_dist`) until at most
+/// `max_points` remain, so the cost of drawing a path has a ceiling whatever it holds.
+pub fn simplify_to(path: &Path, tol: f64, min_dist: f64, max_points: usize) -> Path {
+    let mut out = simplify(path, tol, min_dist);
+    let mut dist = min_dist;
+    while knots_in(&out) > max_points && dist < min_dist * 8.0 {
+        dist *= 1.5;
+        out = thin(&out, dist);
+    }
+    out
 }
 
 #[cfg(test)]

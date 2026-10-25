@@ -322,7 +322,8 @@ fn picking_from_a_big_lazy_library_parses_only_the_shapes_used() {
     for _ in 0..6 {
         place_and_read(&mut app);
     }
-    assert!(app.session.presets.lazy_shapes.parse_count() <= 6, "parsed {}", app.session.presets.lazy_shapes.parse_count());
+    // Each pick is read once by the background thread and then served from the cache: never the 5000.
+    assert!(app.session.presets.lazy_shapes.parse_count() <= 14, "parsed {}", app.session.presets.lazy_shapes.parse_count());
 }
 
 #[test]
@@ -352,7 +353,7 @@ fn a_shape_too_detailed_for_a_vector_layer_says_to_use_pixels_mode() {
 #[test]
 fn a_dense_shape_previews_from_a_thinned_copy_and_an_ordinary_one_from_itself() {
     let mut app = app();
-    let (ordinary, dense) = proxy_path(&app).map(|(p, d)| (p, d)).unwrap();
+    let (ordinary, dense) = proxy_path(&app).unwrap();
     assert!(!dense && ordinary.subpaths.iter().map(|s| s.knots.len()).sum::<usize>() < 100, "Heart is not dense");
     let k = |x: f64, y: f64| photocraft_psd::path::PsdKnot { linked: false, pre: (x, y), anchor: (x, y), post: (x, y) };
     let knots = (0..20_000)
@@ -374,4 +375,87 @@ fn a_dense_shape_previews_from_a_thinned_copy_and_an_ordinary_one_from_itself() 
     app.ui.tool_options.custom_shape_fit = "leaf".into();
     let p = leaf_path(&app, Tool::CustomShape, [50.0, 100.0], [250.0, 100.0], egui::Modifiers::NONE).unwrap();
     assert!(p.subpaths.iter().map(|s| s.knots.len()).sum::<usize>() < 4000);
+}
+
+#[test]
+fn alt_held_before_the_press_samples_a_colour_with_the_custom_shape_tool() {
+    use crate::canvas::{ToolEvent, tool_event};
+    let alt = egui::Modifiers::ALT;
+    assert!(crate::canvas::alt_samples(Tool::CustomShape, alt));
+    assert!(!crate::canvas::alt_samples(Tool::CustomShape, egui::Modifiers::NONE));
+    assert!(!crate::canvas::alt_samples(Tool::CustomShape, egui::Modifiers { alt: true, ctrl: true, ..Default::default() }), "Control+Alt is the brush resize");
+    let mut app = app();
+    // A red patch to sample, then the tool.
+    app.run("tools.setColors", json!({"foreground": "#ff0000", "background": "#ffffff"})).unwrap();
+    app.run("layer.new.layer", json!({})).unwrap();
+    app.run("select.rect", json!({"x": 0, "y": 0, "width": 100, "height": 100})).unwrap();
+    app.run("edit.fill", json!({"contents": "foreground"})).unwrap();
+    app.run("select.deselect", json!({})).unwrap();
+    app.run("tools.setColors", json!({"foreground": "#00ff00"})).unwrap();
+    app.ui.tool = Tool::CustomShape;
+    let (shapes, rev) = (layers(&app), app.session.active().unwrap().revision);
+    tool_event(&mut app, ToolEvent::Down { x: 50.0, y: 50.0, pressure: 1.0 }, alt);
+    tool_event(&mut app, ToolEvent::Move { x: 60.0, y: 60.0, pressure: 1.0 }, alt);
+    tool_event(&mut app, ToolEvent::Up { x: 60.0, y: 60.0 }, alt);
+    assert_eq!(app.session.tools.foreground, [1.0, 0.0, 0.0, 1.0], "the red under the pointer was sampled");
+    assert_eq!((layers(&app), app.session.active().unwrap().revision), (shapes, rev), "and nothing was placed");
+    // Without Alt the same drag places a shape; Alt pressed mid-drag still means "from the centre".
+    tool_event(&mut app, ToolEvent::Down { x: 50.0, y: 50.0, pressure: 1.0 }, egui::Modifiers::NONE);
+    tool_event(&mut app, ToolEvent::Move { x: 90.0, y: 90.0, pressure: 1.0 }, alt);
+    tool_event(&mut app, ToolEvent::Up { x: 90.0, y: 90.0 }, alt);
+    assert!(app.session.active().unwrap().revision > rev, "a shape was placed");
+}
+
+/// What the drag preview draws for a leaf of a few pixels, on a real traced drawing:
+/// `CSH_SAMPLE=<real .csh> cargo test -p photocraft-ui-egui --lib leaf_preview_geometry -- --ignored --nocapture`.
+#[test]
+#[ignore = "needs a real Photoshop .csh file in CSH_SAMPLE"]
+fn leaf_preview_geometry() {
+    let Some(path) = std::env::var_os("CSH_SAMPLE") else { return };
+    let mut app = app();
+    let r = app.run("shape.presets.cshLoad", json!({"path": path.to_string_lossy(), "mode": "replace"})).unwrap();
+    app.ui.presets_ui.custom_shape = r["first"].as_str().unwrap().to_string();
+    app.ui.tool_options.custom_shape_fit = "leaf".into();
+    for (a, b) in [([100.0, 100.0], [103.0, 101.0]), ([100.0, 100.0], [100.0, 160.0]), ([100.0, 100.0], [300.0, 230.0]), ([100.0, 100.0], [101.0, 101.0])] {
+        let t = std::time::Instant::now();
+        let sh = crate::vector_ui::shape_preview(&app, Tool::CustomShape, a, b, egui::Modifiers::NONE);
+        let took = t.elapsed();
+        let Some(sh) = sh else {
+            println!("{a:?}->{b:?}: no preview ({took:?})");
+            continue;
+        };
+        let knots: usize = sh.path.subpaths.iter().map(|s| s.knots.len()).sum();
+        let bounds = sh.path.control_bounds();
+        let longest = sh
+            .path
+            .subpaths
+            .iter()
+            .flat_map(|sp| sp.knots.windows(2).map(|k| (k[0].anchor.x - k[1].anchor.x).hypot(k[0].anchor.y - k[1].anchor.y)))
+            .fold(0.0, f64::max);
+        let open = sh.path.subpaths.iter().filter(|s| !s.closed).count();
+        println!("{a:?}->{b:?}: {knots} knots in {} subpaths ({open} open), box {bounds:?}, longest piece {longest:.2}, {took:?}", sh.path.subpaths.len());
+    }
+}
+
+#[test]
+fn the_shape_picked_at_random_is_read_in_the_background() {
+    let mut app = randomizing(1, 4);
+    let shapes: Vec<_> = (0..40)
+        .map(|i| {
+            let k = |x: f64, y: f64| photocraft_psd::path::PsdKnot { linked: false, pre: (x, y), anchor: (x, y), post: (x, y) };
+            let sp = photocraft_psd::path::PsdSubpath { closed: true, operation: 1, knots: vec![k(0.0, 0.0), k(1.0, 0.0), k(1.0, 1.0), k(0.0, 1.0)] };
+            (format!("Sq{i}"), photocraft_psd::csh::CshShape { bounds: [0, 0, 20, 20], subpaths: vec![sp] })
+        })
+        .collect();
+    let bytes = photocraft_psd::csh::write(&shapes).unwrap();
+    app.run("shape.presets.cshLoad", json!({"data": photocraft_engine::paint::tile::b64_encode(&bytes), "mode": "replace"})).unwrap();
+    app.ui.presets_ui.custom_shape = "Sq0".into();
+    assert_eq!(app.session.presets.lazy_shapes.parse_count(), 0);
+    after_place(&mut app);
+    // The pick is made now; the thread reads it a moment later.
+    let waited = std::time::Instant::now();
+    while app.session.presets.lazy_shapes.parse_count() == 0 && waited.elapsed() < std::time::Duration::from_secs(5) {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(app.session.presets.lazy_shapes.parse_count(), 1, "read once, ahead of the drag");
 }

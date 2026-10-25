@@ -106,10 +106,14 @@ fn proxy_path(app: &PhotocraftApp) -> Option<(Arc<Path>, bool)> {
 /// Longest side (px) the picture of a dense shape is drawn at for the drag preview.
 const PREVIEW_SIDE: f64 = 512.0;
 
-/// The drag preview of a dense shape in Box mode: the shape is drawn once into a picture, and the
-/// picture is stretched into the dragged box, so each pointer move costs nothing. `true` when it
-/// handled the preview (other shapes keep the exact outline-and-fill preview).
-pub fn draw_dense_box_preview(
+/// Cells per side of the mesh a leaf preview is drawn with.
+const MESH: usize = 24;
+
+/// The drag preview of a dense shape: the shape is drawn once into a picture, and the picture is
+/// stretched into the dragged box (Box mode) or bent onto the dragged leaf by a mesh (Leaf mode),
+/// so each pointer move costs nothing. `true` when it handled the preview (other shapes keep the
+/// exact outline-and-fill preview).
+pub fn draw_dense_preview(
     app: &PhotocraftApp,
     painter: &egui::Painter,
     xf: &crate::canvas::ViewXform,
@@ -118,11 +122,15 @@ pub fn draw_dense_box_preview(
     end: [f64; 2],
     mods: egui::Modifiers,
 ) -> bool {
-    if tool != crate::state::Tool::CustomShape || is_leaf(app) {
+    if tool != crate::state::Tool::CustomShape {
         return false;
     }
     let Some((path, true)) = proxy_path(app) else { return false };
-    let Some([x0, y0, x1, y1]) = crate::vector_ui::shape_bounds(&app.ui.tool_options, tool, start, end, mods) else { return true };
+    let leaf = if is_leaf(app) { leaf_of_drag(app, start, end, mods) } else { None };
+    let boxed = if leaf.is_none() { crate::vector_ui::shape_bounds(&app.ui.tool_options, tool, start, end, mods) } else { None };
+    if is_leaf(app) && leaf.is_none() || !is_leaf(app) && boxed.is_none() {
+        return true;
+    }
     let fg = app.session.tools.foreground;
     let id = egui::Id::new("custom-shape-dense-preview");
     let key = (app.ui.presets_ui.shape().to_string(), app.session.presets.rev, fg.map(f32::to_bits));
@@ -145,6 +153,31 @@ pub fn draw_dense_box_preview(
             (tex, aspect)
         }
     };
+    if let Some(leaf) = leaf {
+        let mut mesh = egui::Mesh::with_texture(tex.id());
+        for j in 0..=MESH {
+            for i in 0..=MESH {
+                let (u, v) = (i as f64 / MESH as f64, j as f64 / MESH as f64);
+                let Some(p) = leaf.at(u, v) else { return true };
+                mesh.vertices.push(egui::epaint::Vertex {
+                    pos: xf.to_screen(p.x as f32, p.y as f32),
+                    uv: egui::pos2(u as f32, v as f32),
+                    color: egui::Color32::WHITE,
+                });
+            }
+        }
+        for j in 0..MESH {
+            for i in 0..MESH {
+                let a = (j * (MESH + 1) + i) as u32;
+                let b = a + 1;
+                let c = a + (MESH + 1) as u32;
+                mesh.indices.extend([a, b, c, b, c + 1, c]);
+            }
+        }
+        painter.add(egui::Shape::mesh(mesh));
+        return true;
+    }
+    let Some([x0, y0, x1, y1]) = boxed else { return true };
     let (a, b) = (xf.to_screen(x0 as f32, y0 as f32), xf.to_screen(x1 as f32, y1 as f32));
     let mut dest = egui::Rect::from_two_pos(a, b);
     if mods.shift {
@@ -155,6 +188,16 @@ pub fn draw_dense_box_preview(
     }
     painter.image(tex.id(), dest, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
     true
+}
+
+/// The outline of the leaf being dragged: the guide drawn over a leaf preview instead of the
+/// outline of the bent shape (a traced drawing is thousands of slivers, which a thick line turns
+/// into spikes). `None` unless the Custom Shape tool is in Leaf mode.
+pub fn leaf_outline(app: &PhotocraftApp, tool: crate::state::Tool, start: [f64; 2], end: [f64; 2], mods: egui::Modifiers) -> Option<Path> {
+    if tool != crate::state::Tool::CustomShape || !is_leaf(app) {
+        return None;
+    }
+    leaf_of_drag(app, start, end, mods)?.outline()
 }
 
 type Key = (String, u64, [u32; 4]);
@@ -311,7 +354,23 @@ pub fn after_place(app: &mut PhotocraftApp) {
         && let Some(name) = names.get(i)
     {
         app.ui.presets_ui.custom_shape = name.clone();
+        prewarm(app, name);
     }
+}
+
+/// Read the shape just picked from its library in the background, so the next drag does not wait
+/// for the file (a traced drawing takes about 50 ms to read and decode). Not on wasm: no threads.
+fn prewarm(app: &PhotocraftApp, name: &str) {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let (lazy, name) = (app.session.presets.lazy_shapes.clone(), name.to_string());
+        // A thread that cannot start only costs the head start.
+        let _ = std::thread::Builder::new().name("shape-prewarm".into()).spawn(move || {
+            let _ = lazy.path(None, &name);
+        });
+    }
+    #[cfg(target_arch = "wasm32")]
+    let _ = (app, name);
 }
 
 /// A seed that differs from run to run (a fixed one on targets without a random source).
