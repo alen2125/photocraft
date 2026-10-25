@@ -22,6 +22,10 @@ pub trait ShapeSource: Send + Sync + std::fmt::Debug {
     fn name(&self, i: usize) -> Option<&str>;
     /// Parse shape `i`; `None` when its data is damaged.
     fn parse(&self, i: usize) -> Option<Path>;
+    /// The file the library was read from, kept in the preferences so it loads again next launch.
+    fn raw(&self) -> Option<&[u8]> {
+        None
+    }
 }
 
 #[derive(Clone, Debug)]

@@ -153,6 +153,9 @@ struct Persisted {
     // Read entry by entry: a bad contour must not discard the other presets.
     #[serde(default)]
     contours: Option<Value>,
+    // Imported `.csh` libraries as raw file bytes (loaded lazily, see `shape_csh`).
+    #[serde(default)]
+    csh_libraries: Option<Value>,
 }
 
 impl PresetState {
@@ -172,6 +175,7 @@ impl PresetState {
             layer_defaults: Some(self.layer_defaults.clone()),
             swatches: Some(self.swatches.clone()),
             contours: Some(crate::contour_lib_cmds::to_json(&self.contours)),
+            csh_libraries: Some(crate::shape_csh::to_json(s)),
         };
         serde_json::to_value(p).unwrap_or(Value::Null)
     }
@@ -201,6 +205,7 @@ impl Session {
             layer_defaults: take(&mut m, "layer_defaults"),
             swatches: take(&mut m, "swatches"),
             contours: take(&mut m, "contours"),
+            csh_libraries: take(&mut m, "csh_libraries"),
         };
         let st = &mut self.presets;
         if let Some(g) = p.gradients {
@@ -243,6 +248,9 @@ impl Session {
         }
         if let Some(c) = p.contours.filter(Value::is_array) {
             self.presets.contours = crate::contour_lib_cmds::from_json(&c);
+        }
+        if let Some(v) = p.csh_libraries {
+            crate::shape_csh::from_json(self, &v);
         }
         self.presets.rev += 1;
     }

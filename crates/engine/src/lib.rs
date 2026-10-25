@@ -100,6 +100,7 @@ pub mod prefs;
 pub mod preset_import_cmds;
 pub mod preset_store;
 pub mod presets;
+pub mod shape_csh;
 pub mod shape_index;
 pub mod print_cmds;
 pub mod proof_sim;

@@ -97,7 +97,7 @@ fn fill_pixels(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 pub fn specs() -> Vec<CommandSpec> {
-    vec![CommandSpec {
+    let mut v = vec![CommandSpec {
         id: FILL_PIXELS,
         label: "Fill Shape (Pixels)",
         menu: &[],
@@ -106,7 +106,9 @@ pub fn specs() -> Vec<CommandSpec> {
         enabled: has_layer,
         run: fill_pixels,
         journal: true,
-    }]
+    }];
+    v.extend(crate::shape_csh::specs());
+    v
 }
 
 #[cfg(test)]
