@@ -37,6 +37,43 @@ pub fn mode_dropdown(mode: &mut String, ui: &mut egui::Ui) {
     crate::widgets::dropdown(ui, "custom-shape-mode", mode, &items, 80.0);
 }
 
+/// Thumbnails kept at once: enough for every cell in view, bounded however big the library.
+const TEXTURES: usize = 512;
+
+type TextureCache = Vec<((String, u64), egui::TextureHandle)>;
+
+/// The thumbnail of shape `name` in `group`, made (and its path parsed) the first time it is
+/// asked for and kept in a small least-recently-used cache. Callers ask only for visible cells.
+pub fn texture(ctx: &egui::Context, session: &photocraft_engine::Session, group: &str, name: &str) -> Option<egui::TextureHandle> {
+    const SIZE: u32 = 64;
+    let id = egui::Id::new("custom-shape-thumbnails");
+    let key = (format!("{group}/{name}"), session.presets.rev);
+    let hit = ctx.data_mut(|d| {
+        let cache = d.get_temp_mut_or_default::<TextureCache>(id);
+        let at = cache.iter().position(|(k, _)| *k == key)?;
+        let entry = cache.remove(at);
+        let tex = entry.1.clone();
+        cache.push(entry);
+        Some(tex)
+    });
+    if hit.is_some() {
+        return hit;
+    }
+    let shape = photocraft_engine::shape_index::find_shape(session, name, Some(group))?;
+    let cov = photocraft_engine::presets::shapes::thumbnail(&shape.path, SIZE);
+    let pixels = cov.iter().map(|a| egui::Color32::from_white_alpha((a.clamp(0.0, 1.0) * 255.0).round() as u8)).collect();
+    let image = egui::ColorImage::new([SIZE as usize, SIZE as usize], pixels);
+    let tex = ctx.load_texture(format!("custom-shape-{}", key.0), image, egui::TextureOptions::LINEAR);
+    ctx.data_mut(|d| {
+        let cache = d.get_temp_mut_or_default::<TextureCache>(id);
+        cache.push((key, tex.clone()));
+        if cache.len() > TEXTURES {
+            let _evicted = cache.remove(0);
+        }
+    });
+    Some(tex)
+}
+
 /// The `[x, y, w, h]` a drag covers, or the click-placed default square, `None` for neither.
 fn drag_rect(app: &PhotocraftApp, start: [f64; 2], end: [f64; 2], mods: egui::Modifiers) -> Option<[f64; 4]> {
     let o = &app.ui.tool_options;

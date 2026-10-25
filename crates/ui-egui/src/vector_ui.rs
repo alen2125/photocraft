@@ -173,8 +173,7 @@ fn shape_preview(app: &PhotocraftApp, tool: Tool, start: [f64; 2], end: [f64; 2]
     let geometry = shape_geometry(o, tool, start, end, mods)?;
     let path = if tool == Tool::CustomShape {
         let rect = geometry.get("rect").and_then(|r| serde_json::from_value::<[f64; 4]>(r.clone()).ok())?;
-        let groups = photocraft_engine::presets::shapes::all_groups(&app.session);
-        let shape = groups.iter().flat_map(|g| &g.items).find(|s| s.name == app.ui.presets_ui.shape())?;
+        let shape = photocraft_engine::shape_index::find_shape(&app.session, app.ui.presets_ui.shape(), None)?;
         photocraft_engine::presets::shapes::fit(&shape.path, rect, mods.shift)
     } else {
         photocraft_engine::vector_cmds::shape_path(&geometry).ok()?

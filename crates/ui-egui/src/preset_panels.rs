@@ -290,6 +290,7 @@ pub(crate) fn style_texture(app: &PhotocraftApp, ctx: &egui::Context, st: &photo
     })
 }
 
+#[allow(dead_code)] // superseded by custom_shape_ui::texture (lazy thumbnails)
 fn shape_texture(ctx: &egui::Context, sh: &photocraft_engine::presets::shapes::ShapePreset) -> TextureHandle {
     let knots: usize = sh.path.subpaths.iter().map(|s| s.knots.len()).sum();
     cached_texture(ctx, ("shape", sh.name.clone(), knots), || {
@@ -871,11 +872,12 @@ pub fn styles_panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
 // ------------------------------------------------------------------ Shapes
 
 pub fn shapes_panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
-    let src = photocraft_engine::presets::shapes::all_groups(&app.session);
+    let src = photocraft_engine::shape_index::index(&app.session);
     let groups: Vec<GroupView> = src
         .iter()
-        .map(|g| GroupView { name: g.name.clone(), items: g.items.iter().map(|i| ItemView { key: i.name.clone(), name: i.name.clone() }).collect() })
+        .map(|g| GroupView { name: g.name.clone(), items: g.items.iter().map(|n| ItemView { key: n.clone(), name: n.clone() }).collect() })
         .collect();
+    let session = &app.session;
     let canvas = canvas_drop_rect(app);
     let mut st = std::mem::take(&mut app.ui.presets_ui);
     let ctx = ui.ctx().clone();
@@ -887,8 +889,12 @@ pub fn shapes_panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         &groups,
         Place { canvas, max_h: 300.0, new_tip: tl!("Create new shape from the current path"), flush: false },
         &mut |ui, r, gi, ii| {
-            let tex = shape_texture(&ctx, &src[gi].items[ii]);
-            ui.painter().image(tex.id(), r.shrink(2.0), Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0)), t.text);
+            // Only the cells in view get a thumbnail (and parse their path).
+            if ui.is_rect_visible(r)
+                && let Some(tex) = crate::custom_shape_ui::texture(&ctx, session, &src[gi].name, &src[gi].items[ii])
+            {
+                ui.painter().image(tex.id(), r.shrink(2.0), Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0)), t.text);
+            }
         },
     );
     app.ui.presets_ui = st;
@@ -931,14 +937,15 @@ fn shape_fill(app: &PhotocraftApp) -> Value {
 pub fn shape_picker(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     ui.label(egui::RichText::new(tl!("Shape:")).color(t.text_dim).size(12.0));
-    let groups = photocraft_engine::presets::shapes::all_groups(&app.session);
+    let groups = photocraft_engine::shape_index::index(&app.session);
     let cur = app.ui.presets_ui.shape().to_string();
     let ctx = ui.ctx().clone();
     let (r, resp) = ui.allocate_exact_size(vec2(36.0, 22.0), Sense::click());
     ui.painter().rect_filled(r, 3.0, t.field);
     ui.painter().rect_stroke(r, 3.0, Stroke::new(1.0, t.field_border), egui::StrokeKind::Inside);
-    if let Some(sh) = groups.iter().flat_map(|g| g.items.iter()).find(|s| s.name == cur) {
-        let tex = shape_texture(&ctx, sh);
+    if let Some(g) = groups.iter().find(|g| g.items.contains(&cur))
+        && let Some(tex) = crate::custom_shape_ui::texture(&ctx, &app.session, &g.name, &cur)
+    {
         ui.painter().image(
             tex.id(),
             Rect::from_center_size(r.center() - vec2(5.0, 0.0), vec2(18.0, 18.0)),
@@ -955,9 +962,9 @@ pub fn shape_picker(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 ui.label(egui::RichText::new(&g.name).color(t.text_dim).size(11.0));
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing = vec2(3.0, 3.0);
-                    for sh in &g.items {
+                    for name in &g.items {
                         let (cr, cresp) = ui.allocate_exact_size(vec2(32.0, 32.0), Sense::click());
-                        let on = sh.name == cur;
+                        let on = *name == cur;
                         ui.painter().rect_filled(
                             cr,
                             2.0,
@@ -969,10 +976,13 @@ pub fn shape_picker(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                                 t.field
                             },
                         );
-                        let tex = shape_texture(&ctx, sh);
-                        ui.painter().image(tex.id(), cr.shrink(4.0), Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0)), t.text);
-                        if cresp.on_hover_text(&sh.name).clicked() {
-                            app.ui.presets_ui.custom_shape = sh.name.clone();
+                        if ui.is_rect_visible(cr)
+                            && let Some(tex) = crate::custom_shape_ui::texture(&ctx, &app.session, &g.name, name)
+                        {
+                            ui.painter().image(tex.id(), cr.shrink(4.0), Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0)), t.text);
+                        }
+                        if cresp.on_hover_text(name).clicked() {
+                            app.ui.presets_ui.custom_shape = name.clone();
                             ui.close();
                         }
                     }
