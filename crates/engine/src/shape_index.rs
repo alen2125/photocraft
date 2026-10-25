@@ -22,10 +22,19 @@ pub trait ShapeSource: Send + Sync + std::fmt::Debug {
     fn name(&self, i: usize) -> Option<&str>;
     /// Parse shape `i`; `None` when its data is damaged.
     fn parse(&self, i: usize) -> Option<Path>;
-    /// The file the library was read from, kept in the preferences so it loads again next launch.
-    fn raw(&self) -> Option<&[u8]> {
+    /// Where the library came from, kept in the preferences so it loads again next launch.
+    fn origin(&self) -> Option<Origin<'_>> {
         None
     }
+}
+
+/// What a lazy library was read from.
+#[derive(Clone, Copy, Debug)]
+pub enum Origin<'a> {
+    /// A file on disk, read a shape at a time.
+    File(&'a std::path::Path),
+    /// A file held in memory.
+    Bytes(&'a [u8]),
 }
 
 #[derive(Clone, Debug)]
@@ -158,18 +167,23 @@ pub fn index(s: &Session) -> Vec<IndexGroup> {
 /// The shape called `name` (in `group`, else anywhere): presets first, then Define Custom Shape
 /// results, then the lazy libraries. Only the one shape's path is cloned or parsed.
 pub fn find_shape(s: &Session, name: &str, group: Option<&str>) -> Option<ShapePreset> {
+    shape_path(s, name, group).map(|path| ShapePreset { name: name.to_string(), path: (*path).clone() })
+}
+
+/// [`find_shape`]'s path without copying it when it is cached (a traced drawing has tens of
+/// thousands of knots, and the drag preview asks for it on every pointer move).
+pub fn shape_path(s: &Session, name: &str, group: Option<&str>) -> Option<Arc<Path>> {
     let in_group = |g: &str| group.is_none_or(|n| n == g);
     let builtin = s.presets.shapes.iter().filter(|g| in_group(&g.name)).find_map(|g| g.items.iter().find(|i| i.name == name));
     if let Some(sh) = builtin {
-        return Some(sh.clone());
+        return Some(Arc::new(sh.path.clone()));
     }
     if in_group(CUSTOM_GROUP)
         && let Some(c) = s.edit_state.custom_shapes.iter().find(|c| c.name == name)
     {
-        return Some(ShapePreset { name: c.name.clone(), path: c.path.clone() });
+        return Some(Arc::new(c.path.clone()));
     }
-    let (_, path) = s.presets.lazy_shapes.path(group, name)?;
-    Some(ShapePreset { name: name.to_string(), path: (*path).clone() })
+    s.presets.lazy_shapes.path(group, name).map(|(_, path)| path)
 }
 
 #[cfg(test)]

@@ -1,7 +1,8 @@
 //! Custom shape files (`.csh`) for the Shapes panel (fork-local, see MY_CHANGES.md): Load /
 //! Replace / Save Shapes. A loaded file stays a lazy library (`shape_index`): only its names are
-//! read up front, and a shape's path is decoded when something asks for it. The raw file bytes are
-//! kept so the library survives a restart without being decoded either.
+//! read up front, and a shape's path is decoded when something asks for it. Photoshop's shape
+//! libraries run to 200 MB, so a file loaded by path is never read whole: its payloads are read
+//! from disk one at a time, and the preferences keep the file's path, not its bytes.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -13,17 +14,28 @@ use serde_json::{Value, json};
 
 use crate::commands::CommandSpec;
 use crate::presets::{always, bad, str_param};
-use crate::shape_index::ShapeSource;
+use crate::shape_index::{Origin, ShapeSource};
 use crate::{EngineError, Result, Session};
 
 /// Longest library name kept, in characters.
 const MAX_GROUP_NAME: usize = 255;
 /// The group a file without a usable name loads into.
 const DEFAULT_GROUP: &str = "Imported Shapes";
+/// Libraries held in memory (loaded from `data`) are kept in the preferences only up to this size.
+const MAX_PERSISTED_BYTES: usize = 2 << 20;
+/// Libraries restored from the preferences at start.
+const MAX_RESTORED: usize = 64;
+
+/// Where a library's payloads are read from.
+enum Backing {
+    Bytes(Arc<[u8]>),
+    #[cfg(not(target_arch = "wasm32"))]
+    File(std::path::PathBuf),
+}
 
 /// A `.csh` file's shapes, decoded one at a time.
 pub struct CshSource {
-    data: Arc<[u8]>,
+    backing: Backing,
     entries: Vec<CshEntry>,
     /// The entries' names, made unique within the file (shapes are addressed by name).
     names: Vec<String>,
@@ -31,25 +43,48 @@ pub struct CshSource {
 
 impl std::fmt::Debug for CshSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CshSource").field("bytes", &self.data.len()).field("shapes", &self.entries.len()).finish()
+        let from = match &self.backing {
+            Backing::Bytes(b) => format!("{} bytes in memory", b.len()),
+            #[cfg(not(target_arch = "wasm32"))]
+            Backing::File(p) => p.display().to_string(),
+        };
+        f.debug_struct("CshSource").field("from", &from).field("shapes", &self.entries.len()).finish()
     }
 }
 
+fn unique_names(entries: &[CshEntry]) -> Vec<String> {
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    entries
+        .iter()
+        .map(|e| {
+            let base = if e.name.trim().is_empty() { "Shape".to_string() } else { e.name.clone() };
+            let n = seen.entry(base.clone()).or_insert(0);
+            *n += 1;
+            if *n == 1 { base } else { format!("{base} {n}") }
+        })
+        .collect()
+}
+
+fn not_a_shape_file(e: impl std::fmt::Display) -> EngineError {
+    EngineError::Other(format!("not a custom shape file: {e}"))
+}
+
 impl CshSource {
-    /// Read the names of a `.csh` file; decodes no path.
-    pub fn new(data: Vec<u8>) -> Result<Self> {
-        let entries = csh::index(&data).map_err(|e| EngineError::Other(format!("not a custom shape file: {e}")))?;
-        let mut seen: HashMap<String, usize> = HashMap::new();
-        let names = entries
-            .iter()
-            .map(|e| {
-                let base = if e.name.trim().is_empty() { "Shape".to_string() } else { e.name.clone() };
-                let n = seen.entry(base.clone()).or_insert(0);
-                *n += 1;
-                if *n == 1 { base } else { format!("{base} {n}") }
-            })
-            .collect();
-        Ok(CshSource { data: data.into(), entries, names })
+    /// Read the names of a `.csh` file held in memory; decodes no path.
+    pub fn from_bytes(data: Vec<u8>) -> Result<Self> {
+        let entries = csh::index(&data).map_err(not_a_shape_file)?;
+        let names = unique_names(&entries);
+        Ok(CshSource { backing: Backing::Bytes(data.into()), entries, names })
+    }
+
+    /// Read the names of a `.csh` file on disk without reading its shapes; they are read from the
+    /// file when asked for.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn from_file(path: &std::path::Path) -> Result<Self> {
+        let mut f = std::fs::File::open(path).map_err(|e| EngineError::Other(format!("{}: {e}", path.display())))?;
+        let entries = csh::index_reader(&mut f).map_err(not_a_shape_file)?;
+        let names = unique_names(&entries);
+        Ok(CshSource { backing: Backing::File(path.to_path_buf()), entries, names })
     }
 }
 
@@ -63,12 +98,28 @@ impl ShapeSource for CshSource {
     }
 
     fn parse(&self, i: usize) -> Option<Path> {
-        let shape = csh::parse_shape(&self.data, self.entries.get(i)?).ok()?;
+        let entry = self.entries.get(i)?;
+        let shape = match &self.backing {
+            Backing::Bytes(data) => csh::parse_shape(data, entry).ok()?,
+            #[cfg(not(target_arch = "wasm32"))]
+            Backing::File(path) => {
+                use std::io::{Read, Seek, SeekFrom};
+                let mut f = std::fs::File::open(path).ok()?;
+                f.seek(SeekFrom::Start(u64::try_from(entry.offset).ok()?)).ok()?;
+                let mut payload = vec![0u8; entry.len];
+                f.read_exact(&mut payload).ok()?;
+                csh::parse_payload(&payload).ok()?
+            }
+        };
         Some(path_from_shape(&shape))
     }
 
-    fn raw(&self) -> Option<&[u8]> {
-        Some(&self.data)
+    fn origin(&self) -> Option<Origin<'_>> {
+        Some(match &self.backing {
+            Backing::Bytes(b) => Origin::Bytes(b),
+            #[cfg(not(target_arch = "wasm32"))]
+            Backing::File(p) => Origin::File(p),
+        })
     }
 }
 
@@ -100,6 +151,20 @@ fn add_library(s: &mut Session, name: &str, source: CshSource) -> String {
     group
 }
 
+/// The library to load: a file on disk by `path` (indexed in place, never read whole), else the
+/// base64 `data`; with the name its file had.
+fn source_of(p: &Value, cmd: &str) -> Result<(CshSource, String)> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if p.get("data").is_none()
+        && let Some(path) = str_param(p, "path")
+    {
+        let stem = std::path::Path::new(path).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        return Ok((CshSource::from_file(std::path::Path::new(path))?, stem));
+    }
+    let (bytes, stem) = crate::preset_import_cmds::file_bytes(p, cmd, ".csh file")?;
+    Ok((CshSource::from_bytes(bytes)?, stem))
+}
+
 fn load(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "shape.presets.cshLoad";
     let replace = match str_param(p, "mode") {
@@ -107,8 +172,7 @@ fn load(s: &mut Session, p: &Value) -> Result<Value> {
         Some("replace") => true,
         Some(m) => return Err(bad(CMD, format!("unknown mode `{m}` (append|replace)"))),
     };
-    let (bytes, stem) = crate::preset_import_cmds::file_bytes(p, CMD, ".csh file")?;
-    let source = CshSource::new(bytes)?;
+    let (source, stem) = source_of(p, CMD)?;
     if source.is_empty() {
         return Err(bad(CMD, "the file holds no shapes"));
     }
@@ -136,7 +200,7 @@ fn save(s: &mut Session, p: &Value) -> Result<Value> {
     let mut shapes: Vec<(String, CshShape)> = Vec::new();
     for g in crate::shape_index::index(s).iter().filter(|g| group.is_none_or(|n| g.name == n)) {
         for name in g.items.iter().filter(|n| wanted.as_ref().is_none_or(|w| w.contains(&n.as_str()))) {
-            if let Some(shape) = crate::shape_index::find_shape(s, name, Some(&g.name)).and_then(|sh| shape_from_path(&sh.path)) {
+            if let Some(shape) = crate::shape_index::shape_path(s, name, Some(&g.name)).and_then(|path| shape_from_path(&path)) {
                 shapes.push((name.clone(), shape));
             }
         }
@@ -156,25 +220,32 @@ fn save(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(out)
 }
 
-/// The libraries to keep in the preferences: (name, base64 file bytes).
+/// The libraries to keep in the preferences: a file by its path, a library held in memory by its
+/// bytes (when small). A big one that came without a file cannot be kept.
 pub(crate) fn to_json(s: &Session) -> Value {
-    let libs: Vec<Value> = s
-        .presets
-        .lazy_shapes
-        .groups()
-        .iter()
-        .filter_map(|g| g.source.raw().map(|raw| json!({"name": g.name, "data": photocraft_paint::tile::b64_encode(raw)})))
-        .collect();
-    Value::Array(libs)
+    let libs = s.presets.lazy_shapes.groups().iter().filter_map(|g| match g.source.origin()? {
+        Origin::File(path) => Some(json!({"name": g.name, "path": path.to_string_lossy()})),
+        Origin::Bytes(b) if b.len() <= MAX_PERSISTED_BYTES => Some(json!({"name": g.name, "data": photocraft_paint::tile::b64_encode(b)})),
+        Origin::Bytes(_) => None,
+    });
+    Value::Array(libs.collect())
 }
 
-/// Restore libraries saved by [`to_json`]; a damaged one is skipped, the rest load.
+/// Restore libraries saved by [`to_json`]; a damaged one, or a file that is gone, is skipped.
 pub(crate) fn from_json(s: &mut Session, v: &Value) {
     s.presets.lazy_shapes.clear();
-    for lib in v.as_array().into_iter().flatten().take(64) {
-        let (Some(name), Some(data)) = (lib.get("name").and_then(Value::as_str), lib.get("data").and_then(Value::as_str)) else { continue };
-        let Some(bytes) = photocraft_paint::tile::b64_decode(data) else { continue };
-        if let Ok(source) = CshSource::new(bytes) {
+    for lib in v.as_array().into_iter().flatten().take(MAX_RESTORED) {
+        let Some(name) = lib.get("name").and_then(Value::as_str) else { continue };
+        let source = match (lib.get("path").and_then(Value::as_str), lib.get("data").and_then(Value::as_str)) {
+            #[cfg(not(target_arch = "wasm32"))]
+            (Some(path), _) => CshSource::from_file(std::path::Path::new(path)),
+            (_, Some(data)) => match photocraft_paint::tile::b64_decode(data) {
+                Some(bytes) => CshSource::from_bytes(bytes),
+                None => continue,
+            },
+            _ => continue,
+        };
+        if let Ok(source) = source {
             add_library(s, name, source);
         }
     }
@@ -188,7 +259,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Load Shapes…",
             menu: &[],
             shortcut: None,
-            params: r##"{"path":".csh file"?,"data":base64 bytes?,"mode":"append"|"replace"="append","name":group name?=file name} → {group,count,first}. Only the names are read; a shape's path is decoded when it is used. Replace drops the other loaded libraries and the built-in groups (shape.presets.reset restores them)."##,
+            params: r##"{"path":".csh file"?,"data":base64 bytes?,"mode":"append"|"replace"="append","name":group name?=file name} → {group,count,first}. A file given by `path` is indexed in place (its names only, never read whole); a shape's path is decoded when it is used. Replace drops the other loaded libraries and the built-in groups (shape.presets.reset restores them)."##,
             enabled: always,
             run: load,
             journal: false,

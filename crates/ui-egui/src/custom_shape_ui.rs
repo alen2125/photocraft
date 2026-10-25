@@ -32,8 +32,9 @@ fn place_box(app: &mut PhotocraftApp, rect: [f64; 4], keep: bool) -> bool {
     let name = app.ui.presets_ui.shape().to_string();
     let (fill, stroke) = (crate::vector_ui::fill_param(app), crate::vector_ui::stroke_param(app));
     let p = serde_json::json!({"preset": name, "rect": rect, "keepAspect": keep, "fill": fill, "stroke": stroke});
-    if app.run("shape.presets.place", p).is_ok() {
-        return true;
+    match app.run("shape.presets.place", p) {
+        Ok(_) => return true,
+        Err(e) => note_if_too_detailed(app, &e),
     }
     if photocraft_engine::shape_index::find_shape(&app.session, &name, None).is_none() {
         let template = "No custom shape \"{name}\": pick one in the options bar or Window › Shapes";
@@ -66,8 +67,8 @@ pub fn leaf_path(app: &PhotocraftApp, tool: crate::state::Tool, start: [f64; 2],
         return None;
     }
     let leaf = leaf_of_drag(app, start, end, mods)?;
-    let shape = photocraft_engine::shape_index::find_shape(&app.session, app.ui.presets_ui.shape(), None)?;
-    warp_path(&shape.path, &leaf)
+    let shape = photocraft_engine::shape_index::shape_path(&app.session, app.ui.presets_ui.shape(), None)?;
+    warp_path(&shape, &leaf)
 }
 
 /// End of a Leaf-mode drag: a leaf shorter than 1 px (a click) places nothing.
@@ -91,8 +92,19 @@ fn finish_leaf(app: &mut PhotocraftApp, start: [f64; 2], end: [f64; 2], mods: eg
         "shape.presets.placeLeaf"
     };
     // A failure (locked layer, unknown shape) is reported in the status bar by `run`.
-    if app.run(command, p).is_ok_and(|r| r["empty"] != true) {
-        after_place(app);
+    match app.run(command, p) {
+        Ok(r) if r["empty"] != true => after_place(app),
+        Ok(_) => {}
+        Err(e) => note_if_too_detailed(app, &e),
+    }
+}
+
+/// A traced drawing has tens of thousands of points; a vector shape layer holds at most 4096.
+/// Say what to do about it instead of the engine's bare limit.
+fn note_if_too_detailed(app: &mut PhotocraftApp, error: &str) {
+    if error.contains("exceeds 4096") {
+        app.ui.status = tl!("This shape has too many points for a vector layer (4096 at most): use Pixels mode").to_string();
+        app.ui.status_error = true;
     }
 }
 

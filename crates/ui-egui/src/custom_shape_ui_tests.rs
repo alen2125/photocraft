@@ -324,3 +324,27 @@ fn picking_from_a_big_lazy_library_parses_only_the_shapes_used() {
     }
     assert!(app.session.presets.lazy_shapes.parse_count() <= 6, "parsed {}", app.session.presets.lazy_shapes.parse_count());
 }
+
+#[test]
+fn a_shape_too_detailed_for_a_vector_layer_says_to_use_pixels_mode() {
+    let mut app = app();
+    let knot = photocraft_psd::path::PsdKnot { linked: false, pre: (0.5, 0.5), anchor: (0.5, 0.5), post: (0.5, 0.5) };
+    let angle = |i: usize| i as f64 / 5000.0 * std::f64::consts::TAU;
+    let knots = (0..5000).map(|i| photocraft_psd::path::PsdKnot { anchor: (0.5 + 0.4 * angle(i).cos(), 0.5 + 0.4 * angle(i).sin()), ..knot }).collect();
+    let dense =
+        photocraft_psd::csh::CshShape { bounds: [0, 0, 100, 100], subpaths: vec![photocraft_psd::path::PsdSubpath { closed: true, operation: 1, knots }] };
+    let bytes = photocraft_psd::csh::write(&[("Dense".to_string(), dense)]).unwrap();
+    app.run("shape.presets.cshLoad", json!({"data": photocraft_engine::paint::tile::b64_encode(&bytes), "mode": "replace"})).unwrap();
+    app.ui.presets_ui.custom_shape = "Dense".into();
+    let before = layers(&app);
+    press(&mut app, [20.0, 20.0], [120.0, 100.0]);
+    assert_eq!(layers(&app), before, "a vector layer cannot hold it");
+    assert!(app.ui.status.contains("Pixels mode") && app.ui.status_error, "{}", app.ui.status);
+    // In Pixels mode the same shape paints.
+    app.run("layer.new.layer", json!({})).unwrap();
+    app.ui.tool_options.custom_shape_mode = "pixels".into();
+    app.ui.status.clear();
+    press(&mut app, [20.0, 20.0], [120.0, 100.0]);
+    assert!(app.ui.status.is_empty(), "{}", app.ui.status);
+    assert!((20..120).any(|x| alpha_at(&app, x, 60) > 0.5));
+}
