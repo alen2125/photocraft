@@ -11,7 +11,7 @@ use crate::panels::{hsva_color32, hsva_srgb};
 use crate::theme::Tokens;
 
 /// Height the mixer rows take under the colour field (the field gives it up in `color_field_height`).
-pub const MIXER_HEIGHT: f32 = 148.0;
+pub const MIXER_HEIGHT: f32 = 140.0;
 const BUTTON_H: f32 = 44.0;
 const STRIP_H: f32 = 30.0;
 const MIN_STEPS: usize = 3;
@@ -154,6 +154,22 @@ pub(crate) fn apply_lock(app: &PhotocraftApp, ui: &egui::Ui, mut hsva: Hsva, fre
     hsva
 }
 
+/// What the rows under the colour field took last frame, so the field leaves room for them and the
+/// tab fits its group without scrolling. The default is a guess for the first frame.
+pub(crate) fn reserved_height(ui: &egui::Ui) -> f32 {
+    ui.data(|d| d.get_temp::<f32>(egui::Id::new("color-below-field"))).unwrap_or(MIXER_HEIGHT)
+}
+
+/// Remember how tall everything below the field was (`top`: where it started).
+pub(crate) fn remember_height(ui: &egui::Ui, top: f32) {
+    let h = (ui.cursor().top() - top).max(0.0) + 4.0;
+    let key = egui::Id::new("color-below-field");
+    if ui.data(|d| d.get_temp::<f32>(key)).is_none_or(|old| (old - h).abs() > 0.5) {
+        ui.data_mut(|d| d.insert_temp(key, h));
+        ui.ctx().request_repaint();
+    }
+}
+
 /// A toggle or step button, big enough for a stylus.
 fn big_button(ui: &mut egui::Ui, label: &str, min_w: f32, on: bool, enabled: bool) -> bool {
     let b = egui::Button::new(egui::RichText::new(label).size(15.0)).min_size(vec2(min_w, BUTTON_H)).selected(on);
@@ -186,6 +202,8 @@ pub(crate) fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         if big_button(ui, tl!("Wheel"), 0.0, cp.wheel, true) {
             cp.wheel = !cp.wheel;
         }
+        // HSB/RGB sliders: the small menu button, with the rest of the row.
+        crate::panels::color_slider_mode_row(app, ui);
     });
     ui.add_space(4.0);
     let colors = strip(app);

@@ -50,6 +50,10 @@ pub struct Keys {
     first_row: bool,
 }
 
+/// Fork: Alt (a tap, or Alt+letter) opens and focuses the menu bar only in the tests, which cover
+/// upstream's behaviour. In the app Alt is left to the tools; F10 still focuses the bar.
+const ALT_MENUS: bool = cfg!(test);
+
 fn keys_id() -> Id {
     Id::new("pc-menu-bar-keys")
 }
@@ -269,7 +273,7 @@ impl Keys {
 
     /// Underline the mnemonics this frame?
     pub fn show_underlines(&self, ctx: &egui::Context) -> bool {
-        self.underline || self.focus.is_some() || self.alt_down || ctx.input(|i| i.modifiers.alt)
+        self.underline || self.focus.is_some() || (ALT_MENUS && (self.alt_down || ctx.input(|i| i.modifiers.alt)))
     }
 
     /// A menu just opened from the keyboard: light its first row (once, when it is drawn).
@@ -333,6 +337,8 @@ impl Keys {
             self.focus = None;
             self.underline = false;
         }
+        // Fork: Alt does not drive the menu bar (a tap focused it and swallowed the next key, X).
+        tap &= ALT_MENUS;
         let open = nav.top.is_some();
         let n = tops.len();
         let open_top = |i: usize, keys: &mut Keys| {
@@ -346,7 +352,7 @@ impl Keys {
         };
         let consume = |m: Modifiers, k: Key| ctx.input_mut(|i| i.consume_key(m, k));
         // Alt+letter opens that menu, open or not (an open one switches), as on Windows.
-        let alt_letter = events.iter().find_map(|e| match e {
+        let alt_letter = events.iter().filter(|_| ALT_MENUS).find_map(|e| match e {
             Event::Key { key, pressed: true, modifiers, .. } if modifiers.alt && !modifiers.command && !modifiers.ctrl => key_char(*key).map(|c| (*key, c)),
             _ => None,
         });

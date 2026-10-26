@@ -1904,12 +1904,13 @@ pub(crate) fn dock_body(app: &mut PhotocraftApp, ui: &mut egui::Ui, group: crate
         (Group::Color, 3) => crate::preset_panels::patterns_panel(app, ui),
         (Group::Color, 0) if pro => {
             color_field(app, ui);
+            let below_field = ui.cursor().top();
             crate::color_mixer_ui::panel(app, ui);
             if app.ui.color_panel.slider_mode == ColorPanelSliderMode::Rgb {
                 ui.add_space(8.0);
                 rgb_sliders(app, ui);
             }
-            color_slider_mode_row(app, ui);
+            crate::color_mixer_ui::remember_height(ui, below_field);
         }
         (Group::Color, _) if pro => crate::swatches_ui::panel(app, ui),
         (Group::Color, 0) => crate::swatches_ui::panel(app, ui),
@@ -2510,7 +2511,7 @@ fn color_picker(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
 }
 
 /// HSB or RGB sliders under the colour field (#7172).
-fn color_slider_mode_row(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
+pub(crate) fn color_slider_mode_row(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     ui.add_space(6.0);
     let label = match app.ui.color_panel.slider_mode {
         ColorPanelSliderMode::Hsb => tl!("HSB/HSL"),
@@ -4255,7 +4256,7 @@ fn color_field(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     // Only Photoshop's themes stretch it over the group: the other themes put sliders under it.
     let fill = if t.pro { ui.data(|d| d.get_temp::<f32>(color_field_fill_id())) } else { None };
     // The mixer rows sit under the field in the pro tab (`color_mixer_ui`).
-    let h = color_field_height(fill.map(|f| f - crate::color_mixer_ui::MIXER_HEIGHT), w);
+    let h = color_field_height(fill.map(|f| f - crate::color_mixer_ui::reserved_height(ui)), w);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
         let (chips, _) = ui.allocate_exact_size(vec2(38.0, h), Sense::hover());

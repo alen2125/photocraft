@@ -546,8 +546,16 @@ pub fn show(app: &mut PhotocraftApp, ui: &mut egui::Ui, shown: &[Group], mut bod
                 // No scroll fade: it darkens real colours, swatches and previews at the edge
                 // (#2726); the scroll bar already shows there is more.
                 ui.spacing_mut().scroll.fade.strength = 0.0;
+                // The pro Color tab never scrolls: it fits the group (`color_mixer_ui::reserved_height`).
+                let fixed = t.pro && g == Group::Color && tab == 0;
                 egui::ScrollArea::vertical()
                     .id_salt(("dock-scroll", g.key(), tab))
+                    .scroll([false, !fixed])
+                    .scroll_bar_visibility(if fixed {
+                        egui::scroll_area::ScrollBarVisibility::AlwaysHidden
+                    } else {
+                        egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded
+                    })
                     .max_height(inner)
                     .auto_shrink([false, false])
                     .show(ui, |ui| body(app, ui, g, tab));
