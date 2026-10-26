@@ -548,8 +548,16 @@ fn body(app: &mut PhotocraftApp, ui: &mut egui::Ui, id: &str) {
         crate::panels::dock_body(app, ui, *group, tab);
     } else {
         crate::panels::offer_color_field_fill(ui, pro, *group, tab);
+        // The pro Color tab never scrolls: it fits its panel (`color_mixer_ui::reserved_height`).
+        let fixed = pro && *group == crate::dock::Group::Color && tab == 0;
         egui::ScrollArea::vertical()
             .id_salt(("shared-panel-body", id))
+            .scroll([false, !fixed])
+            .scroll_bar_visibility(if fixed {
+                egui::scroll_area::ScrollBarVisibility::AlwaysHidden
+            } else {
+                egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded
+            })
             .auto_shrink([false, false])
             .show(ui, |ui| crate::panels::dock_body(app, ui, *group, tab));
     }

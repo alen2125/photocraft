@@ -1308,6 +1308,9 @@ pub struct ColorPanelState {
     #[serde(default)]
     pub mixer_fixed: bool,
     /// The colours a fixed mixer row runs between, and the foreground/background it last saw.
+    /// A fixed mixer row also rebuilds when the Eyedropper samples a colour (off: it does not).
+    #[serde(default)]
+    pub mixer_eyedropper: bool,
     #[serde(default)]
     pub mixer_ends: [[f32; 4]; 2],
     #[serde(default)]

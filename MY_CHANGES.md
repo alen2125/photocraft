@@ -63,6 +63,8 @@
 | `crates/engine/src/shell_commands.rs` | после `ui.customShape.*` | 2 строки `ui.colorMixer.next/prev` (хоткеи шага по полоске; клавиш по умолчанию нет) |
 | `crates/ui-egui/src/menus.rs` | `invoke_unguarded` и `is_enabled` | вызов `color_mixer_ui::invoke` (3 строки) и `|| color_mixer_ui::handles(id)` |
 | `crates/ui-egui/src/prefs_ui.rs` | тот же список «Комбинации клавиш», что у Custom Shape | `&& !color_mixer_ui::handles(id)` |
+| `crates/ui-egui/src/canvas.rs` | `sample_eyedropper` | строка `crate::color_mixer_ui::eyedropper_sampled(app);` после `tools.setColors` (кнопка «Пипетка» заморозки полоски) |
+| `crates/ui-egui/src/panel_docking.rs` | `body`, `ScrollArea` | то же для нового дока: `fixed` для pro-вкладки «Цвет», прокрутка и полоса выключены |
 | `crates/ui-egui/src/dock.rs` | `ScrollArea` вкладки (ветка не `scrolls_itself`) | `fixed` для pro-вкладки «Цвет»: прокрутка и полоса выключены (`.scroll([false, !fixed])`, `AlwaysHidden`) |
 | `crates/ui-egui/src/panels.rs` | `dock_body`, pro «Цвет» | кнопка HSB/HSL убрана из конца вкладки (её рисует `color_mixer_ui::panel` в ряду кнопок); `remember_height` измеряет высоту под полем; `color_slider_mode_row` стала `pub(crate)` |
 | `crates/ui-egui/src/menu_keys.rs` | `ALT_MENUS`, `show_underlines`, `keys` | Alt (тап и Alt+буква) больше не фокусирует меню и не подчёркивает буквы; `const ALT_MENUS: bool = cfg!(test)`, чтобы апстримные тесты остались как были. F10 работает |

@@ -5666,6 +5666,7 @@ fn sample_eyedropper(app: &mut PhotocraftApp, x: f64, y: f64, mods: egui::Modifi
     if let Some([r, g, b]) = eyedropper_color(app, x, y) {
         let key = if mods.alt { "background" } else { "foreground" };
         let _ = app.run("tools.setColors", json!({ key: [r, g, b, 1.0] }));
+        crate::color_mixer_ui::eyedropper_sampled(app);
     }
 }
 

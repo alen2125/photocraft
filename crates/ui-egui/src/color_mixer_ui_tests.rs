@@ -143,3 +143,17 @@ fn the_wheel_triangle_does_not_turn_with_the_hue() {
     assert!(a[1].x < 10.0 && a[1].y < 10.0, "white top left");
     assert!(a[2].x < 10.0 && a[2].y > 10.0, "black bottom left");
 }
+
+#[test]
+fn a_fixed_row_ignores_the_eyedropper_unless_its_button_is_on() {
+    let mut app = app();
+    app.ui.color_panel.mixer_fixed = true;
+    let first = strip(&mut app);
+    app.session.tools.foreground = [0.0, 1.0, 0.0, 1.0];
+    eyedropper_sampled(&mut app);
+    assert_eq!(strip(&mut app), first, "button off: the row stays");
+    app.ui.color_panel.mixer_eyedropper = true;
+    app.session.tools.foreground = [0.0, 0.5, 0.0, 1.0];
+    eyedropper_sampled(&mut app);
+    assert_ne!(strip(&mut app), first, "button on: the row follows the sample");
+}

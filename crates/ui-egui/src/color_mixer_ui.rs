@@ -81,6 +81,15 @@ fn pick(app: &mut PhotocraftApp, gesture: Option<String>, c: [f32; 4]) {
     app.ui.color_panel.mixer_seen = [app.session.tools.foreground, app.session.tools.background];
 }
 
+/// The Eyedropper just set the foreground or background. A fixed row with its Eyedropper button off
+/// takes the new colours as already seen, so it keeps the swatches it had.
+pub(crate) fn eyedropper_sampled(app: &mut PhotocraftApp) {
+    let cp = &mut app.ui.color_panel;
+    if cp.mixer_fixed && !cp.mixer_eyedropper {
+        cp.mixer_seen = [app.session.tools.foreground, app.session.tools.background];
+    }
+}
+
 /// The swatches of the mixer row, foreground to background. A fixed row keeps the colours it had
 /// until the foreground or background changes by any other means (wheel, hex, eyedropper, swap).
 fn strip(app: &mut PhotocraftApp) -> Vec<[f32; 4]> {
@@ -162,7 +171,7 @@ pub(crate) fn reserved_height(ui: &egui::Ui) -> f32 {
 
 /// Remember how tall everything below the field was (`top`: where it started).
 pub(crate) fn remember_height(ui: &egui::Ui, top: f32) {
-    let h = (ui.cursor().top() - top).max(0.0) + 4.0;
+    let h = (ui.cursor().top() - top).max(0.0);
     let key = egui::Id::new("color-below-field");
     if ui.data(|d| d.get_temp::<f32>(key)).is_none_or(|old| (old - h).abs() > 0.5) {
         ui.data_mut(|d| d.insert_temp(key, h));
@@ -172,7 +181,7 @@ pub(crate) fn remember_height(ui: &egui::Ui, top: f32) {
 
 /// A toggle or step button, big enough for a stylus.
 fn big_button(ui: &mut egui::Ui, label: &str, min_w: f32, on: bool, enabled: bool) -> bool {
-    let b = egui::Button::new(egui::RichText::new(label).size(15.0)).min_size(vec2(min_w, BUTTON_H)).selected(on);
+    let b = egui::Button::new(egui::RichText::new(label).size(14.0)).min_size(vec2(min_w, BUTTON_H)).selected(on);
     ui.add_enabled(enabled, b).clicked()
 }
 
@@ -180,7 +189,7 @@ fn big_button(ui: &mut egui::Ui, label: &str, min_w: f32, on: bool, enabled: boo
 /// toggles, and the swatches from foreground to background. Clicking one makes it the edited colour.
 pub(crate) fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
-    ui.add_space(4.0);
+    ui.add_space(2.0);
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
         let n = steps(app);
@@ -198,6 +207,10 @@ pub(crate) fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         // On: the row follows the colours. Off: it stays put until the colour changes elsewhere.
         if big_button(ui, tl!("Change color"), 0.0, !cp.mixer_fixed, true) {
             cp.mixer_fixed = !cp.mixer_fixed;
+        }
+        // Only a fixed row has a say: a following one rebuilds from whatever the colours are.
+        if big_button(ui, tl!("Eyedropper"), 0.0, cp.mixer_eyedropper, cp.mixer_fixed) {
+            cp.mixer_eyedropper = !cp.mixer_eyedropper;
         }
         if big_button(ui, tl!("Wheel"), 0.0, cp.wheel, true) {
             cp.wheel = !cp.wheel;
