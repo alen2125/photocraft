@@ -1295,6 +1295,15 @@ pub struct ColorPanelState {
     /// HSB or RGB sliders under the colour field (#7172).
     #[serde(default)]
     pub slider_mode: ColorPanelSliderMode,
+    /// Mixer row: steps between foreground and background (0 = default; see `color_mixer_ui`).
+    #[serde(default)]
+    pub mixer_steps: usize,
+    /// Keep the perceived brightness when the hue changes (`color_mixer_ui`).
+    #[serde(default)]
+    pub lock_brightness: bool,
+    /// Hue ring + triangle instead of the square field (`color_mixer_ui`).
+    #[serde(default)]
+    pub wheel: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

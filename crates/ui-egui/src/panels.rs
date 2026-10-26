@@ -1904,6 +1904,7 @@ pub(crate) fn dock_body(app: &mut PhotocraftApp, ui: &mut egui::Ui, group: crate
         (Group::Color, 3) => crate::preset_panels::patterns_panel(app, ui),
         (Group::Color, 0) if pro => {
             color_field(app, ui);
+            crate::color_mixer_ui::panel(app, ui);
             if app.ui.color_panel.slider_mode == ColorPanelSliderMode::Rgb {
                 ui.add_space(8.0);
                 rgb_sliders(app, ui);
@@ -4253,11 +4254,16 @@ fn color_field(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     // hex/RGB readout (which folds onto a second line in a narrow dock). Without a dock, 120 pt.
     // Only Photoshop's themes stretch it over the group: the other themes put sliders under it.
     let fill = if t.pro { ui.data(|d| d.get_temp::<f32>(color_field_fill_id())) } else { None };
-    let h = color_field_height(fill, w);
+    // The mixer rows sit under the field in the pro tab (`color_mixer_ui`).
+    let h = color_field_height(fill.map(|f| f - crate::color_mixer_ui::MIXER_HEIGHT), w);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
         let (chips, _) = ui.allocate_exact_size(vec2(38.0, h), Sense::hover());
         field_chips(app, ui, chips);
+        if app.ui.color_panel.wheel {
+            crate::color_mixer_ui::wheel_field(app, ui, vec2(w - 38.0 - 8.0, h), hsva, key);
+            return;
+        }
         // SV field.
         let field_w = w - 38.0 - strip_w - 16.0;
         let (field, fresp) = ui.allocate_exact_size(vec2(field_w, h), Sense::click_and_drag());
@@ -4311,6 +4317,7 @@ fn color_field(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             && let Some(p) = sresp.interact_pointer_pos()
         {
             hsva.h = 1.0 - ((p.y - strip.top()) / strip.height()).clamp(0.0, 0.9999);
+            hsva = crate::color_mixer_ui::apply_lock(app, ui, hsva, sresp.drag_started() || !sresp.dragged());
         }
         let y = strip.top() + (1.0 - hsva.h) * strip.height();
         let tri = vec![pos2(strip.right() + 1.0, y), pos2(strip.right() + 6.0, y - 4.0), pos2(strip.right() + 6.0, y + 4.0)];
@@ -4357,19 +4364,19 @@ fn srgb_bytes(c: [f32; 4]) -> [u8; 3] {
 /// The Color panel's HSB, as Photoshop's and the Color Picker's: on the sRGB-encoded values,
 /// so a 50% grey has Brightness 50%. egui's `Hsva` conversions work in linear light, which put
 /// that grey at 22% and drew the field's middle as 188 (#3323); `Hsva` only holds the numbers.
-fn srgb_hsva(c: [f32; 4]) -> egui::ecolor::Hsva {
+pub(crate) fn srgb_hsva(c: [f32; 4]) -> egui::ecolor::Hsva {
     let [h, s, v] = photocraft_color::convert::rgb_to_hsb([c[0], c[1], c[2]].map(|v| v.clamp(0.0, 1.0)));
     egui::ecolor::Hsva::new(h / 360.0, s, v, 1.0)
 }
 
 /// The inverse of srgb_hsva: the Color panel's HSB back to sRGB-encoded values.
-fn hsva_srgb(h: egui::ecolor::Hsva) -> [f32; 4] {
+pub(crate) fn hsva_srgb(h: egui::ecolor::Hsva) -> [f32; 4] {
     let [r, g, b] = photocraft_color::convert::hsb_to_rgb([h.h * 360.0, h.s.clamp(0.0, 1.0), h.v.clamp(0.0, 1.0)]);
     [r, g, b, 1.0]
 }
 
 /// The colour to draw for Color panel HSB `h` (see [`srgb_hsva`]).
-fn hsva_color32(h: egui::ecolor::Hsva) -> Color32 {
+pub(crate) fn hsva_color32(h: egui::ecolor::Hsva) -> Color32 {
     let [r, g, b] = srgb_bytes(hsva_srgb(h));
     Color32::from_rgb(r, g, b)
 }

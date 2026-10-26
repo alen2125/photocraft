@@ -47,6 +47,21 @@
 
 Самые частые места конфликтов в апстриме: `options_bar` и `shape_preview` в `vector_ui.rs`, `shapes_panel` / `shape_picker` в `preset_panels.rs`, `ToolOptions` в `state.rs`. Если апстрим перепишет любой из них, достаточно заново вставить вызовы функций из `custom_shape_ui.rs`.
 
+## Панель «Цвет»: смеситель, блокировка яркости, колесо
+
+Новый файл `crates/ui-egui/src/color_mixer_ui.rs` (+ `color_mixer_ui_tests.rs`). Точки касания в чужих файлах:
+
+| Файл | Место | Что изменено |
+|---|---|---|
+| `crates/ui-egui/src/lib.rs` | список `pub mod` | `pub mod color_mixer_ui;` |
+| `crates/ui-egui/src/state.rs` | `ColorPanelState` | поля `mixer_steps`, `lock_brightness`, `wheel` (старые настройки грузятся) |
+| `crates/ui-egui/src/panels.rs` | `dock_body`, ветка `(Group::Color, 0) if pro` | строка `crate::color_mixer_ui::panel(app, ui);` после `color_field` |
+| `crates/ui-egui/src/panels.rs` | `color_field` | высота поля уменьшена на `MIXER_HEIGHT`; ранний выход в `wheel_field` после чипов; `apply_lock` после выбора оттенка на полоске |
+| `crates/ui-egui/src/panels.rs` | `srgb_hsva`, `hsva_srgb`, `hsva_color32` | `pub(crate)` |
+| `crates/ui-egui/src/i18n/ru.tsv` | конец | «Lock brightness», «Wheel» |
+
+Смеситель — ряд от основного к фоновому цвету (3–29 шагов, интерполяция по sRGB), клик по плитке ставит цвет. Блокировка яркости держит относительную яркость (Rec.709, линейный свет) при смене оттенка, подбирая V. Колесо — кольцо оттенка и треугольник S/V; квадрат остаётся видом по умолчанию.
+
 ## Что где работает
 
 - **Клик и драг за холстом** (п. 1–2): `custom_shape_ui::finish`. Клик ничего не открывает; с `custom_shape_default_size ≥ 1` ставит фигуру такого размера. Драг, начатый на серой области, работает. Фигура целиком вне холста пропускается молча, без сообщений.
