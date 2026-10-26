@@ -11,7 +11,9 @@ use crate::panels::{hsva_color32, hsva_srgb};
 use crate::theme::Tokens;
 
 /// Height the mixer rows take under the colour field (the field gives it up in `color_field_height`).
-pub const MIXER_HEIGHT: f32 = 58.0;
+pub const MIXER_HEIGHT: f32 = 148.0;
+const BUTTON_H: f32 = 44.0;
+const STRIP_H: f32 = 30.0;
 const MIN_STEPS: usize = 3;
 const MAX_STEPS: usize = 29;
 const DEFAULT_STEPS: usize = 7;
@@ -62,14 +64,75 @@ fn active(app: &PhotocraftApp) -> [f32; 4] {
 }
 
 /// Sets the colour the panel edits, with the hooks `color_field` runs for the foreground.
-fn set_active(app: &mut PhotocraftApp, ui: &egui::Ui, c: [f32; 4]) {
+fn set_active(app: &mut PhotocraftApp, gesture: Option<String>, c: [f32; 4]) {
     if app.ui.color_panel.background {
         app.session.tools.background = c;
     } else {
         app.session.tools.foreground = c;
         crate::type_tool::foreground_changed(app);
-        crate::shape_fill_ui::foreground_changed(app, crate::shape_fill_ui::gesture(ui));
+        crate::shape_fill_ui::foreground_changed(app, gesture);
     }
+}
+
+/// Picks a swatch of the mixer row. A fixed row remembers the colours as they are now, so that
+/// picking from it is not mistaken for a change made elsewhere.
+fn pick(app: &mut PhotocraftApp, gesture: Option<String>, c: [f32; 4]) {
+    set_active(app, gesture, [c[0], c[1], c[2], 1.0]);
+    app.ui.color_panel.mixer_seen = [app.session.tools.foreground, app.session.tools.background];
+}
+
+/// The swatches of the mixer row, foreground to background. A fixed row keeps the colours it had
+/// until the foreground or background changes by any other means (wheel, hex, eyedropper, swap).
+fn strip(app: &mut PhotocraftApp) -> Vec<[f32; 4]> {
+    let n = steps(app);
+    let now = [app.session.tools.foreground, app.session.tools.background];
+    let cp = &mut app.ui.color_panel;
+    if !cp.mixer_fixed || cp.mixer_seen != now {
+        cp.mixer_ends = now;
+        cp.mixer_seen = now;
+    }
+    mix_steps(cp.mixer_ends[0], cp.mixer_ends[1], n)
+}
+
+/// The swatch nearest the colour being edited, and whether it is exactly that colour.
+fn selected(app: &PhotocraftApp, colors: &[[f32; 4]]) -> Option<(usize, bool)> {
+    let a = active(app);
+    let dist = |c: &[f32; 4]| (0..3).map(|k| (c[k] - a[k]).powi(2)).sum::<f32>();
+    let (i, d) = colors.iter().enumerate().map(|(i, c)| (i, dist(c))).min_by(|x, y| x.1.total_cmp(&y.1))?;
+    Some((i, d < 1e-6))
+}
+
+/// Moves the selection along the mixer row by `delta` steps (towards the background when positive),
+/// stopping at the ends, and says where it is in the status bar. For the keys the user gives it.
+fn step(app: &mut PhotocraftApp, delta: isize) {
+    let colors = strip(app);
+    let Some((i, _)) = selected(app, &colors) else { return };
+    let last = colors.len().saturating_sub(1);
+    let to = i.saturating_add_signed(delta).min(last);
+    if let Some(c) = colors.get(to) {
+        pick(app, None, *c);
+    }
+    let template = "Color Mixer: step {i} of {n}";
+    app.ui.status = crate::i18n::fmt(tl!(template), &[("i", &(to + 1).to_string()), ("n", &colors.len().to_string())]);
+    app.ui.status_error = false;
+}
+
+const COMMANDS: &[&str] = &["ui.colorMixer.next", "ui.colorMixer.prev"];
+
+/// Is `id` one of the mixer's step commands? They have no key by default (Edit › Keyboard Shortcuts).
+pub fn handles(id: &str) -> bool {
+    COMMANDS.contains(&id)
+}
+
+/// Step the mixer selection from a key. `None` for any other command.
+pub fn invoke(app: &mut PhotocraftApp, id: &str) -> Option<Result<serde_json::Value, String>> {
+    let delta = match id {
+        "ui.colorMixer.next" => 1,
+        "ui.colorMixer.prev" => -1,
+        _ => return None,
+    };
+    step(app, delta);
+    Some(Ok(serde_json::Value::Null))
 }
 
 /// With Lock brightness on, a hue change keeps the luminance the colour had when the gesture began
@@ -91,48 +154,61 @@ pub(crate) fn apply_lock(app: &PhotocraftApp, ui: &egui::Ui, mut hsva: Hsva, fre
     hsva
 }
 
-/// The mixer row under the colour field: step buttons, the Lock brightness and Wheel toggles, and
-/// the swatches from foreground to background. Clicking one makes it the edited colour.
+/// A toggle or step button, big enough for a stylus.
+fn big_button(ui: &mut egui::Ui, label: &str, min_w: f32, on: bool, enabled: bool) -> bool {
+    let b = egui::Button::new(egui::RichText::new(label).size(15.0)).min_size(vec2(min_w, BUTTON_H)).selected(on);
+    ui.add_enabled(enabled, b).clicked()
+}
+
+/// The mixer row under the colour field: step buttons, the Lock brightness, Change colour and Wheel
+/// toggles, and the swatches from foreground to background. Clicking one makes it the edited colour.
 pub(crate) fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     ui.add_space(4.0);
     ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
+        ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
         let n = steps(app);
-        if ui.add_enabled(n > MIN_STEPS, egui::Button::new("−").small()).clicked() {
+        if big_button(ui, "−", BUTTON_H, false, n > MIN_STEPS) {
             app.ui.color_panel.mixer_steps = n - 1;
         }
-        ui.label(egui::RichText::new(n.to_string()).font(crate::theme::mono(11.0)).color(t.text_faint));
-        if ui.add_enabled(n < MAX_STEPS, egui::Button::new("+").small()).clicked() {
+        ui.label(egui::RichText::new(n.to_string()).font(crate::theme::mono(13.0)).color(t.text_faint));
+        if big_button(ui, "+", BUTTON_H, false, n < MAX_STEPS) {
             app.ui.color_panel.mixer_steps = n + 1;
         }
-        let lock = app.ui.color_panel.lock_brightness;
-        if ui.add(egui::Button::new(tl!("Lock brightness")).small().selected(lock)).clicked() {
-            app.ui.color_panel.lock_brightness = !lock;
+        let cp = &mut app.ui.color_panel;
+        if big_button(ui, tl!("Lock brightness"), 0.0, cp.lock_brightness, true) {
+            cp.lock_brightness = !cp.lock_brightness;
         }
-        let wheel = app.ui.color_panel.wheel;
-        if ui.add(egui::Button::new(tl!("Wheel")).small().selected(wheel)).clicked() {
-            app.ui.color_panel.wheel = !wheel;
+        // On: the row follows the colours. Off: it stays put until the colour changes elsewhere.
+        if big_button(ui, tl!("Change color"), 0.0, !cp.mixer_fixed, true) {
+            cp.mixer_fixed = !cp.mixer_fixed;
+        }
+        if big_button(ui, tl!("Wheel"), 0.0, cp.wheel, true) {
+            cp.wheel = !cp.wheel;
         }
     });
     ui.add_space(4.0);
-    let colors = mix_steps(app.session.tools.foreground, app.session.tools.background, steps(app));
-    let (row, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 20.0), Sense::click());
+    let colors = strip(app);
+    let (row, resp) = ui.allocate_exact_size(vec2(ui.available_width(), STRIP_H), Sense::click());
     let n = colors.len();
+    let cell = |i: usize| row.left() + row.width() * i as f32 / n.max(1) as f32;
     for (i, c) in colors.iter().enumerate() {
-        let x0 = row.left() + row.width() * i as f32 / n as f32;
-        let x1 = row.left() + row.width() * (i + 1) as f32 / n as f32;
         // A hair of overlap, so neighbouring swatches leave no seam.
-        let r = Rect::from_min_max(pos2(x0, row.top()), pos2((x1 + 0.5).min(row.right()), row.bottom()));
+        let r = Rect::from_min_max(pos2(cell(i), row.top()), pos2((cell(i + 1) + 0.5).min(row.right()), row.bottom()));
         ui.painter().rect_filled(r, 0.0, Color32::from_rgb(q(c[0]), q(c[1]), q(c[2])));
     }
     ui.painter().rect_stroke(row, 0.0, Stroke::new(1.0, t.separator), StrokeKind::Outside);
+    if let Some((i, true)) = selected(app, &colors) {
+        let r = Rect::from_min_max(pos2(cell(i), row.top()), pos2(cell(i + 1), row.bottom())).shrink(1.0);
+        ui.painter().rect_stroke(r, 0.0, Stroke::new(2.0, Color32::WHITE), StrokeKind::Inside);
+        ui.painter().rect_stroke(r.shrink(2.0), 0.0, Stroke::new(1.0, Color32::from_black_alpha(160)), StrokeKind::Inside);
+    }
     if resp.clicked()
         && let Some(p) = resp.interact_pointer_pos()
     {
         let i = (((p.x - row.left()) / row.width().max(1.0)) * n as f32) as usize;
-        if let Some(c) = colors.get(i.min(n - 1)) {
-            set_active(app, ui, [c[0], c[1], c[2], 1.0]);
+        if let Some(c) = colors.get(i.min(n.saturating_sub(1))) {
+            pick(app, crate::shape_fill_ui::gesture(ui), *c);
         }
     }
 }
@@ -144,7 +220,7 @@ fn q(v: f32) -> u8 {
 // ----------------------------------------------------------------------------- hue ring + triangle
 
 /// The triangle's corners for hue `h` (0..1) in a circle of radius `r` about `c`: pure hue, white,
-/// black, going counter-clockwise from the hue's direction on the ring.
+/// black, going counter-clockwise from the direction `h` (a turn, 0 = right).
 pub fn tri_vertices(c: egui::Pos2, r: f32, h: f32) -> [egui::Pos2; 3] {
     let at = |turn: f32| {
         let a = (h + turn) * std::f32::consts::TAU;
@@ -224,7 +300,8 @@ pub(crate) fn wheel_field(app: &mut PhotocraftApp, ui: &mut egui::Ui, size: Vec2
     ui.painter().add(ring);
 
     // Triangle: pure hue, white, black corners; the GPU blend is the saturation/brightness field.
-    let verts = tri_vertices(c, tri_r, hsva.h);
+    // The triangle stays put (pure hue at the right) while the ring marker turns, as in Coolorus.
+    let verts = tri_vertices(c, tri_r, 0.0);
     let mut tri = egui::Mesh::default();
     tri.colored_vertex(verts[0], hsva_color32(Hsva::new(hsva.h, 1.0, 1.0, 1.0)));
     tri.colored_vertex(verts[1], Color32::WHITE);
@@ -279,14 +356,14 @@ pub(crate) fn wheel_field(app: &mut PhotocraftApp, ui: &mut egui::Ui, size: Vec2
 
     // Markers.
     let ring_mid = dir(hsva.h, (outer + inner) * 0.5);
-    let knob = point_from_sv(tri_vertices(c, tri_r, hsva.h), hsva.s, hsva.v);
+    let knob = point_from_sv(verts, hsva.s, hsva.v);
     for m in [ring_mid, knob] {
         ui.painter().circle_stroke(m, 5.0, Stroke::new(1.5, Color32::WHITE));
         ui.painter().circle_stroke(m, 6.5, Stroke::new(1.0, Color32::from_black_alpha(160)));
     }
 
     if changed {
-        set_active(app, ui, hsva_srgb(hsva));
+        set_active(app, crate::shape_fill_ui::gesture(ui), hsva_srgb(hsva));
         ui.data_mut(|d| d.insert_temp(key, (hsva.h, hsva.s)));
     }
 }

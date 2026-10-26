@@ -20,6 +20,9 @@ pub const SHELL_COMMANDS: &[(&str, &str, &[&str], Option<&str>)] = &[
     ("ui.customShape.fit.zipper", "Custom Shape: Fit Zipper", &[], None),
     ("ui.customShape.fit.cycle", "Custom Shape: Cycle Fit (Box / Leaf / Zipper)", &[], None),
     ("ui.customShape.random.toggle", "Custom Shape: Toggle Randomize", &[], None),
+    // Color panel mixer row: step the selected swatch (`color_mixer_ui::invoke`).
+    ("ui.colorMixer.next", "Color Mixer: Next Step (towards background)", &[], None),
+    ("ui.colorMixer.prev", "Color Mixer: Previous Step (towards foreground)", &[], None),
     ("window.panel.group", "Change Panel Group", &[], None),
     ("window.panel.layout", "Change Panel Layout", &[], None),
     ("window.panel.move", "Move Panel", &[], None),

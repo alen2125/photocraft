@@ -4590,3 +4590,7 @@ shape	Appearance	Оформление
 # Color panel mixer (color_mixer_ui)
 	Lock brightness	Блокировка яркости
 	Wheel	Колесо
+	Change color	Менять цвет
+	Color Mixer: step {i} of {n}	Смеситель: шаг {i} из {n}
+@ui.colorMixer.next	Color Mixer: Next Step (towards background)	Смеситель: следующий шаг (к фону)
+@ui.colorMixer.prev	Color Mixer: Previous Step (towards foreground)	Смеситель: предыдущий шаг (к основному)

@@ -1304,6 +1304,14 @@ pub struct ColorPanelState {
     /// Hue ring + triangle instead of the square field (`color_mixer_ui`).
     #[serde(default)]
     pub wheel: bool,
+    /// Mixer row stays as it was until the colour changes elsewhere (off: it follows the colours).
+    #[serde(default)]
+    pub mixer_fixed: bool,
+    /// The colours a fixed mixer row runs between, and the foreground/background it last saw.
+    #[serde(default)]
+    pub mixer_ends: [[f32; 4]; 2],
+    #[serde(default)]
+    pub mixer_seen: [[f32; 4]; 2],
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
