@@ -97,3 +97,26 @@ cargo clippy -p photocraft-psd -p photocraft-vector -p photocraft-engine -p phot
 cargo xtask layers
 cargo xtask wasm
 ```
+
+## Доработки: U, ширина листика, Erase, память панели «Цвет», режимы лассо
+
+Новые файлы: `crates/ui-egui/src/tool_default_ui.rs`, `color_panel_memory.rs`, `lasso_modes_ui.rs` (+ `lasso_modes_ui_tests.rs`).
+
+| Файл | Место | Что изменено |
+|---|---|---|
+| `crates/ui-egui/src/shortcuts.rs` | `handle`, выбор инструмента по клавише | 2 строки: `crate::tool_default_ui::pick` (U не циклит, по умолчанию Custom Shape, иначе последний выбранный в группе) |
+| `crates/ui-egui/src/lib.rs` | `pub mod`, кадровый цикл | `pub mod tool_default_ui/color_panel_memory/lasso_modes_ui;` и `color_panel_memory::persist(self, &ctx);` после `brush_picker::persist` |
+| `crates/ui-egui/src/prefs_ui.rs` | `load` | `crate::color_panel_memory::restore(app);` после `brush_picker::restore`; тест `color_panel_settings_survive_a_restart` |
+| `crates/engine/src/prefs.rs` | `struct Preferences` | поле `color_panel: Value` |
+| `crates/ui-egui/src/color_mixer_ui.rs` | `MIN_STEPS`, `MAX_STEPS` | `pub(crate)` |
+| `crates/ui-egui/src/state.rs` | `ToolOptions` и `Default` | `leaf_fixed`, `leaf_width_px`, `custom_shape_erase`, `lasso_mode`, `lasso_cell_px` |
+| `crates/vector/src/warp.rs` | `MAX_WIDTH` | 4.0 → 1000.0 (фиксированная ширина в px на коротком драге) |
+| `crates/engine/src/shell_commands.rs` | после `ui.customShape.*` | `ui.customShape.erase.toggle` |
+| `crates/ui-egui/src/canvas.rs` | `finish_gesture` (ветка Lasso), `commit_polygon` | режим выделения через `lasso_modes_ui::mode`, после `select.lasso` вызов `lasso_modes_ui::after_select` |
+| `crates/ui-egui/src/magnetic_lasso_ui.rs` | `commit` | то же для `select.magneticLasso` |
+| `crates/ui-egui/src/panels.rs` | options bar лассо | строка `crate::lasso_modes_ui::options(app, ui);` после Anti-alias |
+| `crates/ui-egui/src/tool_reset.rs` | `Tool::Lasso`/`MagneticLasso` | `lasso_mode, lasso_cell_px` в `reset!` |
+
+В новых местах своих файлов: `custom_shape_ui.rs` (Fixed width, Erase, `sequence` для случайных фигур сетки), `custom_shape_cmds.rs` (параметр `erase` у `fillPixels`, команда `shape.presets.fillGrid`).
+
+Что делают: **U** всегда Custom Shape (или последний выбранный в панели из группы), без цикла. **Fixed width** (Leaf/Zipper): ширина в px не зависит от длины драга. **Erase** (Pixels): фигура стирает альфу. **Панель «Цвет»** помнит настройки между запусками. **Лассо → Mode**: Clear удаляет пиксели внутри, Custom Shape заливает сеткой фигур (ряды слева направо и сверху вниз, ячейка `cell × cell`, фигуры основным цветом, пустоты фоновым, Randomize учитывается). В обоих режимах выделение заменяется и после действия снимается.

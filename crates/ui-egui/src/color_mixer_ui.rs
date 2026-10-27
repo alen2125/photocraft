@@ -14,8 +14,8 @@ use crate::theme::Tokens;
 pub const MIXER_HEIGHT: f32 = 140.0;
 const BUTTON_H: f32 = 44.0;
 const STRIP_H: f32 = 30.0;
-const MIN_STEPS: usize = 3;
-const MAX_STEPS: usize = 29;
+pub(crate) const MIN_STEPS: usize = 3;
+pub(crate) const MAX_STEPS: usize = 29;
 const DEFAULT_STEPS: usize = 7;
 
 /// The mixer's step count: 0 (never set) means the default.

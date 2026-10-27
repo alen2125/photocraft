@@ -65,8 +65,11 @@ fn leaf_of_drag(app: &PhotocraftApp, start: [f64; 2], end: [f64; 2], mods: egui:
     let o = &app.ui.tool_options;
     let leaf =
         Leaf::from_drag(Point::new(start[0], start[1]), Point::new(end[0], end[1]), mods.shift, mods.alt, f64::from(o.leaf_width), f64::from(o.leaf_fullness));
-    let long_enough = (leaf.b.x - leaf.a.x).hypot(leaf.b.y - leaf.a.y) >= 1.0;
-    long_enough.then_some(leaf).filter(|l| l.outline().is_some())
+    let len = (leaf.b.x - leaf.a.x).hypot(leaf.b.y - leaf.a.y);
+    // Fixed width: the width is `leaf_width_px` whatever the length of AB, so the leaf stretches
+    // along the drag and not across it.
+    let leaf = if o.leaf_fixed && len >= 1.0 { Leaf { width: f64::from(o.leaf_width_px.max(0.0)) / len, ..leaf } } else { leaf };
+    (len >= 1.0).then_some(leaf).filter(|l| l.outline().is_some())
 }
 
 /// The selected shape bent onto the leaf being dragged (the drag preview); `None` unless the
@@ -226,6 +229,7 @@ fn finish_leaf(app: &mut PhotocraftApp, start: [f64; 2], end: [f64; 2], mods: eg
         "leaf": {"a": [leaf.a.x, leaf.a.y], "b": [leaf.b.x, leaf.b.y], "width": leaf.width, "fullness": leaf.fullness, "clip": is_zipper(app)},
     });
     let command = if app.ui.tool_options.custom_shape_mode == PIXELS {
+        p["erase"] = serde_json::json!(erasing(app));
         "shape.presets.fillPixels"
     } else {
         p["fill"] = crate::vector_ui::fill_param(app);
@@ -260,13 +264,22 @@ pub fn options(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let fits = [("box".to_string(), tl!("Box")), (LEAF.to_string(), tl!("Leaf")), (ZIPPER.to_string(), tl!("Zipper"))];
     crate::widgets::dropdown(ui, "custom-shape-fit", &mut o.custom_shape_fit, &fits, 70.0);
     if matches!(o.custom_shape_fit.as_str(), LEAF | ZIPPER) {
+        crate::widgets::checkbox(ui, &mut o.leaf_fixed, tl!("Fixed width"));
         label(ui, tl!("Width:"));
-        crate::widgets::value_field(ui, &mut o.leaf_width, 0.0..=4.0, "", 52.0);
+        if o.leaf_fixed {
+            crate::widgets::value_field(ui, &mut o.leaf_width_px, 1.0..=10000.0, "px", 62.0);
+        } else {
+            crate::widgets::value_field(ui, &mut o.leaf_width, 0.0..=4.0, "", 52.0);
+        }
         label(ui, tl!("Fullness:"));
         crate::widgets::value_field(ui, &mut o.leaf_fullness, 0.1..=3.0, "", 52.0);
     } else {
         label(ui, tl!("Click size:"));
         crate::widgets::value_field(ui, &mut o.custom_shape_default_size, 0.0..=10000.0, "px", 62.0);
+    }
+    if o.custom_shape_mode == PIXELS {
+        crate::widgets::vline(ui, 22.0);
+        crate::widgets::checkbox(ui, &mut o.custom_shape_erase, tl!("Erase"));
     }
     crate::widgets::vline(ui, 22.0);
     label(ui, tl!("Randomize every:"));
@@ -307,6 +320,7 @@ const COMMANDS: &[&str] = &[
     "ui.customShape.fit.zipper",
     "ui.customShape.fit.cycle",
     "ui.customShape.random.toggle",
+    "ui.customShape.erase.toggle",
 ];
 
 /// Is `id` one of the Custom Shape option commands? They work whatever tool is active.
@@ -355,6 +369,10 @@ pub fn invoke(app: &mut PhotocraftApp, id: &str) -> Option<Result<serde_json::Va
             };
             o.custom_shape_fit = next.into();
             said.to_string()
+        }
+        "ui.customShape.erase.toggle" => {
+            o.custom_shape_erase = !o.custom_shape_erase;
+            if o.custom_shape_erase { tl!("Custom Shape: Erase on") } else { tl!("Custom Shape: Erase off") }.to_string()
         }
         _ => {
             // Randomize off remembers its N, so on brings the same one back.
@@ -449,6 +467,40 @@ pub fn after_place(app: &mut PhotocraftApp) {
     }
 }
 
+/// The shape names for `n` shapes placed one after another (a lasso's grid of shapes): the
+/// selected shape, and with Randomize on a new random one after every Nth, as when placing them by
+/// hand. The candidates are listed once, and the tool is left on the last shape picked.
+pub fn sequence(app: &mut PhotocraftApp, n: usize) -> Vec<String> {
+    let every = app.ui.tool_options.shape_random_every;
+    if every == 0 {
+        return vec![app.ui.presets_ui.shape().to_string(); n];
+    }
+    let names = candidates(app);
+    let mut out = Vec::with_capacity(n);
+    for _ in 0..n {
+        out.push(app.ui.presets_ui.shape().to_string());
+        let o = &mut app.ui.tool_options;
+        o.shape_random.placed = o.shape_random.placed.saturating_add(1);
+        if o.shape_random.placed < every {
+            continue;
+        }
+        o.shape_random.placed = 0;
+        let cur = app.ui.presets_ui.shape().to_string();
+        let avoid = names.iter().position(|n| *n == cur);
+        let o = &mut app.ui.tool_options;
+        let seed = o.shape_random_seed;
+        let rng = o.shape_random.rng.get_or_insert_with(|| seed.unwrap_or_else(entropy));
+        if let Some(i) = pick(names.len(), avoid, rng)
+            && let Some(name) = names.get(i)
+        {
+            app.ui.presets_ui.custom_shape = name.clone();
+        }
+    }
+    let last = app.ui.presets_ui.shape().to_string();
+    prewarm(app, &last);
+    out
+}
+
 /// Read the shape just picked from its library in the background, so the next drag does not wait
 /// for the file (a traced drawing takes about 50 ms to read and decode). Not on wasm: no threads.
 fn prewarm(app: &PhotocraftApp, name: &str) {
@@ -474,7 +526,13 @@ fn entropy() -> u64 {
 fn fill_pixels(app: &mut PhotocraftApp, rect: [f64; 4], keep: bool) -> bool {
     let name = app.ui.presets_ui.shape().to_string();
     // The command reports a failure (locked layer, unknown shape) in the status bar.
-    app.run("shape.presets.fillPixels", serde_json::json!({"preset": name, "rect": rect, "keepAspect": keep})).is_ok_and(|r| r["empty"] != true)
+    let erase = erasing(app);
+    app.run("shape.presets.fillPixels", serde_json::json!({"preset": name, "rect": rect, "keepAspect": keep, "erase": erase})).is_ok_and(|r| r["empty"] != true)
+}
+
+/// Pixels mode with Erase on: the shape lowers the layer's alpha instead of painting.
+fn erasing(app: &PhotocraftApp) -> bool {
+    app.ui.tool_options.custom_shape_mode == PIXELS && app.ui.tool_options.custom_shape_erase
 }
 
 /// The options bar's Shape / Pixels switch for the Custom Shape tool.

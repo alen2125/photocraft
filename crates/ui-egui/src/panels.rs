@@ -1231,6 +1231,7 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                         widgets::value_field(ui, &mut app.ui.tool_options.feather, 0.0..=1000.0, "px", 62.0);
                         widgets::checkbox(ui, &mut app.ui.tool_options.anti_alias, tl!("Anti-alias"));
                         widgets::vline(ui, 22.0);
+                        crate::lasso_modes_ui::options(app, ui);
                         if app.ui.tool == Tool::MagneticLasso {
                             let o = &mut app.ui.tool_options;
                             opt_label(ui, tl!("Width"));

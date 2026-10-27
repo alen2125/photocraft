@@ -75,7 +75,10 @@ pub mod crop_size;
 pub mod crop_straighten;
 pub mod crop_ui;
 pub mod color_mixer_ui;
+pub mod color_panel_memory;
 pub mod custom_shape_ui;
+pub mod lasso_modes_ui;
+pub mod tool_default_ui;
 pub mod dds_options_ui;
 pub mod delete_layer_prompt;
 pub mod dialog_alt_reset;
@@ -2482,6 +2485,7 @@ impl eframe::App for PhotocraftApp {
         // remembered once the pointer is up. Here, after every panel, rather than in the
         // picker's own code: the control channel can set it while the picker is closed.
         brush_picker::persist(self, &ctx);
+        color_panel_memory::persist(self, &ctx);
         // The tool's brush (settings and tip references) is remembered the same way. Like the
         // picker's view, in the frame loop, so the control channel can set it with the panels
         // closed; the engine's revision counter keeps an unchanged brush free.

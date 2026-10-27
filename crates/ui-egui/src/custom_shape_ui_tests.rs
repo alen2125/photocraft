@@ -575,3 +575,45 @@ fn zipper_preview_has_the_leaf_outline_and_old_prefs_still_load() {
     assert!(preview.subpaths.iter().any(|s| s.op == photocraft_doc::PathOp::Intersect));
     assert!(leaf_path(&app, Tool::CustomShape, [50.0, 100.0], [50.0, 100.0], mods).is_none());
 }
+
+#[test]
+fn fixed_width_keeps_the_leaf_as_wide_whatever_the_drag_length() {
+    let mut app = app();
+    app.ui.tool_options.custom_shape_fit = LEAF.into();
+    app.ui.tool_options.leaf_width = 0.5;
+    app.ui.tool_options.leaf_fixed = true;
+    app.ui.tool_options.leaf_width_px = 80.0;
+    for len in [10.0, 100.0, 300.0] {
+        let leaf = leaf_of_drag(&app, [10.0, 10.0], [10.0 + len, 10.0], egui::Modifiers::NONE).unwrap();
+        assert!((leaf.width * len - 80.0).abs() < 1e-9, "length {len}: {}", leaf.width * len);
+    }
+    // ⌥ draws from the centre, so AB is twice the drag: the width in px is still the same.
+    let leaf = leaf_of_drag(&app, [100.0, 100.0], [150.0, 100.0], egui::Modifiers::ALT).unwrap();
+    assert!((leaf.width * (leaf.b.x - leaf.a.x).abs() - 80.0).abs() < 1e-9);
+    app.ui.tool_options.leaf_fixed = false;
+    let leaf = leaf_of_drag(&app, [10.0, 10.0], [110.0, 10.0], egui::Modifiers::NONE).unwrap();
+    assert_eq!(leaf.width, 0.5, "off: the width stays a share of the length");
+}
+
+#[test]
+fn erase_mode_clears_pixels_with_the_shape_in_box_and_leaf_modes() {
+    let mut app = app();
+    app.run("layer.new.layer", json!({})).unwrap();
+    app.run("select.rect", json!({"x": 0, "y": 0, "width": 400, "height": 300})).unwrap();
+    app.run("edit.fill", json!({"contents": "foreground"})).unwrap();
+    app.run("select.deselect", json!({})).unwrap();
+    app.ui.tool_options.custom_shape_mode = "pixels".into();
+    app.ui.tool_options.custom_shape_erase = true;
+    press(&mut app, [100.0, 100.0], [220.0, 200.0]);
+    assert!(alpha_at(&app, 160, 150) < 0.01, "erased under the shape");
+    assert!(alpha_at(&app, 10, 10) > 0.99);
+    app.ui.tool_options.custom_shape_fit = LEAF.into();
+    press(&mut app, [20.0, 250.0], [200.0, 250.0]);
+    assert!(alpha_at(&app, 110, 250) < 0.01, "erased under the leaf");
+    // Erase is a Pixels option: in Shape mode a shape layer is made as before.
+    app.ui.tool_options.custom_shape_mode = "shape".into();
+    app.ui.tool_options.custom_shape_fit = "box".into();
+    let before = layers(&app);
+    press(&mut app, [300.0, 20.0], [380.0, 80.0]);
+    assert_eq!(layers(&app), before + 1);
+}

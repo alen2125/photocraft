@@ -247,6 +247,7 @@ pub fn load(app: &mut PhotocraftApp) {
     }
     crate::dock::restore(app);
     crate::brush_picker::restore(app);
+    crate::color_panel_memory::restore(app);
     crate::last_brush::restore(app);
     sync_rulers(app);
     crate::tool_memory::restore(app);
@@ -3485,6 +3486,37 @@ mod tests {
         app2.run("prefs.set", json!({"values": {"fileHandling.recentFileCount": 100}})).unwrap();
         app2.session.prefs.edit(|p| p.file_handling.recent_file_count = u32::MAX);
         assert_eq!(app2.recent_cap(), 100);
+    }
+
+    #[test]
+    fn color_panel_settings_survive_a_restart() {
+        let (mut app, store) = app_with_store();
+        let ctx = egui::Context::default();
+        tick(&mut app, &ctx);
+        app.ui.color_panel.wheel = true;
+        app.ui.color_panel.lock_brightness = true;
+        app.ui.color_panel.mixer_steps = 11;
+        app.ui.color_panel.mixer_fixed = true;
+        app.ui.color_panel.background = true;
+        crate::color_panel_memory::persist(&mut app, &ctx);
+        tick(&mut app, &ctx);
+        assert_eq!(stored(&store)["colorPanel"]["wheel"], json!(true));
+        let saved = store.lock().unwrap().clone().unwrap();
+        let (mut app2, _) = app_with_saved(Some(saved));
+        tick(&mut app2, &ctx);
+        let st = app2.ui.color_panel;
+        assert!(st.wheel && st.lock_brightness && st.mixer_fixed);
+        assert_eq!(st.mixer_steps, 11);
+        assert!(!st.background, "which chip is being edited is not remembered");
+        // A hand-edited file: the step count is brought into range, garbage keeps the defaults.
+        let bad = json!({"colorPanel": {"mixer_steps": 500, "wheel": true}}).to_string();
+        let (mut app3, _) = app_with_saved(Some(bad));
+        tick(&mut app3, &ctx);
+        assert_eq!(app3.ui.color_panel.mixer_steps, crate::color_mixer_ui::MAX_STEPS);
+        let junk = json!({"colorPanel": "nonsense"}).to_string();
+        let (mut app4, _) = app_with_saved(Some(junk));
+        tick(&mut app4, &ctx);
+        assert_eq!(app4.ui.color_panel, crate::state::ColorPanelState::default());
     }
 
     #[test]

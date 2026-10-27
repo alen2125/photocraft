@@ -208,3 +208,109 @@ fn a_zipper_vector_shape_is_one_layer_with_the_leaf_as_an_intersecting_subpath()
     s.execute("edit.undo", json!({})).unwrap();
     assert_eq!(layers(&s), before);
 }
+
+fn paint_all(s: &mut Session) {
+    s.execute("select.rect", json!({"x": 0, "y": 0, "width": 100, "height": 100})).unwrap();
+    s.execute("tools.setColors", json!({"foreground": "#00ff00", "background": "#ffffff"})).unwrap();
+    s.execute("edit.fill", json!({"contents": "foreground"})).unwrap();
+    s.execute("select.deselect", json!({})).unwrap();
+}
+
+#[test]
+fn erase_removes_alpha_under_the_shape_at_every_depth_in_one_step() {
+    for depth in [8, 16, 32] {
+        let mut s = session(depth);
+        paint_all(&mut s);
+        let before = layers(&s);
+        fill(&mut s, json!({"erase": true})).unwrap();
+        assert_eq!(layers(&s), before, "{depth}: no new layer");
+        assert!(alpha(&s, 50, 45) < 0.01, "{depth}: erased under the shape");
+        assert!(alpha(&s, 5, 5) > 0.99, "{depth}: outside stays");
+        s.execute("edit.undo", json!({})).unwrap();
+        assert!(alpha(&s, 50, 45) > 0.99, "{depth}: one undo restores");
+    }
+}
+
+#[test]
+fn erase_respects_opacity_selection_and_locks_and_needs_a_pixel_layer() {
+    let mut s = session(8);
+    paint_all(&mut s);
+    fill(&mut s, json!({"erase": true, "opacity": 50})).unwrap();
+    assert!((alpha(&s, 50, 45) - 0.5).abs() < 0.02);
+
+    let mut s = session(8);
+    paint_all(&mut s);
+    s.execute("select.rect", json!({"x": 0, "y": 0, "width": 50, "height": 100})).unwrap();
+    fill(&mut s, json!({"erase": true})).unwrap();
+    assert!(alpha(&s, 40, 45) < 0.01 && alpha(&s, 60, 45) > 0.99, "only inside the selection");
+
+    let mut s = session(8);
+    paint_all(&mut s);
+    s.execute("layer.lockLayers", json!({"transparency": true})).unwrap();
+    fill(&mut s, json!({"erase": true})).unwrap();
+    assert!(alpha(&s, 50, 45) > 0.99, "locked transparency: nothing to erase");
+    s.execute("layer.lockLayers", json!({"pixels": true})).unwrap();
+    assert!(fill(&mut s, json!({"erase": true})).is_err());
+
+    let mut s = session(8);
+    s.execute("shape.create", json!({"kind": "rect", "rect": [0, 0, 5, 5]})).unwrap();
+    let before = layers(&s);
+    assert!(fill(&mut s, json!({"erase": true})).is_err(), "no pixel layer to erase");
+    assert_eq!(layers(&s), before, "and no layer is made for it");
+}
+
+fn grid(s: &mut Session, extra: serde_json::Value) -> crate::Result<serde_json::Value> {
+    let mut p = json!({"shapes": ["Heart"], "cell": 20, "color": "#ff0000", "background": "#0000ff"});
+    p.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+    s.execute("shape.presets.fillGrid", p)
+}
+
+#[test]
+fn fill_grid_paints_shapes_and_background_inside_the_selection_only() {
+    for depth in [8, 16, 32] {
+        let mut s = session(depth);
+        s.execute("select.rect", json!({"x": 10, "y": 10, "width": 60, "height": 40})).unwrap();
+        let before = layers(&s);
+        let r = grid(&mut s, json!({})).unwrap();
+        assert_eq!(r["empty"], json!(false));
+        assert_eq!(r["cells"], json!(6), "{depth}: 3 columns by 2 rows");
+        assert_eq!(layers(&s), before, "{depth}: the pixel layer is reused");
+        assert_eq!(alpha(&s, 5, 5), 0.0, "{depth}: outside the selection");
+        assert_eq!(alpha(&s, 75, 30), 0.0, "{depth}: outside the selection");
+        // The middle of the first cell (10..30, 10..30) is in the shape, its corner in the gap.
+        let mid = rgba(&s, 20, 21);
+        assert!(mid[0] > 0.99 && mid[2] < 0.01, "{depth}: heart in the foreground colour {mid:?}");
+        let corner = rgba(&s, 10, 10);
+        assert!(corner[2] > 0.99 && corner[0] < 0.01 && corner[3] > 0.99, "{depth}: gap in the background colour {corner:?}");
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(alpha(&s, 20, 21), 0.0, "{depth}: one undo restores");
+    }
+}
+
+#[test]
+fn fill_grid_takes_the_names_in_order_and_skips_cells_off_the_selection() {
+    let mut s = session(8);
+    // A diamond-ish selection leaves its corner cells empty.
+    s.execute("select.lasso", json!({"points": [[50, 0], [100, 50], [50, 100], [0, 50]]})).unwrap();
+    let r = grid(&mut s, json!({"shapes": ["Heart", "Heart"], "cell": 25})).unwrap();
+    let cells = r["cells"].as_u64().unwrap();
+    assert!(cells > 0 && cells < 16, "corner cells are skipped: {cells}");
+    assert_eq!(alpha(&s, 2, 2), 0.0);
+}
+
+#[test]
+fn fill_grid_fails_gracefully() {
+    let mut s = session(8);
+    assert!(grid(&mut s, json!({})).is_err(), "no selection");
+    s.execute("select.rect", json!({"x": 0, "y": 0, "width": 50, "height": 50})).unwrap();
+    assert!(grid(&mut s, json!({"shapes": []})).is_err());
+    assert!(grid(&mut s, json!({"shapes": ["No Such Shape"]})).is_err());
+    for cell in [json!(0), json!(-5), json!(1), json!(1e9), json!("x"), json!(null)] {
+        assert!(grid(&mut s, json!({"cell": cell})).is_err(), "{cell}");
+    }
+    s.execute("layer.lockLayers", json!({"pixels": true})).unwrap();
+    assert!(grid(&mut s, json!({})).is_err());
+    let mut s = session(8);
+    s.execute("select.rect", json!({"x": 0, "y": 0, "width": 100, "height": 100})).unwrap();
+    assert!(grid(&mut s, json!({"cell": 2})).is_ok(), "2 px cells: 2500 of them");
+}

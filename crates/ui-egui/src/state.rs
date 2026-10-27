@@ -723,6 +723,15 @@ pub struct ToolOptions {
     /// Leaf width across the middle as a multiple of the length AB, and how full its sides are.
     pub leaf_width: f32,
     pub leaf_fullness: f32,
+    /// Leaf / Zipper: when set the width is `leaf_width_px` pixels whatever the drag's length.
+    pub leaf_fixed: bool,
+    pub leaf_width_px: f32,
+    /// Custom Shape in Pixels mode erases (lowers alpha) instead of painting.
+    pub custom_shape_erase: bool,
+    /// Lasso tools: "off", "clear" (delete the pixels inside) or "shape" (fill with custom shapes),
+    /// and the height (px) of a shape's cell.
+    pub lasso_mode: String,
+    pub lasso_cell_px: f32,
     /// Custom Shape > Randomize: after every N shapes placed the shape changes to a random one
     /// (0 = off, 1 = every time), drawn from the whole "library", the current "group" or the "set".
     pub shape_random_every: u32,
@@ -1020,6 +1029,11 @@ impl Default for ToolOptions {
             custom_shape_fit: "box".into(),
             leaf_width: 0.5,
             leaf_fullness: 1.0,
+            leaf_fixed: false,
+            leaf_width_px: 100.0,
+            custom_shape_erase: false,
+            lasso_mode: "off".into(),
+            lasso_cell_px: 60.0,
             shape_random_every: 0,
             shape_random_source: "library".into(),
             shape_random_set: Vec::new(),

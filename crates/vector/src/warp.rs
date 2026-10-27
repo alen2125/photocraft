@@ -20,7 +20,7 @@ use crate::thin::{flatten, subdivide};
 const FLATTEN: f64 = 2.0e-4;
 const PIECE: f64 = 1.0 / 96.0;
 /// Widest leaf, as a multiple of the length AB.
-const MAX_WIDTH: f64 = 4.0;
+const MAX_WIDTH: f64 = 1000.0;
 /// Range of the fullness control.
 const FULLNESS: std::ops::RangeInclusive<f64> = 0.1..=3.0;
 

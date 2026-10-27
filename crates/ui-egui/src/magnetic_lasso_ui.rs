@@ -325,10 +325,13 @@ fn commit(app: &mut PhotocraftApp) {
     if m.path.len() < 3 {
         return;
     }
-    let o = &app.ui.tool_options;
     let mode = if m.mode.is_empty() { "replace".to_owned() } else { m.mode };
+    let mode = crate::lasso_modes_ui::mode(app, crate::state::Tool::MagneticLasso, mode);
+    let o = &app.ui.tool_options;
     let p = json!({"points": m.path, "trace": false, "mode": mode, "antiAlias": o.anti_alias, "feather": o.feather});
-    let _ = app.run("select.magneticLasso", p);
+    if app.run("select.magneticLasso", p).is_ok() {
+        crate::lasso_modes_ui::after_select(app);
+    }
 }
 
 /// Esc: drop the border.

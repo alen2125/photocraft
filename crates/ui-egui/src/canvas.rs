@@ -6508,7 +6508,7 @@ pub(crate) fn finish_gesture(app: &mut PhotocraftApp, d: Drag) {
         Tool::Lasso | Tool::Patch | Tool::ContentAwareMove => {
             let pts: Vec<[f64; 2]> = d.points.iter().map(|p| [p[0], p[1]]).collect();
             if pts.len() >= 3 {
-                let mode = selection_mode(app, d.modifiers);
+                let mode = crate::lasso_modes_ui::mode(app, d.tool, selection_mode(app, d.modifiers));
                 let o = &app.ui.tool_options;
                 // The Patch and Content-Aware Move tools have no Feather in their options bar.
                 let feather = if d.tool == Tool::Lasso { o.feather } else { 0.0 };
@@ -6516,6 +6516,8 @@ pub(crate) fn finish_gesture(app: &mut PhotocraftApp, d: Drag) {
                 // The lasso only outlines the patch; say that it is dragged next (#1715).
                 if made.is_ok() && d.tool != Tool::Lasso {
                     crate::retouch_ui::patch_hint(app);
+                } else if made.is_ok() {
+                    crate::lasso_modes_ui::after_select(app);
                 }
             } else if app.session.is_enabled("select.deselect") {
                 let _ = app.run("select.deselect", json!({}));
@@ -6658,8 +6660,11 @@ pub fn commit_polygon(app: &mut PhotocraftApp) {
     let mode = std::mem::take(&mut app.ui.polygon_mode);
     if pts.len() >= 3 {
         let mode = if mode.is_empty() { selection_mode(app, egui::Modifiers::NONE).to_owned() } else { mode };
+        let mode = crate::lasso_modes_ui::mode(app, Tool::PolygonLasso, mode);
         let o = &app.ui.tool_options;
-        let _ = app.run("select.lasso", json!({"points": pts, "mode": mode, "antiAlias": o.anti_alias, "feather": o.feather}));
+        if app.run("select.lasso", json!({"points": pts, "mode": mode, "antiAlias": o.anti_alias, "feather": o.feather})).is_ok() {
+            crate::lasso_modes_ui::after_select(app);
+        }
     }
 }
 

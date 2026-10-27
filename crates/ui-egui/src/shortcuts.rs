@@ -749,7 +749,9 @@ pub fn handle(app: &mut PhotocraftApp, ctx: &egui::Context) {
         if cycle_shift || pressed(k) {
             let before = app.ui.tool;
             let group: Vec<Tool> = Tool::ALL.iter().copied().filter(|x| x.key() == t.key() && crate::tool_shortcuts::uses_default(app, *x)).collect();
+            let fixed = crate::tool_default_ui::pick(t.key(), &group, app.ui.tool, app.ui.group_tool(t.key()));
             app.ui.tool = match group.iter().position(|x| *x == app.ui.tool) {
+                _ if fixed.is_some() => fixed.unwrap_or(group[0]),
                 Some(i) if shift_switch && !cycle_shift => group[i],
                 Some(i) => group[(i + 1) % group.len()],
                 None => app.ui.group_tool(t.key()).filter(|last| group.contains(last)).unwrap_or(group[0]),
