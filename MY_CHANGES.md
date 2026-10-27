@@ -120,3 +120,47 @@ cargo xtask wasm
 В новых местах своих файлов: `custom_shape_ui.rs` (Fixed width, Erase, `sequence` для случайных фигур сетки), `custom_shape_cmds.rs` (параметр `erase` у `fillPixels`, команда `shape.presets.fillGrid`).
 
 Что делают: **U** всегда Custom Shape (или последний выбранный в панели из группы), без цикла. **Fixed width** (Leaf/Zipper): ширина в px не зависит от длины драга. **Erase** (Pixels): фигура стирает альфу. **Панель «Цвет»** помнит настройки между запусками. **Лассо → Mode**: Clear удаляет пиксели внутри, Custom Shape заливает сеткой фигур (ряды слева направо и сверху вниз, ячейка `cell × cell`, фигуры основным цветом, пустоты фоновым, Randomize учитывается). В обоих режимах выделение заменяется и после действия снимается.
+
+## 3D-редактор поз (этап 1: сцена, примитивы, свет, камера, рендер в слой)
+
+Окно **Окно › 3D-редактор поз** (`ui.scene3d.open`): сцена из примитивов (куб, сфера, цилиндр, конус, плоскость), света (солнце, точечный, прожектор) и пустых узлов с иерархией. Камера крутится мышью (ЛКМ орбита, ПКМ/СКМ сдвиг, колесо зум), клик выбирает объект. «Рендер в слой» кладёт картинку в растровый слой документа одним шагом отмены (прозрачное небо по умолчанию). Сцена сохраняется в `.pcscene` (JSON) и открывается обратно. План всего проекта: загрузка glTF/VRM, позы по костям, физика (rapier), пролёт камерой, модели из VaM. Это этапы 2–5, их ещё нет.
+
+Новые крейты (зарегистрированы в `xtask/src/layers.rs`: `scene3d` = L2, `render3d` = L3):
+
+| Крейт / файл | Что внутри |
+|---|---|
+| `crates/scene3d` (+ `src/tests.rs`) | модель сцены: узлы, иерархия без циклов, примитивы и их меши, материалы, света, камера, формат `.pcscene` с проверкой версии и лимитов (4096 узлов, 64 МБ) |
+| `crates/render3d` (+ `src/tests.rs`) | программный рендер (z-буфер, перспективные нормали, Blinn-Phong, до 8 светов, сглаживание, прозрачный фон), выбор объекта лучом `pick`, проекция `project`. Без GPU, работает в CLI и wasm. Теней пока нет |
+| `crates/engine/src/scene3d_cmds.rs` (+ `scene3d_cmds/tests.rs`) | команды `scene3d.renderToLayer`, `scene3d.save`, `scene3d.open` (сцена приходит параметром `scene` или `path`, сессия её не хранит) |
+| `crates/ui-egui/src/scene3d_ui.rs` (+ `scene3d_ui_tests.rs`) | окно редактора, вьюпорт, инспектор, список узлов, сохранение и открытие сцены |
+
+Точки касания в чужих файлах:
+
+| Файл | Место | Что изменено |
+|---|---|---|
+| `Cargo.toml` | `[workspace.dependencies]` | `photocraft-scene3d`, `photocraft-render3d` (2 строки) |
+| `Cargo.lock` | | появился `glam 0.30` (зависимость `scene3d`) |
+| `xtask/src/layers.rs` | `TABLE` | `("scene3d", Class::Layer(2))`, `("render3d", Class::Layer(3))` |
+| `crates/engine/Cargo.toml` | `[dependencies]` | 2 строки: `photocraft-scene3d`, `photocraft-render3d` |
+| `crates/engine/src/lib.rs` | список `pub mod` | `pub mod scene3d_cmds;` |
+| `crates/engine/src/commands.rs` | `build()`, после `render_cmds::specs()` | `v.extend(crate::scene3d_cmds::specs());` |
+| `crates/engine/src/shell_commands.rs` | `SHELL_COMMANDS`, перед `window.panel.group` | `ui.scene3d.open` (меню Окно) |
+| `crates/ui-egui/Cargo.toml` | `[dependencies]` | 2 строки: те же крейты |
+| `crates/ui-egui/src/lib.rs` | `pub mod`, поле `scene3d` в `PhotocraftApp`, `new`, кадровый цикл | `pub mod scene3d_ui;`, поле + `scene3d: Default::default()`, `scene3d_ui::show(self, &ctx);` после `distort_ui::show` |
+| `crates/ui-egui/src/menus.rs` | `invoke_unguarded`, `is_enabled` | вызов `scene3d_ui::invoke` (3 строки) и `|| scene3d_ui::handles(id)` |
+| `crates/ui-egui/src/i18n/ru.tsv` | конец файла | блок «3D Pose Editor (scene3d_ui)»: 22 строки перевода |
+| `.gitignore` | | `/samples/` (тестовые модели не коммитим) |
+
+Проверка:
+
+```sh
+cargo test -p photocraft-scene3d -p photocraft-render3d
+cargo test -p photocraft-engine --lib scene3d_cmds
+cargo test -p photocraft-engine --test panic_hunt -- --ignored
+cargo test -p photocraft-ui-egui --lib scene3d
+cargo clippy -p photocraft-scene3d -p photocraft-render3d -p photocraft-engine -p photocraft-ui-egui --all-targets -- -D warnings
+cargo xtask layers
+cargo xtask wasm
+```
+
+Известные ограничения этапа 1: рендер программный (wgpu-ускорение позже); теней нет; цвет рендера считается как sRGB и переводится в формат документа без учёта его ICC-профиля; диалоги «Открыть/Сохранить сцену» проверены только в тестах, не руками.

@@ -11,3 +11,5 @@ target/
 /craft-fonts
 *.log
 __pycache__/
+# Local test models for the 3D Pose Editor (large, third-party licences)
+/samples/

@@ -19,6 +19,8 @@ photocraft-raster = { workspace = true }
 photocraft-doc = { workspace = true }
 photocraft-ops = { workspace = true }
 photocraft-compose = { workspace = true }
+photocraft-scene3d = { workspace = true }
+photocraft-render3d = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

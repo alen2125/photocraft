@@ -1,0 +1,12 @@
+[package]
+name = "photocraft-render3d"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+photocraft-scene3d = { workspace = true }
+thiserror = { workspace = true }

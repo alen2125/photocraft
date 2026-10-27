@@ -77,6 +77,7 @@ pub mod crop_ui;
 pub mod color_mixer_ui;
 pub mod color_panel_memory;
 pub mod custom_shape_ui;
+pub mod scene3d_ui;
 pub mod lasso_modes_ui;
 pub mod tool_default_ui;
 pub mod dds_options_ui;
@@ -887,6 +888,8 @@ pub struct PhotocraftApp {
     pub(crate) shape_fill_preview: Option<shape_fill_ui::Preview>,
     /// Liquify dialog, Puppet Warp and Perspective Warp sessions (distort_ui).
     pub(crate) distort: distort_ui::Distort,
+    /// Window › 3D Pose Editor (scene3d_ui).
+    pub(crate) scene3d: scene3d_ui::Scene3dEditor,
     /// Gradient tool live-mode drags and previews (gradient_ui).
     pub(crate) gradient: gradient_ui::LiveGradient,
     /// Filter › Camera Raw Filter dialog (camera_raw_ui).
@@ -1124,6 +1127,7 @@ impl PhotocraftApp {
             pattern_fill_preview: None,
             shape_fill_preview: None,
             distort: Default::default(),
+            scene3d: Default::default(),
             gradient: Default::default(),
             camera_raw: None,
             pending_raw_open: None,
@@ -2467,6 +2471,7 @@ impl eframe::App for PhotocraftApp {
         jpeg_options_ui::show(self, &ctx);
         dds_options_ui::show(self, &ctx);
         distort_ui::show(self, &ctx);
+        scene3d_ui::show(self, &ctx);
         camera_raw_ui::show(self, &ctx);
         wide_angle_ui::show(self, &ctx);
         canvas::extra_windows(self, &ctx);

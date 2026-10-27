@@ -2441,6 +2441,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "glam"
+version = "0.30.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "19fc433e8437a212d1b6f1e68c7824af3aed907da60afa994e7f542d18d12aa9"
+
+[[package]]
 name = "glifo"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4833,6 +4839,8 @@ dependencies = [
  "photocraft-psd",
  "photocraft-raster",
  "photocraft-raw",
+ "photocraft-render3d",
+ "photocraft-scene3d",
  "photocraft-testkit",
  "photocraft-text",
  "photocraft-vector",
@@ -5009,6 +5017,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "photocraft-render3d"
+version = "0.15.1"
+dependencies = [
+ "photocraft-scene3d",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "photocraft-scene3d"
+version = "0.15.1"
+dependencies = [
+ "glam",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "photocraft-tablet"
 version = "0.15.1"
 dependencies = [
@@ -5073,6 +5099,8 @@ dependencies = [
  "photocraft-psd",
  "photocraft-raster",
  "photocraft-raw",
+ "photocraft-render3d",
+ "photocraft-scene3d",
  "photocraft-testkit",
  "photocraft-text",
  "photocraft-vector",

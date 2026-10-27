@@ -24,6 +24,8 @@ pub const SHELL_COMMANDS: &[(&str, &str, &[&str], Option<&str>)] = &[
     // Color panel mixer row: step the selected swatch (`color_mixer_ui::invoke`).
     ("ui.colorMixer.next", "Color Mixer: Next Step (towards background)", &[], None),
     ("ui.colorMixer.prev", "Color Mixer: Previous Step (towards foreground)", &[], None),
+    // Window › 3D Pose Editor (`scene3d_ui`).
+    ("ui.scene3d.open", "3D Pose Editor…", &["Window"], None),
     ("window.panel.group", "Change Panel Group", &[], None),
     ("window.panel.layout", "Change Panel Layout", &[], None),
     ("window.panel.move", "Move Panel", &[], None),
