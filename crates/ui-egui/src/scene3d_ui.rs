@@ -98,6 +98,11 @@ pub struct Scene3dEditor {
     pub(crate) future: Vec<Scene>,
     pub(crate) committed: Option<Scene>,
     pub(crate) history_rev: u64,
+    /// The running physics (gravity, collisions), the scene as it was when it started (for
+    /// Revert and for one undo step), and time not yet stepped.
+    pub(crate) physics: Option<photocraft_physics3d::World>,
+    pub(crate) play_base: Option<Scene>,
+    pub(crate) play_acc: f32,
 }
 
 /// What dragging a bone in the viewport does.
@@ -154,6 +159,9 @@ impl Default for Scene3dEditor {
             future: Vec::new(),
             committed: None,
             history_rev: 0,
+            physics: None,
+            play_base: None,
+            play_acc: 0.0,
         }
     }
 }
@@ -367,6 +375,9 @@ fn node_inspector(ui: &mut egui::Ui, ed: &mut Scene3dEditor, id: NodeId) {
         changed |= vec3_row(ui, tl!("Scale"), &mut node.transform.scale, 0.01);
     });
     ui.separator();
+    if matches!(node.kind, NodeKind::Primitive { .. }) {
+        changed |= ui.checkbox(&mut node.pinned, tl!("Pinned (stays put)")).changed();
+    }
     match &mut node.kind {
         NodeKind::Empty => {}
         NodeKind::Primitive { primitive, material } => {
@@ -512,7 +523,8 @@ fn node_list(ui: &mut egui::Ui, ed: &mut Scene3dEditor) {
             NodeKind::Mesh(_) => "▲",
         };
         let hidden = if n.visible { "" } else { " ·" };
-        let label = format!("{}{icon}  {}{hidden}", "    ".repeat(depth_of(&ed.scene, id)), n.name);
+        let falls = if !n.pinned && matches!(n.kind, NodeKind::Primitive { .. }) { " ↓" } else { "" };
+        let label = format!("{}{icon}  {}{hidden}{falls}", "    ".repeat(depth_of(&ed.scene, id)), n.name);
         if ui.selectable_label(ed.selected == Some(id), label).clicked() {
             clicked = Some(id);
         }
@@ -616,6 +628,22 @@ fn side_panels(ui: &mut egui::Ui, ed: &mut Scene3dEditor) {
         }
         if ui.add_enabled(has, egui::Button::new(tl!("Delete"))).clicked() {
             ed.delete_selected();
+        }
+    });
+    ui.horizontal(|ui| {
+        if ed.physics.is_none() {
+            if ui.button(tl!("▶ Play")).on_hover_text(tl!("Unpinned objects fall and collide.")).clicked()
+                && let Err(e) = crate::scene3d_canvas::play(ed)
+            {
+                ed.status = e;
+            }
+        } else {
+            if ui.button(tl!("■ Stop (keep)")).clicked() {
+                crate::scene3d_canvas::stop(ed, true);
+            }
+            if ui.button(tl!("↺ Revert")).clicked() {
+                crate::scene3d_canvas::stop(ed, false);
+            }
         }
     });
     ui.separator();

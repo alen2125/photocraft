@@ -4640,3 +4640,9 @@ shape	Appearance	Оформление
 	Aim at target	Целиться на цель
 	Follow target's turn	Поворачиваться вместе с целью
 	Its position follows the link; drag it on the canvas to change the link.	Положение задаёт связь; тяните узел на холсте, чтобы изменить связь.
+	▶ Play	▶ Пуск
+	■ Stop (keep)	■ Стоп (оставить)
+	↺ Revert	↺ Откатить
+	Pinned (stays put)	Привязан (стоит на месте)
+	Unpinned objects fall and collide.	Непривязанные объекты падают и сталкиваются.
+	Nothing to drop: untick Pinned on an object so it can fall.	Нечему падать: снимите «Привязан» у объекта, чтобы он упал.

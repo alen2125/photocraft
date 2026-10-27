@@ -70,6 +70,8 @@ pub(crate) fn view_size(doc: [u32; 2]) -> (u32, u32) {
 
 /// Ends the mode. The scene stays in the editor, so opening it again finds it as it was.
 pub(crate) fn close(ed: &mut Scene3dEditor) {
+    ed.physics = None;
+    ed.play_base = None;
     ed.open = false;
     ed.owner = None;
     ed.pointer = None;
@@ -101,7 +103,10 @@ pub(crate) fn frame(app: &mut PhotocraftApp, ctx: &egui::Context) {
         ed.doc_size = size;
         ed.touch();
     }
-    if ed.pointer.is_none() {
+    if ed.physics.is_some() {
+        tick(ed, ctx.input(|i| i.stable_dt));
+        ctx.request_repaint();
+    } else if ed.pointer.is_none() {
         remember_edit(ed);
     }
     let now = ctx.input(|i| i.time);
@@ -116,6 +121,65 @@ pub(crate) fn frame(app: &mut PhotocraftApp, ctx: &egui::Context) {
     // A quarter of the pixels and no smoothing while things move; full quality once they rest.
     let (render, ssaa) = if settled { (view, ed.out_ssaa.clamp(1, 2)) } else { (((view.0 / 2).max(8), (view.1 / 2).max(8)), 1) };
     crate::scene3d_ui::refresh_preview(ctx, ed, render, ssaa);
+}
+
+/// Starts the physics: unpinned solids fall and collide with the rest. Remembers the scene as it
+/// is so Stop can keep the result as one undo step, or Revert can bring it back.
+pub(crate) fn play(ed: &mut Scene3dEditor) -> Result<(), String> {
+    if ed.physics.is_some() {
+        return Ok(());
+    }
+    let world = photocraft_physics3d::World::new(&ed.scene);
+    if world.dynamic_count() == 0 {
+        return Err(tl!("Nothing to drop: untick Pinned on an object so it can fall.").to_string());
+    }
+    remember_edit(ed);
+    ed.play_base = Some(ed.scene.clone());
+    ed.play_acc = 0.0;
+    ed.physics = Some(world);
+    ed.pointer = None;
+    Ok(())
+}
+
+/// Ends the physics. `keep` leaves the objects where they fell (one undo step); otherwise the
+/// scene goes back to how it was when Play was pressed.
+pub(crate) fn stop(ed: &mut Scene3dEditor, keep: bool) {
+    ed.physics = None;
+    let Some(base) = ed.play_base.take() else { return };
+    if keep {
+        ed.history.push(base);
+        if ed.history.len() > HISTORY {
+            ed.history.remove(0);
+        }
+        ed.future.clear();
+    } else {
+        let camera = ed.scene.camera.clone();
+        ed.scene = base;
+        ed.scene.camera = camera;
+    }
+    ed.committed = Some(ed.scene.clone());
+    ed.touch();
+    ed.history_rev = ed.rev;
+    ed.pending_change = true;
+}
+
+/// Runs `dt` seconds of physics in fixed steps (at most a few per frame, so a slow frame cannot
+/// snowball) and writes the bodies' places into the scene.
+pub(crate) fn tick(ed: &mut Scene3dEditor, dt: f32) {
+    let Some(mut world) = ed.physics.take() else { return };
+    ed.play_acc += if dt.is_finite() { dt.clamp(0.0, 0.1) } else { 0.0 };
+    let mut steps = 0;
+    while ed.play_acc >= photocraft_physics3d::STEP && steps < 6 {
+        world.step();
+        ed.play_acc -= photocraft_physics3d::STEP;
+        steps += 1;
+    }
+    if steps > 0 {
+        world.apply(&mut ed.scene);
+        ed.touch();
+        ed.pending_change = true;
+    }
+    ed.physics = Some(world);
 }
 
 /// Pushes the scene as it was onto the undo stack when something other than the camera changed
@@ -193,7 +257,8 @@ pub(crate) fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifi
             let p = to_view(x, y);
             let camera = if mods.shift { PointerKind::Pan } else if mods.command { PointerKind::Dolly } else { PointerKind::Orbit };
             let mut state = PointerState { kind: camera, start: p, last: p, moved: false, pending_click: true };
-            if !mods.alt {
+            // While the physics runs the pointer only moves the camera and selects.
+            if !mods.alt && ed.physics.is_none() {
                 if let Some(g) = begin_gizmo(ed, view, p) {
                     state.kind = PointerKind::Gizmo(Box::new(g));
                     state.pending_click = false;
@@ -554,3 +619,7 @@ mod gizmo_tests;
 #[cfg(test)]
 #[path = "scene3d_canvas_link_tests.rs"]
 mod link_tests;
+
+#[cfg(test)]
+#[path = "scene3d_canvas_physics_tests.rs"]
+mod physics_tests;

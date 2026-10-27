@@ -274,11 +274,18 @@ pub struct Node {
     /// Ties the node to another at a distance and angle (see [`crate::Link`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub link: Option<crate::Link>,
+    /// Pinned solids stay where they are when the physics runs; unpinned ones fall and collide.
+    #[serde(skip_serializing_if = "is_true")]
+    pub pinned: bool,
+}
+
+fn is_true(b: &bool) -> bool {
+    *b
 }
 
 impl Default for Node {
     fn default() -> Self {
-        Self { id: 0, name: String::new(), parent: None, visible: true, transform: Transform::default(), kind: NodeKind::Empty, rest: None, limits: None, link: None }
+        Self { id: 0, name: String::new(), parent: None, visible: true, transform: Transform::default(), kind: NodeKind::Empty, rest: None, limits: None, link: None, pinned: true }
     }
 }
 

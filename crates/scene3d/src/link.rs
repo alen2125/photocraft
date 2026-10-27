@@ -230,6 +230,28 @@ impl Scene {
         Ok(())
     }
 
+    /// Puts a node at world position `pos` with world rotation `rot`, keeping its scale, by
+    /// changing its own transform (whatever its parents do). Used to write physics results back.
+    pub fn place_world(&mut self, id: NodeId, pos: Vec3, rot: Quat) -> Result<(), SceneError> {
+        if !pos.is_finite() || !rot.is_finite() {
+            return Err(SceneError::BadLink("position or rotation is not finite".into()));
+        }
+        let node = self.node(id).ok_or(SceneError::NoSuchNode(id))?;
+        let world = self.world_matrix(id).ok_or(SceneError::NoSuchNode(id))?;
+        let (scale, _, _) = world.to_scale_rotation_translation();
+        let parent_world = node.parent.and_then(|p| self.world_matrix(p)).unwrap_or(Mat4::IDENTITY);
+        let local = parent_world.inverse() * Mat4::from_scale_rotation_translation(scale, rot.normalize(), pos);
+        if !local.to_cols_array().iter().all(|v| v.is_finite()) {
+            return Ok(());
+        }
+        let (s, r, t) = local.to_scale_rotation_translation();
+        let (x, y, z) = r.normalize().to_euler(EulerRot::XYZ);
+        if let Some(n) = self.node_mut(id) {
+            n.transform = Transform { translation: t.to_array(), rotation: [x.to_degrees(), y.to_degrees(), z.to_degrees()], scale: s.to_array() };
+        }
+        Ok(())
+    }
+
     fn linked(&self, id: NodeId) -> Result<(Link, Mat4), SceneError> {
         let link = self.node(id).ok_or(SceneError::NoSuchNode(id))?.link.clone().ok_or_else(|| SceneError::BadLink("the node is not linked".into()))?;
         let target_world = self.world_matrix(link.target).ok_or(SceneError::NoSuchNode(link.target))?;

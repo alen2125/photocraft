@@ -1,0 +1,13 @@
+[package]
+name = "photocraft-physics3d"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+photocraft-scene3d = { workspace = true }
+# Rigid bodies and collisions (pure Rust, wasm-safe; checked at about 1.4 MB of wasm).
+rapier3d = { version = "0.22", default-features = false, features = ["dim3", "f32"] }
