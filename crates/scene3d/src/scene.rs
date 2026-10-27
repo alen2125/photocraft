@@ -161,6 +161,98 @@ pub enum NodeKind {
     Empty,
     Primitive { primitive: Primitive, #[serde(default)] material: Material },
     Light(Light),
+    /// A joint of an imported skeleton: posed by rotating it.
+    Bone,
+    /// One mesh of an imported model (see [`ModelMesh`]).
+    Mesh(ModelMesh),
+}
+
+/// A mesh from an imported model. Skinned meshes follow their `joints`; the node's own
+/// transform is ignored for them (glTF rule), unskinned ones sit where the node is.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ModelMesh {
+    pub asset: u32,
+    /// Index into the model's `meshes`.
+    pub mesh: u32,
+    /// Scene node of each skin joint, in the skin's order (empty when unskinned).
+    pub joints: Vec<NodeId>,
+}
+
+/// Local Euler (XYZ, degrees) range a joint may be posed within.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RotationLimits {
+    pub min: [f32; 3],
+    pub max: [f32; 3],
+}
+
+impl Default for RotationLimits {
+    fn default() -> Self {
+        Self { min: [-180.0; 3], max: [180.0; 3] }
+    }
+}
+
+impl RotationLimits {
+    /// `rotation` clamped into the range; non-finite values become 0.
+    pub fn clamp(&self, rotation: [f32; 3]) -> [f32; 3] {
+        let mut out = rotation;
+        for (i, v) in out.iter_mut().enumerate() {
+            let (lo, hi) = (self.min[i], self.max[i]);
+            let (lo, hi) = if lo <= hi { (lo, hi) } else { (hi, lo) };
+            *v = if v.is_finite() { v.clamp(lo, hi) } else { 0.0 };
+        }
+        out
+    }
+}
+
+/// An imported file the scene refers to. Its geometry is not stored in the scene file: the
+/// editor reloads it from `path`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Asset {
+    pub id: u32,
+    pub name: String,
+    pub path: Option<String>,
+}
+
+/// A joint's pose inside a [`Pose`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PoseBone {
+    pub node: NodeId,
+    pub rotation: [f32; 3],
+    pub translation: [f32; 3],
+}
+
+impl Default for PoseBone {
+    fn default() -> Self {
+        Self { node: 0, rotation: [0.0; 3], translation: [0.0; 3] }
+    }
+}
+
+/// A named snapshot of every bone's rotation and position.
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Pose {
+    pub name: String,
+    pub bones: Vec<PoseBone>,
+}
+
+/// Models loaded in memory, by asset id. Not part of the scene file.
+#[derive(Clone, Default)]
+pub struct ModelCache(pub(crate) std::collections::HashMap<u32, std::sync::Arc<photocraft_model3d::ModelData>>);
+
+impl PartialEq for ModelCache {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.len() == other.0.len() && self.0.iter().all(|(k, v)| other.0.get(k).is_some_and(|o| std::sync::Arc::ptr_eq(v, o)))
+    }
+}
+
+impl std::fmt::Debug for ModelCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ModelCache({} models)", self.0.len())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -172,11 +264,16 @@ pub struct Node {
     pub visible: bool,
     pub transform: Transform,
     pub kind: NodeKind,
+    /// The transform the node was imported with; "Reset pose" returns to it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rest: Option<Transform>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limits: Option<RotationLimits>,
 }
 
 impl Default for Node {
     fn default() -> Self {
-        Self { id: 0, name: String::new(), parent: None, visible: true, transform: Transform::default(), kind: NodeKind::Empty }
+        Self { id: 0, name: String::new(), parent: None, visible: true, transform: Transform::default(), kind: NodeKind::Empty, rest: None, limits: None }
     }
 }
 
@@ -218,12 +315,16 @@ pub struct Scene {
     pub background: [f32; 3],
     /// Flat ambient light (sRGB 0–1).
     pub ambient: [f32; 3],
+    pub assets: Vec<Asset>,
+    pub poses: Vec<Pose>,
     next_id: NodeId,
+    #[serde(skip)]
+    pub(crate) models: ModelCache,
 }
 
 impl Default for Scene {
     fn default() -> Self {
-        Self { version: FORMAT_VERSION, nodes: Vec::new(), camera: Camera::default(), background: [0.18, 0.19, 0.22], ambient: [0.18, 0.18, 0.2], next_id: 1 }
+        Self { version: FORMAT_VERSION, nodes: Vec::new(), camera: Camera::default(), background: [0.18, 0.19, 0.22], ambient: [0.18, 0.18, 0.2], assets: Vec::new(), poses: Vec::new(), next_id: 1, models: ModelCache::default() }
     }
 }
 
@@ -268,6 +369,8 @@ impl Scene {
                 NodeKind::Empty => "Empty".into(),
                 NodeKind::Primitive { primitive, .. } => primitive.label().into(),
                 NodeKind::Light(_) => "Light".into(),
+                NodeKind::Bone => "Bone".into(),
+                NodeKind::Mesh(_) => "Mesh".into(),
             };
         }
         self.nodes.push(node);

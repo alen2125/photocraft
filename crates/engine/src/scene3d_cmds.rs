@@ -4,12 +4,15 @@
 //! parameter (or a `path` to a `.pcscene` file), so these commands stay stateless and scriptable.
 //! Rendering uses the software renderer (`photocraft-render3d`) and lands as one undo step.
 
+use std::sync::{Arc, Mutex, PoisonError};
+
 use photocraft_color::PixelFormat;
 use photocraft_doc::{Layer, LayerContent};
 use photocraft_geom::Rect;
 use photocraft_raster::Surface;
 use photocraft_render3d::{MAX_EDGE, RenderOptions};
 use photocraft_scene3d::Scene;
+use photocraft_scene3d::model3d::ModelData;
 use serde_json::{Value, json};
 
 use crate::commands::{CommandSpec, always, int};
@@ -35,6 +38,36 @@ fn scene_param(cmd: &str, p: &Value) -> Result<Scene> {
         _ => return Err(bad(cmd, "give `scene` (a scene object) or `path` (a .pcscene file)")),
     };
     Scene::from_json(&text).map_err(|e| bad(cmd, e.to_string()))
+}
+
+/// The last few models loaded, keyed by a hash of the file's bytes, so rendering a scene again
+/// (or several frames of one) does not decode the same textures every time.
+static MODELS: Mutex<Vec<(blake3::Hash, Arc<ModelData>)>> = Mutex::new(Vec::new());
+const MODEL_CACHE: usize = 2;
+
+fn load_model(cmd: &str, path: &str) -> Result<Arc<ModelData>> {
+    let bytes = read_file(path)?;
+    let key = blake3::hash(&bytes);
+    if let Some(hit) = MODELS.lock().unwrap_or_else(PoisonError::into_inner).iter().find(|(k, _)| *k == key) {
+        return Ok(hit.1.clone());
+    }
+    let name = std::path::Path::new(path).file_name().and_then(|n| n.to_str()).unwrap_or(path);
+    let model = Arc::new(photocraft_scene3d::model3d::load(name, &bytes).map_err(|e| bad(cmd, format!("{path}: {e}")))?);
+    let mut cache = MODELS.lock().unwrap_or_else(PoisonError::into_inner);
+    cache.insert(0, (key, model.clone()));
+    cache.truncate(MODEL_CACHE);
+    Ok(model)
+}
+
+/// Loads every model the scene names that is not in memory (a scene read from JSON or a file).
+fn resolve_assets(cmd: &str, scene: &mut Scene) -> Result<()> {
+    let missing: Vec<(u32, String, Option<String>)> = scene.missing_assets().iter().map(|a| (a.id, a.name.clone(), a.path.clone())).collect();
+    for (id, name, path) in missing {
+        let path = path.ok_or_else(|| bad(cmd, format!("model `{name}` has no file path; import it from a file so the scene can find it again")))?;
+        let model = load_model(cmd, &path)?;
+        scene.attach_model(id, model).map_err(|e| bad(cmd, e.to_string()))?;
+    }
+    Ok(())
 }
 
 fn dimension(cmd: &str, p: &Value, key: &str, default: i64) -> Result<u32> {
@@ -64,7 +97,8 @@ fn surface_from_rgba(img: &photocraft_render3d::Image) -> Result<Surface> {
 
 fn run_render(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "scene3d.renderToLayer";
-    let scene = scene_param(CMD, p)?;
+    let mut scene = scene_param(CMD, p)?;
+    resolve_assets(CMD, &mut scene)?;
     let doc = s.active().ok_or(EngineError::NoDocument)?;
     let fmt = doc.doc.pixel_format();
     let (dw, dh) = (i64::from(doc.doc.size.width), i64::from(doc.doc.size.height));
@@ -102,8 +136,30 @@ fn run_open(_: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"scene": value, "nodes": scene.nodes.len()}))
 }
 
+fn run_add_model(_: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "scene3d.addModel";
+    let model_path = p.get("model").and_then(Value::as_str).filter(|v| !v.is_empty()).ok_or_else(|| bad(CMD, "`model` (a .glb, .gltf or .vrm file) is required"))?;
+    let mut scene = if p.get("scene").is_some() || p.get("path").is_some() { scene_param(CMD, p)? } else { Scene::new() };
+    resolve_assets(CMD, &mut scene)?;
+    let model = load_model(CMD, model_path)?;
+    let (bones, meshes) = (model.nodes.iter().enumerate().filter(|(i, _)| model.is_joint(*i)).count(), model.meshes.len());
+    let root = scene.add_model(model, Some(model_path.to_string())).map_err(|e| bad(CMD, e.to_string()))?;
+    let value = serde_json::to_value(&scene).map_err(|e| bad(CMD, e.to_string()))?;
+    Ok(json!({"scene": value, "root": root, "bones": bones, "meshes": meshes, "nodes": scene.nodes.len()}))
+}
+
 pub fn specs() -> Vec<CommandSpec> {
     vec![
+        CommandSpec {
+            id: "scene3d.addModel",
+            label: "Add 3D Model to Scene…",
+            menu: &[],
+            shortcut: None,
+            params: r##"{"model":text (.glb|.gltf|.vrm),"scene":object|"path":text (.pcscene, optional: a new scene when omitted)} → {scene,root,bones,meshes,nodes}"##,
+            enabled: always,
+            run: run_add_model,
+            journal: false,
+        },
         CommandSpec {
             id: "scene3d.renderToLayer",
             label: "Render 3D Scene to Layer",
@@ -139,3 +195,6 @@ pub fn specs() -> Vec<CommandSpec> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod tests_models;

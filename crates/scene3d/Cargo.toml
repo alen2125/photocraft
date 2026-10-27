@@ -13,3 +13,5 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 # Pure-Rust vector math (wasm-safe); the scene file stores plain arrays.
 glam = "0.30"
+# Imported models (bones, skinned meshes) live in the scene as plain data.
+photocraft-model3d = { workspace = true }

@@ -4617,3 +4617,16 @@ shape	Appearance	Оформление
 	Render to Layer	Рендер в слой
 	Transparent sky	Прозрачное небо
 	Open a document first.	Сначала откройте документ.
+	Import Model…	Импорт модели…
+	Show skeleton	Показать скелет
+	Move (IK)	Перемещение (IK)
+	IK chain	Цепочка IK
+	Drag a bone dot in the viewport.	Тяните точку кости во вьюпорте.
+	Reset pose	Сбросить позу
+	Save pose	Сохранить позу
+	Pose	Поза
+	Limit rotation	Ограничить поворот
+	Min	Мин
+	Max	Макс
+	Reset bone	Сбросить кость
+	Model mesh	Меш модели

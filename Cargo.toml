@@ -24,6 +24,7 @@ photocraft-raw = { path = "crates/raw" }
 photocraft-affinity = { path = "crates/affinity" }
 photocraft-compose = { path = "crates/compose" }
 photocraft-gpu = { path = "crates/gpu" }
+photocraft-model3d = { path = "crates/model3d" }
 photocraft-scene3d = { path = "crates/scene3d" }
 photocraft-render3d = { path = "crates/render3d" }
 photocraft-paint = { path = "crates/paint" }

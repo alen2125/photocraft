@@ -10,16 +10,21 @@ struct Vert {
     clip: Vec4,
     pos: Vec3,
     nrm: Vec3,
+    uv: [f32; 2],
 }
 
 fn lerp_vert(a: Vert, b: Vert, t: f32) -> Vert {
-    Vert { clip: a.clip.lerp(b.clip, t), pos: a.pos.lerp(b.pos, t), nrm: a.nrm.lerp(b.nrm, t) }
+    Vert {
+        clip: a.clip.lerp(b.clip, t),
+        pos: a.pos.lerp(b.pos, t),
+        nrm: a.nrm.lerp(b.nrm, t),
+        uv: [a.uv[0] + (b.uv[0] - a.uv[0]) * t, a.uv[1] + (b.uv[1] - a.uv[1]) * t],
+    }
 }
 
 /// Clips a triangle against the near plane (clip z ≥ 0) into 0, 1 or 2 triangles.
 fn clip_near(tri: [Vert; 3]) -> ([[Vert; 3]; 2], usize) {
-    let inside: Vec<bool> = tri.iter().map(|v| v.clip.z >= 0.0).collect();
-    let n_in = inside.iter().filter(|b| **b).count();
+    let n_in = tri.iter().filter(|v| v.clip.z >= 0.0).count();
     match n_in {
         0 => ([tri, tri], 0),
         3 => ([tri, tri], 1),
@@ -75,13 +80,47 @@ fn edge(a: &Screen, b: &Screen, px: f64, py: f64) -> f64 {
     (px - a.x) * (b.y - a.y) - (py - a.y) * (b.x - a.x)
 }
 
-fn shade(d: &Draw, prep: &Prepared, pos: Vec3, mut n: Vec3) -> Vec3 {
+/// Bilinear texture lookup (repeat wrap): linear RGB and alpha.
+fn sample(d: &Draw, lut: &[f32; 256], uv: [f32; 2]) -> Option<(Vec3, f32)> {
+    let t = d.texture.as_ref()?;
+    let tex = t.model.textures.get(t.index)?.as_ref()?;
+    let (w, h) = (tex.width as i64, tex.height as i64);
+    if w == 0 || h == 0 || !uv[0].is_finite() || !uv[1].is_finite() {
+        return None;
+    }
+    let (fx, fy) = (uv[0] * w as f32 - 0.5, uv[1] * h as f32 - 0.5);
+    let (x0, y0) = (fx.floor(), fy.floor());
+    let (tx, ty) = (fx - x0, fy - y0);
+    let texel = |x: i64, y: i64| -> (Vec3, f32) {
+        let (x, y) = (x.rem_euclid(w) as usize, y.rem_euclid(h) as usize);
+        let i = (y * w as usize + x) * 4;
+        match tex.rgba.get(i..i + 4) {
+            Some(p) => (Vec3::new(lut[p[0] as usize], lut[p[1] as usize], lut[p[2] as usize]), f32::from(p[3]) / 255.0),
+            None => (Vec3::ONE, 1.0),
+        }
+    };
+    let (x0, y0) = (x0 as i64, y0 as i64);
+    let (a, b, c, e) = (texel(x0, y0), texel(x0 + 1, y0), texel(x0, y0 + 1), texel(x0 + 1, y0 + 1));
+    let top = (a.0.lerp(b.0, tx), a.1 + (b.1 - a.1) * tx);
+    let bot = (c.0.lerp(e.0, tx), c.1 + (e.1 - c.1) * tx);
+    Some((top.0.lerp(bot.0, ty), top.1 + (bot.1 - top.1) * ty))
+}
+
+/// The pixel's colour, or `None` when its alpha falls under the material's cutoff.
+fn shade(d: &Draw, prep: &Prepared, pos: Vec3, mut n: Vec3, uv: [f32; 2]) -> Option<Vec3> {
+    let (tex_rgb, tex_a) = sample(d, &prep.lut, uv).unwrap_or((Vec3::ONE, 1.0));
+    if let Some(cut) = d.cutoff
+        && d.alpha * tex_a < cut
+    {
+        return None;
+    }
+    let albedo = d.albedo * tex_rgb;
     if d.unlit {
-        return d.albedo + d.emissive;
+        return Some(albedo + d.emissive);
     }
     n = n.normalize_or_zero();
     let v = (prep.eye - pos).normalize_or_zero();
-    // Two-sided: planes and cut-open solids light correctly from behind.
+    // Two-sided: planes, cut-open solids and thin cloth light correctly from behind.
     if n.dot(v) < 0.0 {
         n = -n;
     }
@@ -97,7 +136,7 @@ fn shade(d: &Draw, prep: &Prepared, pos: Vec3, mut n: Vec3) -> Vec3 {
         let h = (to_light + v).normalize_or_zero();
         spec += l.radiance * (n.dot(h).max(0.0).powf(d.shininess) * d.specular * atten);
     }
-    d.albedo * diffuse + spec + d.emissive
+    Some(albedo * diffuse + spec + d.emissive)
 }
 
 /// Unit vector from the surface to the light, and the light's strength there (0–1).
@@ -164,7 +203,9 @@ fn draw_triangle(t: &mut Target, d: &Draw, prep: &Prepared, tri: &[Vert; 3]) {
             let (p0, p1, p2) = ((u0 / s) as f32, (u1 / s) as f32, (u2 / s) as f32);
             let pos = tri[0].pos * p0 + tri[1].pos * p1 + tri[2].pos * p2;
             let nrm = tri[0].nrm * p0 + tri[1].nrm * p1 + tri[2].nrm * p2;
-            let col = shade(d, prep, pos, nrm);
+            let uv = [tri[0].uv[0] * p0 + tri[1].uv[0] * p1 + tri[2].uv[0] * p2, tri[0].uv[1] * p0 + tri[1].uv[1] * p1 + tri[2].uv[1] * p2];
+            // A dropped (transparent) texel leaves the depth buffer alone.
+            let Some(col) = shade(d, prep, pos, nrm, uv) else { continue };
             if let (Some(dz), Some(dc)) = (t.depth.get_mut(i), t.color.get_mut(i)) {
                 *dz = z as f32;
                 *dc = col.to_array();
@@ -187,16 +228,13 @@ pub(crate) fn render(prep: &Prepared, opts: &RenderOptions, ss: u32, samples: u6
     let mut t = Target { sw: w * ss, sh: h * ss, depth: alloc(n, f32::INFINITY)?, color: alloc(n, prep.background.to_array())? };
     for d in &prep.draws {
         let verts: Vec<Vert> = d
-            .mesh
             .positions
             .iter()
-            .zip(&d.mesh.normals)
-            .map(|(p, nrm)| {
-                let pos = d.world.transform_point3(Vec3::from(*p));
-                Vert { clip: prep.view_proj * pos.extend(1.0), pos, nrm: d.normal * Vec3::from(*nrm) }
-            })
+            .zip(&d.normals)
+            .enumerate()
+            .map(|(i, (pos, nrm))| Vert { clip: prep.view_proj * pos.extend(1.0), pos: *pos, nrm: *nrm, uv: d.uvs.get(i).copied().unwrap_or([0.0; 2]) })
             .collect();
-        for &[i0, i1, i2] in d.mesh.indices.as_chunks::<3>().0 {
+        for &[i0, i1, i2] in d.indices.as_chunks::<3>().0 {
             let (Some(&v0), Some(&v1), Some(&v2)) = (verts.get(i0 as usize), verts.get(i1 as usize), verts.get(i2 as usize)) else { continue };
             let (clipped, count) = clip_near([v0, v1, v2]);
             for c in clipped.iter().take(count) {
@@ -243,8 +281,8 @@ fn resolve(t: &Target, w: usize, h: usize, ss: usize, transparent: bool) -> Resu
 pub(crate) fn ray_pick(prep: &Prepared, origin: Vec3, dir: Vec3) -> Option<NodeId> {
     let mut best: Option<(f32, NodeId)> = None;
     for d in &prep.draws {
-        for tri in d.mesh.indices.as_chunks::<3>().0 {
-            let get = |i: u32| d.mesh.positions.get(i as usize).map(|p| d.world.transform_point3(Vec3::from(*p)));
+        for tri in d.indices.as_chunks::<3>().0 {
+            let get = |i: u32| d.positions.get(i as usize).copied();
             let (Some(v0), Some(v1), Some(v2)) = (get(tri[0]), get(tri[1]), get(tri[2])) else { continue };
             let (e1, e2) = (v1 - v0, v2 - v0);
             let p = dir.cross(e2);

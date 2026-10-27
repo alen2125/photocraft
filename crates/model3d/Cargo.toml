@@ -1,0 +1,17 @@
+[package]
+name = "photocraft-model3d"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# Synthetic model files for other crates' tests.
+testgen = []
+
+# Standalone L0 reader for 3D model files (glTF, GLB, VRM): depends on nothing in the workspace.
+[dependencies]
+gltf = { version = "1", default-features = false, features = ["utils", "import", "names", "extensions", "KHR_materials_unlit", "KHR_materials_emissive_strength"] }
+thiserror = { workspace = true }
