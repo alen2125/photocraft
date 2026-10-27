@@ -262,6 +262,8 @@ pub(crate) fn prepare(scene: &Scene, aspect: f32) -> Prepared {
     let world = scene.world_matrices();
     let mut draws = Vec::new();
     let mut lights = Vec::new();
+    // Skinning a character's meshes is the costly part; collect them and do it side by side.
+    let mut model_jobs: Vec<(NodeId, &ModelMesh)> = Vec::new();
     for n in &scene.nodes {
         if !scene.is_visible(n.id) {
             continue;
@@ -274,11 +276,7 @@ pub(crate) fn prepare(scene: &Scene, aspect: f32) -> Prepared {
                     draws.push(d);
                 }
             }
-            NodeKind::Mesh(mm) => {
-                if let Some(d) = model_draw(scene, &world, n.id, mm) {
-                    draws.push(d);
-                }
-            }
+            NodeKind::Mesh(mm) => model_jobs.push((n.id, mm)),
             NodeKind::Light(l) if lights.len() < MAX_LIGHTS => {
                 if let Some(lw) = light_world(&world, n.id, l) {
                     lights.push(lw);
@@ -287,6 +285,14 @@ pub(crate) fn prepare(scene: &Scene, aspect: f32) -> Prepared {
             _ => {}
         }
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    let skinned: Vec<Option<Draw>> = {
+        use rayon::prelude::*;
+        model_jobs.par_iter().map(|(id, mm)| model_draw(scene, &world, *id, mm)).collect()
+    };
+    #[cfg(target_arch = "wasm32")]
+    let skinned: Vec<Option<Draw>> = model_jobs.iter().map(|(id, mm)| model_draw(scene, &world, *id, mm)).collect();
+    draws.extend(skinned.into_iter().flatten());
     let (eye, view_proj) = camera(scene, aspect);
     let mut lut = [0.0f32; 256];
     for (i, v) in lut.iter_mut().enumerate() {
@@ -398,3 +404,6 @@ mod tests;
 
 #[cfg(test)]
 mod tests_models;
+
+#[cfg(test)]
+mod tests_links;

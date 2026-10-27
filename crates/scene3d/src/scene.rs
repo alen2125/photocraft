@@ -22,6 +22,8 @@ pub enum SceneError {
     NoSuchNode(NodeId),
     #[error("that parent would make the hierarchy loop")]
     Cycle,
+    #[error("{0}")]
+    BadLink(String),
     #[error("duplicate node id {0}")]
     DuplicateId(NodeId),
     #[error("node {0} names a parent that does not exist")]
@@ -269,11 +271,14 @@ pub struct Node {
     pub rest: Option<Transform>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub limits: Option<RotationLimits>,
+    /// Ties the node to another at a distance and angle (see [`crate::Link`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link: Option<crate::Link>,
 }
 
 impl Default for Node {
     fn default() -> Self {
-        Self { id: 0, name: String::new(), parent: None, visible: true, transform: Transform::default(), kind: NodeKind::Empty, rest: None, limits: None }
+        Self { id: 0, name: String::new(), parent: None, visible: true, transform: Transform::default(), kind: NodeKind::Empty, rest: None, limits: None, link: None }
     }
 }
 
@@ -398,6 +403,7 @@ impl Scene {
         }
         let before = self.nodes.len();
         self.nodes.retain(|n| !doomed.contains(&n.id));
+        self.drop_dangling_links();
         Ok(before - self.nodes.len())
     }
 
@@ -428,15 +434,7 @@ impl Scene {
 
     /// Model-to-world matrix, or `None` for an unknown id or a chain deeper than [`MAX_DEPTH`].
     pub fn world_matrix(&self, id: NodeId) -> Option<Mat4> {
-        let mut m = Mat4::IDENTITY;
-        let mut cur = Some(id);
-        for _ in 0..=MAX_DEPTH {
-            let Some(c) = cur else { return Some(m) };
-            let n = self.node(c)?;
-            m = n.transform.matrix() * m;
-            cur = n.parent;
-        }
-        None
+        crate::link::resolve(&|i| self.node(i), id, &mut std::collections::HashMap::new(), 0)
     }
 
     /// Whether the node and all of its ancestors are visible.
@@ -497,6 +495,7 @@ impl Scene {
             return Err(SceneError::TooNew(s.version));
         }
         s.validate()?;
+        s.drop_dangling_links();
         s.next_id = s.next_id.max(s.nodes.iter().map(|n| n.id).max().unwrap_or(0).saturating_add(1));
         Ok(s)
     }

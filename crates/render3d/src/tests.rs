@@ -147,3 +147,18 @@ fn project_puts_the_origin_at_the_picture_centre_and_rejects_nodes_behind_the_ca
     assert_eq!(project(&s, 100, 50, 9999), None);
     assert_eq!(project(&s, 0, 50, id), None);
 }
+
+/// Bands are independent, so one thread and many give the same picture.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn the_picture_does_not_depend_on_the_number_of_threads() {
+    let mut s = lit_cube_scene();
+    s.add_primitive(Primitive::sphere(), Transform::at(0.7, 0.2, 0.5)).unwrap();
+    s.add_primitive(Primitive::Plane { size: [8.0, 8.0] }, Transform::at(0.0, -1.0, 0.0)).unwrap();
+    let o = RenderOptions { transparent: true, ..RenderOptions::new(150, 97) };
+    let many = render(&s, &o).unwrap();
+    let one = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap().install(|| render(&s, &o).unwrap());
+    assert_eq!(many, one);
+    // A size that is not a multiple of the band height still fills every row.
+    assert!(many.rgba.as_chunks::<4>().0.iter().any(|p| p[3] == 255));
+}

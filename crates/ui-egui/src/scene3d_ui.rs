@@ -7,17 +7,14 @@
 
 use std::sync::Arc;
 
-use egui::{Color32, Sense, Stroke, Vec2, pos2, vec2};
+use egui::{Color32, pos2};
 use photocraft_scene3d::glam::{Quat, Vec3};
-use photocraft_scene3d::{Camera, Light, LightKind, Material, Node, NodeId, NodeKind, Primitive, RotationLimits, Scene, Transform};
+use photocraft_scene3d::{Camera, GizmoMode, Light, LightKind, Material, Node, NodeId, NodeKind, Primitive, RotationLimits, Scene, Transform};
 use serde_json::json;
 
 use crate::PhotocraftApp;
 
 const OPEN_ID: &str = "ui.scene3d.open";
-/// Longest edge of the live preview, in pixels.
-const PREVIEW_EDGE: f32 = 960.0;
-
 /// Whether `id` is a command this module carries out.
 pub fn handles(id: &str) -> bool {
     id == OPEN_ID
@@ -27,7 +24,13 @@ pub fn invoke(app: &mut PhotocraftApp, id: &str) -> Option<Result<serde_json::Va
     if !handles(id) {
         return None;
     }
-    app.scene3d.open = true;
+    let Some(st) = app.session.active() else { return Some(Err(tl!("Open a document first.").to_string())) };
+    let (doc, size) = (st.doc.id, [st.doc.size.width, st.doc.size.height]);
+    let ed = &mut app.scene3d;
+    ed.open = true;
+    ed.owner = Some(doc);
+    ed.doc_size = size;
+    ed.touch();
     Some(Ok(json!({"open": true})))
 }
 
@@ -59,30 +62,47 @@ impl Orbit {
 pub struct Scene3dEditor {
     pub open: bool,
     pub scene: Scene,
-    selected: Option<NodeId>,
-    orbit: Orbit,
-    preview: Option<Preview>,
+    pub(crate) selected: Option<NodeId>,
+    pub(crate) orbit: Orbit,
+    pub(crate) preview: Option<Preview>,
     /// Bumped on every change to the scene or camera; the preview re-renders when it moves.
-    rev: u64,
-    status: String,
-    file_name: Option<String>,
-    out_width: u32,
-    out_height: u32,
-    out_ssaa: u32,
-    out_transparent: bool,
-    show_bones: bool,
-    pose_mode: PoseMode,
+    pub(crate) rev: u64,
+    pub(crate) status: String,
+    pub(crate) file_name: Option<String>,
+    pub(crate) out_ssaa: u32,
+    pub(crate) out_transparent: bool,
+    pub(crate) show_bones: bool,
+    pub(crate) pose_mode: PoseMode,
     /// How many bones above the dragged one turn in IK mode.
-    ik_chain: usize,
-    drag: Option<BoneDrag>,
-    pose_name: String,
+    pub(crate) ik_chain: usize,
+    pub(crate) pose_name: String,
     /// Set by the side panel; carried out after the window is drawn (it opens a file dialog).
-    want_import: bool,
+    pub(crate) want_import: bool,
+    pub(crate) worker: crate::scene3d_worker::PreviewWorker,
+    /// `egui` time of the last camera or pose change; the preview is coarse until it settles.
+    pub(crate) last_change: f64,
+    /// The document the mode was started on; leaving it closes the mode.
+    pub(crate) owner: Option<photocraft_doc::DocId>,
+    /// Size in pixels of that document: the scene is rendered over all of it.
+    pub(crate) doc_size: [u32; 2],
+    /// The pressed pointer, between a press and its release.
+    pub(crate) pointer: Option<crate::scene3d_canvas::PointerState>,
+    /// A camera or pose change happened this frame (the preview goes coarse for a moment).
+    pub(crate) pending_change: bool,
+    /// What the gizmo does (W/E/R) and whether its axes are the node's own.
+    pub(crate) gizmo_mode: GizmoMode,
+    pub(crate) gizmo_local: bool,
+    /// Scene edits for undo and redo: the scene before each edit, the scene as last seen, and
+    /// the revision that was last looked at.
+    pub(crate) history: Vec<Scene>,
+    pub(crate) future: Vec<Scene>,
+    pub(crate) committed: Option<Scene>,
+    pub(crate) history_rev: u64,
 }
 
 /// What dragging a bone in the viewport does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PoseMode {
+pub(crate) enum PoseMode {
     /// Turn the bone about the camera's axes (forward kinematics).
     Rotate,
     /// Pull the bone to the pointer by turning the bones above it.
@@ -91,20 +111,20 @@ enum PoseMode {
 
 /// A bone drag in progress: the plane facing the camera through the bone where it was grabbed.
 #[derive(Clone, Copy, Debug)]
-struct BoneDrag {
-    id: NodeId,
-    plane_point: Vec3,
+pub(crate) struct BoneDrag {
+    pub(crate) id: NodeId,
+    pub(crate) plane_point: Vec3,
 }
 
-struct Preview {
-    texture: egui::TextureHandle,
-    key: (u64, u32, u32, u32),
+pub(crate) struct Preview {
+    pub(crate) texture: egui::TextureHandle,
+    pub(crate) key: (u64, u32, u32, u32),
 }
 
 impl Default for Scene3dEditor {
     fn default() -> Self {
-        let mut scene = Scene::new();
-        scene.add_primitive(Primitive::Plane { size: [10.0, 10.0] }, Transform::default()).ok();
+        // Just a sun: on a canvas the scene sits over the picture, so nothing else is added.
+        let scene = Scene::new();
         let orbit = Orbit::from_camera(&scene.camera);
         Self {
             open: false,
@@ -115,16 +135,25 @@ impl Default for Scene3dEditor {
             rev: 1,
             status: String::new(),
             file_name: None,
-            out_width: 1024,
-            out_height: 768,
             out_ssaa: 2,
             out_transparent: true,
             show_bones: true,
             pose_mode: PoseMode::Ik,
             ik_chain: 2,
-            drag: None,
             pose_name: "Pose 1".into(),
             want_import: false,
+            worker: Default::default(),
+            last_change: f64::NEG_INFINITY,
+            owner: None,
+            doc_size: [1024, 768],
+            pointer: None,
+            pending_change: false,
+            gizmo_mode: GizmoMode::Translate,
+            gizmo_local: false,
+            history: Vec::new(),
+            future: Vec::new(),
+            committed: None,
+            history_rev: 0,
         }
     }
 }
@@ -139,12 +168,12 @@ impl Scene3dEditor {
         self.rev += 1;
     }
 
-    fn touch(&mut self) {
+    pub(crate) fn touch(&mut self) {
         self.rev += 1;
     }
 
     /// Adds a model from file bytes (`name` is the path on the desktop) and frames its skeleton.
-    fn import_model(&mut self, name: &str, bytes: &[u8]) -> Result<(), String> {
+    pub(crate) fn import_model(&mut self, name: &str, bytes: &[u8]) -> Result<(), String> {
         let model = photocraft_scene3d::model3d::load(name, bytes).map_err(|e| format!("{name}: {e}"))?;
         // A path lets the scene file find the model again; the browser gives a bare name.
         let path = std::path::Path::new(name).is_absolute().then(|| name.to_string());
@@ -176,7 +205,7 @@ impl Scene3dEditor {
         }
     }
 
-    fn add_primitive(&mut self, p: Primitive) {
+    pub(crate) fn add_primitive(&mut self, p: Primitive) {
         let lift = if matches!(p, Primitive::Plane { .. }) { 0.0 } else { 0.5 };
         self.add(Node { transform: Transform::at(0.0, lift, 0.0), kind: NodeKind::Primitive { primitive: p, material: Material::default() }, ..Node::default() });
     }
@@ -242,24 +271,28 @@ fn load_missing_assets(scene: &mut Scene) -> Vec<String> {
 }
 
 /// The picture shown in the viewport for `size` pixels; re-rendered only when something changed.
-fn refresh_preview(ctx: &egui::Context, ed: &mut Scene3dEditor, size: (u32, u32), ssaa: u32) {
-    let key = (ed.rev, size.0, size.1, ssaa);
-    if ed.preview.as_ref().is_some_and(|p| p.key == key) {
-        return;
-    }
-    let opts = photocraft_render3d::RenderOptions { width: size.0, height: size.1, ssaa, transparent: false };
-    match photocraft_render3d::render(&ed.scene, &opts) {
-        Ok(img) => {
-            let color = egui::ColorImage::from_rgba_unmultiplied([img.width as usize, img.height as usize], &img.rgba);
-            match ed.preview.as_mut() {
-                Some(p) => {
-                    p.texture.set(color, egui::TextureOptions::LINEAR);
-                    p.key = key;
+pub(crate) fn refresh_preview(ctx: &egui::Context, ed: &mut Scene3dEditor, size: (u32, u32), ssaa: u32) {
+    // Show what the renderer has finished.
+    if let Some((key, result)) = ed.worker.poll() {
+        match result {
+            Ok(img) => {
+                let color = egui::ColorImage::from_rgba_unmultiplied([img.width as usize, img.height as usize], &img.rgba);
+                match ed.preview.as_mut() {
+                    Some(p) => {
+                        p.texture.set(color, egui::TextureOptions::LINEAR);
+                        p.key = key;
+                    }
+                    None => ed.preview = Some(Preview { texture: ctx.load_texture("scene3d-preview", color, egui::TextureOptions::LINEAR), key }),
                 }
-                None => ed.preview = Some(Preview { texture: ctx.load_texture("scene3d-preview", color, egui::TextureOptions::LINEAR), key }),
             }
+            Err(e) => ed.status = e,
         }
-        Err(e) => ed.status = e.to_string(),
+    }
+    // Ask for the newest state once the renderer is free (it asks for a repaint when it ends).
+    let want = (ed.rev, size.0, size.1, ssaa);
+    if ed.preview.as_ref().is_none_or(|p| p.key != want) && !ed.worker.busy() && !ed.worker.is_last(want) {
+        let opts = photocraft_render3d::RenderOptions { width: size.0, height: size.1, ssaa, transparent: ed.out_transparent };
+        ed.worker.submit(ctx, want, ed.scene.clone(), opts);
     }
 }
 
@@ -310,6 +343,8 @@ fn node_inspector(ui: &mut egui::Ui, ed: &mut Scene3dEditor, id: NodeId) {
     let mut changed = false;
     let others: Vec<(NodeId, String)> = ed.scene.nodes.iter().filter(|n| n.id != id).map(|n| (n.id, n.name.clone())).collect();
     let mut reparent: Option<Option<NodeId>> = None;
+    // Some(None) = unlink, Some(Some(t)) = link to `t`; applied once the node borrow ends.
+    let mut link_action: Option<Option<NodeId>> = None;
     let Some(node) = ed.scene.node_mut(id) else { return };
     changed |= ui.text_edit_singleline(&mut node.name).changed();
     changed |= ui.checkbox(&mut node.visible, tl!("Visible")).changed();
@@ -325,9 +360,12 @@ fn node_inspector(ui: &mut egui::Ui, ed: &mut Scene3dEditor, id: NodeId) {
         }
     });
     ui.separator();
-    changed |= vec3_row(ui, tl!("Position"), &mut node.transform.translation, 0.02);
-    changed |= vec3_row(ui, tl!("Rotation"), &mut node.transform.rotation, 0.5);
-    changed |= vec3_row(ui, tl!("Scale"), &mut node.transform.scale, 0.01);
+    link_section(ui, node, &others, &mut link_action, &mut changed);
+    egui::CollapsingHeader::new(tl!("Exact values")).default_open(false).show(ui, |ui| {
+        changed |= vec3_row(ui, tl!("Position"), &mut node.transform.translation, 0.02);
+        changed |= vec3_row(ui, tl!("Rotation"), &mut node.transform.rotation, 0.5);
+        changed |= vec3_row(ui, tl!("Scale"), &mut node.transform.scale, 0.01);
+    });
     ui.separator();
     match &mut node.kind {
         NodeKind::Empty => {}
@@ -384,9 +422,49 @@ fn node_inspector(ui: &mut egui::Ui, ed: &mut Scene3dEditor, id: NodeId) {
             Err(e) => ed.status = e.to_string(),
         }
     }
+    if let Some(action) = link_action {
+        let done = match action {
+            Some(target) => ed.scene.link_to(id, target),
+            None => ed.scene.unlink(id),
+        };
+        match done {
+            Ok(()) => changed = true,
+            Err(e) => ed.status = e.to_string(),
+        }
+    }
     if changed {
         ed.touch();
     }
+}
+
+/// Ties the node to another at a distance and angle (a sun on a face, orbiting it), and edits
+/// that relation. Picking a target keeps the node where it is; the numbers then take over.
+fn link_section(ui: &mut egui::Ui, node: &mut Node, others: &[(NodeId, String)], action: &mut Option<Option<NodeId>>, changed: &mut bool) {
+    let current = node.link.as_ref().and_then(|l| others.iter().find(|o| o.0 == l.target)).map_or_else(|| tl!("(none)").to_string(), |o| o.1.clone());
+    egui::ComboBox::from_label(tl!("Link to")).selected_text(current).show_ui(ui, |ui| {
+        if ui.selectable_label(node.link.is_none(), tl!("(none)")).clicked() {
+            *action = Some(None);
+        }
+        for (oid, name) in others {
+            if ui.selectable_label(node.link.as_ref().is_some_and(|l| l.target == *oid), name).clicked() {
+                *action = Some(Some(*oid));
+            }
+        }
+    });
+    let Some(l) = &mut node.link else { return };
+    ui.horizontal(|ui| {
+        ui.add_sized([62.0, 18.0], egui::Label::new(tl!("Distance")));
+        *changed |= ui.add(egui::DragValue::new(&mut l.distance).speed(0.02).range(0.01..=1000.0).max_decimals(3)).changed();
+    });
+    *changed |= ui.add(egui::Slider::new(&mut l.yaw, -180.0..=180.0).text(tl!("Orbit"))).changed();
+    *changed |= ui.add(egui::Slider::new(&mut l.pitch, -89.0..=89.0).text(tl!("Height angle"))).changed();
+    *changed |= ui.checkbox(&mut l.look_at, tl!("Aim at target")).changed();
+    let mut follow = l.space == photocraft_scene3d::LinkSpace::Target;
+    if ui.checkbox(&mut follow, tl!("Follow target's turn")).changed() {
+        l.space = if follow { photocraft_scene3d::LinkSpace::Target } else { photocraft_scene3d::LinkSpace::World };
+        *changed = true;
+    }
+    ui.weak(tl!("Its position follows the link; drag it on the canvas to change the link."));
 }
 
 fn primitive_params(ui: &mut egui::Ui, p: &mut Primitive) -> bool {
@@ -445,7 +523,7 @@ fn node_list(ui: &mut egui::Ui, ed: &mut Scene3dEditor) {
 }
 
 /// Every bone's parent and its position in preview pixels (bones out of view are left out).
-fn bone_screen(scene: &Scene, size: (u32, u32)) -> Vec<(NodeId, Option<NodeId>, (f32, f32))> {
+pub(crate) fn bone_screen(scene: &Scene, size: (u32, u32)) -> Vec<(NodeId, Option<NodeId>, (f32, f32))> {
     let list = scene.bone_positions();
     let pts: Vec<Vec3> = list.iter().map(|b| b.2).collect();
     let screen = photocraft_render3d::project_points(scene, size.0, size.1, &pts);
@@ -453,7 +531,7 @@ fn bone_screen(scene: &Scene, size: (u32, u32)) -> Vec<(NodeId, Option<NodeId>, 
 }
 
 /// The bone dot closest to `(x, y)` within `radius` preview pixels.
-fn nearest_bone(bones: &[(NodeId, Option<NodeId>, (f32, f32))], x: f32, y: f32, radius: f32) -> Option<NodeId> {
+pub(crate) fn nearest_bone(bones: &[(NodeId, Option<NodeId>, (f32, f32))], x: f32, y: f32, radius: f32) -> Option<NodeId> {
     bones
         .iter()
         .map(|b| (b.0, (b.2.0 - x).hypot(b.2.1 - y)))
@@ -463,7 +541,7 @@ fn nearest_bone(bones: &[(NodeId, Option<NodeId>, (f32, f32))], x: f32, y: f32, 
 }
 
 /// The camera's right and up axes and its view direction in the world.
-fn camera_axes(c: &Camera) -> (Vec3, Vec3, Vec3) {
+pub(crate) fn camera_axes(c: &Camera) -> (Vec3, Vec3, Vec3) {
     let f = (Vec3::from(c.target) - Vec3::from(c.position)).normalize_or_zero();
     let f = if f == Vec3::ZERO { Vec3::NEG_Z } else { f };
     let right = f.cross(Vec3::Y).normalize_or_zero();
@@ -473,7 +551,7 @@ fn camera_axes(c: &Camera) -> (Vec3, Vec3, Vec3) {
 
 /// Applies one pointer step of a bone drag: pull it to the pointer (IK, or sliding the top
 /// bone) or turn it about the camera's axes.
-fn drag_bone(ed: &mut Scene3dEditor, drag: BoneDrag, size: (u32, u32), pointer: (f32, f32), delta: (f32, f32)) {
+pub(crate) fn drag_bone(ed: &mut Scene3dEditor, drag: BoneDrag, size: (u32, u32), pointer: (f32, f32), delta: (f32, f32)) {
     let (right, up, forward) = camera_axes(&ed.scene.camera);
     let result = match ed.pose_mode {
         PoseMode::Rotate => {
@@ -502,106 +580,6 @@ fn drag_bone(ed: &mut Scene3dEditor, drag: BoneDrag, size: (u32, u32), pointer: 
     };
     if let Err(e) = result {
         ed.status = e.to_string();
-    }
-}
-
-fn viewport(ui: &mut egui::Ui, ed: &mut Scene3dEditor) {
-    let avail = ui.available_size_before_wrap().max(vec2(160.0, 120.0));
-    let (rect, resp) = ui.allocate_exact_size(avail, Sense::click_and_drag());
-    let ppp = ui.ctx().pixels_per_point();
-    let scale = (PREVIEW_EDGE / (rect.width() * ppp).max(rect.height() * ppp)).min(1.0);
-    let size = (((rect.width() * ppp * scale) as u32).max(8), ((rect.height() * ppp * scale) as u32).max(8));
-
-    let to_px = |p: egui::Pos2| ((p.x - rect.min.x) / rect.width() * size.0 as f32, (p.y - rect.min.y) / rect.height() * size.1 as f32);
-    // Preview pixels per point, so a 12-point grab radius is the same on any scale.
-    let grab = 12.0 * size.0 as f32 / rect.width().max(1.0);
-    let bones = if ed.show_bones { bone_screen(&ed.scene, size) } else { Vec::new() };
-
-    let mut moved = false;
-    let (dx, dy) = (resp.drag_delta().x, resp.drag_delta().y);
-    if resp.drag_started_by(egui::PointerButton::Primary)
-        && let Some(p) = resp.interact_pointer_pos()
-    {
-        // Grabbing a bone dot poses it; anywhere else the drag turns the camera.
-        let (px, py) = to_px(p);
-        ed.drag = nearest_bone(&bones, px, py, grab).and_then(|id| {
-            ed.selected = Some(id);
-            ed.scene.bone_positions().iter().find(|b| b.0 == id).map(|b| BoneDrag { id, plane_point: b.2 })
-        });
-    }
-    if resp.drag_stopped() {
-        ed.drag = None;
-    }
-    if resp.dragged_by(egui::PointerButton::Primary)
-        && let Some(drag) = ed.drag
-    {
-        if let Some(p) = resp.interact_pointer_pos() {
-            let (px, py) = to_px(p);
-            drag_bone(ed, drag, size, (px, py), (dx, dy));
-            ed.touch();
-        }
-    } else if resp.dragged_by(egui::PointerButton::Primary) && (dx != 0.0 || dy != 0.0) {
-        ed.orbit.yaw -= dx * 0.4;
-        ed.orbit.pitch = (ed.orbit.pitch + dy * 0.4).clamp(-89.0, 89.0);
-        moved = true;
-    }
-    if (resp.dragged_by(egui::PointerButton::Secondary) || resp.dragged_by(egui::PointerButton::Middle)) && (dx != 0.0 || dy != 0.0) {
-        // Pan in the camera's plane, scaled so the scene follows the pointer.
-        let k = ed.orbit.distance * 0.0016;
-        let yaw = ed.orbit.yaw.to_radians();
-        let right = [yaw.cos(), 0.0, -yaw.sin()];
-        for (t, r) in ed.orbit.target.iter_mut().zip(right) {
-            *t -= r * dx * k;
-        }
-        ed.orbit.target[1] += dy * k;
-        moved = true;
-    }
-    if resp.hovered() {
-        let scroll = ui.input(|i| i.smooth_scroll_delta.y);
-        if scroll != 0.0 {
-            ed.orbit.distance = (ed.orbit.distance * (1.0 - scroll * 0.0015)).clamp(0.2, 500.0);
-            moved = true;
-        }
-    }
-    if moved {
-        ed.orbit.apply(&mut ed.scene.camera);
-        ed.touch();
-    }
-    if resp.clicked()
-        && let Some(p) = resp.interact_pointer_pos()
-    {
-        let (px, py) = to_px(p);
-        ed.selected = nearest_bone(&bones, px, py, grab).or_else(|| photocraft_render3d::pick(&ed.scene, size.0, size.1, px, py));
-    }
-
-    // Fast while the camera moves; anti-aliased once it rests.
-    let ssaa = if resp.dragged() { 1 } else { 2 };
-    refresh_preview(ui.ctx(), ed, size, ssaa);
-    if let Some(p) = &ed.preview {
-        ui.painter().image(p.texture.id(), rect, egui::Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
-    } else {
-        ui.painter().rect_filled(rect, 0.0, Color32::from_gray(40));
-    }
-    let to_screen = |x: f32, y: f32| pos2(rect.min.x + x / size.0 as f32 * rect.width(), rect.min.y + y / size.1 as f32 * rect.height());
-    let screen_of = |id: NodeId| bones.iter().find(|b| b.0 == id).map(|b| to_screen(b.2.0, b.2.1));
-    for (id, parent, (x, y)) in &bones {
-        let c = to_screen(*x, *y);
-        if let Some(pp) = parent.and_then(screen_of) {
-            ui.painter().line_segment([pp, c], Stroke::new(1.5, Color32::from_rgba_unmultiplied(120, 200, 255, 200)));
-        }
-        let selected = ed.selected == Some(*id);
-        let (r, col) = if selected { (5.0, Color32::from_rgb(255, 170, 40)) } else { (3.0, Color32::from_rgb(120, 200, 255)) };
-        ui.painter().circle_filled(c, r, col);
-    }
-    if let Some(id) = ed.selected
-        && !bones.iter().any(|b| b.0 == id)
-        && let Some((x, y)) = photocraft_render3d::project(&ed.scene, size.0, size.1, id)
-    {
-        let c = pos2(rect.min.x + x / size.0 as f32 * rect.width(), rect.min.y + y / size.1 as f32 * rect.height());
-        if rect.contains(c) {
-            ui.painter().circle_stroke(c, 7.0, Stroke::new(2.0, Color32::from_rgb(255, 170, 40)));
-            ui.painter().circle_filled(c, 2.0, Color32::from_rgb(255, 170, 40));
-        }
     }
 }
 
@@ -643,7 +621,7 @@ fn side_panels(ui: &mut egui::Ui, ed: &mut Scene3dEditor) {
     ui.separator();
     egui::ScrollArea::vertical().id_salt("scene3d-nodes").max_height(200.0).show(ui, |ui| node_list(ui, ed));
     ui.separator();
-    egui::ScrollArea::vertical().id_salt("scene3d-inspector").show(ui, |ui| {
+    egui::ScrollArea::vertical().id_salt("scene3d-inspector").max_height(380.0).show(ui, |ui| {
         if ed.scene.nodes.iter().any(|n| matches!(n.kind, NodeKind::Bone)) {
             egui::CollapsingHeader::new(tl!("Pose")).default_open(true).show(ui, |ui| pose_panel(ui, ed));
             ui.separator();
@@ -680,7 +658,7 @@ fn pose_panel(ui: &mut egui::Ui, ed: &mut Scene3dEditor) {
     if ed.pose_mode == PoseMode::Ik {
         ui.add(egui::Slider::new(&mut ed.ik_chain, 1..=8).text(tl!("IK chain")));
     }
-    ui.weak(tl!("Drag a bone dot in the viewport."));
+    ui.weak(tl!("Drag a bone dot or a gizmo handle on the canvas. W / E / R: move, rotate, scale."));
     if ui.button(tl!("Reset pose")).clicked() {
         ed.scene.reset_pose();
         changed = true;
@@ -718,15 +696,16 @@ fn pose_panel(ui: &mut egui::Ui, ed: &mut Scene3dEditor) {
     }
 }
 
-enum Action {
+pub(crate) enum Action {
     Import,
-    Render,
+    Bake,
+    Close,
     New,
     Save,
     Open,
 }
 
-fn footer(ui: &mut egui::Ui, ed: &mut Scene3dEditor, have_doc: bool) -> Option<Action> {
+fn footer(ui: &mut egui::Ui, ed: &mut Scene3dEditor) -> Option<Action> {
     let mut action = None;
     ui.horizontal_wrapped(|ui| {
         if ui.button(tl!("New")).clicked() {
@@ -738,16 +717,13 @@ fn footer(ui: &mut egui::Ui, ed: &mut Scene3dEditor, have_doc: bool) -> Option<A
         if ui.button(tl!("Save Scene…")).clicked() {
             action = Some(Action::Save);
         }
-        ui.separator();
-        ui.label(tl!("Size"));
-        ui.add(egui::DragValue::new(&mut ed.out_width).range(1..=photocraft_render3d::MAX_EDGE).speed(4));
-        ui.label("×");
-        ui.add(egui::DragValue::new(&mut ed.out_height).range(1..=photocraft_render3d::MAX_EDGE).speed(4));
-        ui.add(egui::Slider::new(&mut ed.out_ssaa, 1..=4).text(tl!("Smoothing")));
-        ui.checkbox(&mut ed.out_transparent, tl!("Transparent sky"));
-        let render = ui.add_enabled(have_doc, egui::Button::new(tl!("Render to Layer")));
-        if render.on_disabled_hover_text(tl!("Open a document first.")).clicked() {
-            action = Some(Action::Render);
+    });
+    ui.horizontal(|ui| {
+        if ui.button(tl!("Bake to Layer")).clicked() {
+            action = Some(Action::Bake);
+        }
+        if ui.button(tl!("Cancel")).clicked() {
+            action = Some(Action::Close);
         }
     });
     if let Some(name) = &ed.file_name {
@@ -759,7 +735,7 @@ fn footer(ui: &mut egui::Ui, ed: &mut Scene3dEditor, have_doc: bool) -> Option<A
     action
 }
 
-fn run_action(app: &mut PhotocraftApp, ctx: &egui::Context, action: Action) {
+pub(crate) fn run_action(app: &mut PhotocraftApp, ctx: &egui::Context, action: Action) {
     match action {
         Action::Import => {
             let asked = app.pick_file_bytes_filtered(&["glb", "vrm", "gltf"], |app, name, bytes| {
@@ -772,21 +748,12 @@ fn run_action(app: &mut PhotocraftApp, ctx: &egui::Context, action: Action) {
             }
         }
         Action::New => {
-            let (w, h, s, t) = (app.scene3d.out_width, app.scene3d.out_height, app.scene3d.out_ssaa, app.scene3d.out_transparent);
-            let open = app.scene3d.open;
-            app.scene3d = Scene3dEditor { open, out_width: w, out_height: h, out_ssaa: s, out_transparent: t, ..Scene3dEditor::default() };
+            let old = &app.scene3d;
+            let kept = Scene3dEditor { open: old.open, owner: old.owner, doc_size: old.doc_size, out_ssaa: old.out_ssaa, out_transparent: old.out_transparent, ..Scene3dEditor::default() };
+            app.scene3d = kept;
         }
-        Action::Render => {
-            let ed = &app.scene3d;
-            let params = json!({
-                "scene": serde_json::to_value(&ed.scene).unwrap_or_default(),
-                "width": ed.out_width, "height": ed.out_height, "ssaa": ed.out_ssaa, "transparent": ed.out_transparent,
-            });
-            app.scene3d.status = match crate::menus::invoke(app, ctx, "scene3d.renderToLayer", params) {
-                Ok(_) => String::new(),
-                Err(e) => e,
-            };
-        }
+        Action::Bake => crate::scene3d_canvas::bake(app, ctx),
+        Action::Close => crate::scene3d_canvas::close(&mut app.scene3d),
         Action::Save => {
             let asked = app.pick_save("scene.pcscene", |app, path| {
                 let bytes = app.scene3d.scene.to_json().map_err(|e| e.to_string())?.into_bytes();
@@ -815,21 +782,31 @@ fn run_action(app: &mut PhotocraftApp, ctx: &egui::Context, action: Action) {
     }
 }
 
-/// Draws the editor window while it is open.
+/// Every frame: keeps the on-canvas mode going (preview, document check) and draws its panel,
+/// the node list, inspector and poses, as a floating window next to the canvas.
 pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
+    crate::scene3d_canvas::frame(app, ctx);
     if !app.scene3d.open {
         return;
     }
-    let have_doc = app.session.active().is_some();
     let mut ed = std::mem::take(&mut app.scene3d);
     let mut open = true;
     let mut action = None;
-    egui::Window::new(tl!("3D Pose Editor")).id(egui::Id::new("scene3d-editor")).open(&mut open).default_size(Vec2::new(1000.0, 640.0)).resizable(true).show(ctx, |ui| {
-        egui::Panel::bottom("scene3d-footer").show(ui, |ui| action = footer(ui, &mut ed, have_doc));
-        egui::Panel::right("scene3d-side").default_size(300.0).show(ui, |ui| side_panels(ui, &mut ed));
-        egui::CentralPanel::default().show(ui, |ui| viewport(ui, &mut ed));
-    });
-    ed.open = open;
+    let screen = ctx.content_rect();
+    egui::Window::new(tl!("3D Pose Editor"))
+        .id(egui::Id::new("scene3d-panel"))
+        .open(&mut open)
+        .default_pos(pos2((screen.right() - 340.0).max(0.0), screen.top() + 110.0))
+        .default_width(320.0)
+        .resizable(true)
+        .show(ctx, |ui| {
+            side_panels(ui, &mut ed);
+            ui.separator();
+            action = footer(ui, &mut ed);
+        });
+    if !open {
+        crate::scene3d_canvas::close(&mut ed);
+    }
     let import = std::mem::take(&mut ed.want_import);
     app.scene3d = ed;
     if let Some(a) = action {
@@ -842,7 +819,7 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
 
 #[cfg(test)]
 #[path = "scene3d_ui_tests.rs"]
-mod tests;
+pub(crate) mod tests;
 
 #[cfg(test)]
 #[path = "scene3d_ui_models_tests.rs"]

@@ -1,5 +1,6 @@
 use photocraft_model3d::testgen::skinned_triangle_glb;
 
+use super::tests::wait_for_preview;
 use super::*;
 
 fn bone(ed: &Scene3dEditor, name: &str) -> NodeId {
@@ -137,13 +138,11 @@ fn saved_scenes_reload_their_models_from_the_paths_they_name() {
 #[test]
 fn the_window_draws_with_a_model_and_its_skeleton() {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
-    app.scene3d.open = true;
-    app.scene3d.import_model("hero.vrm", &skinned_triangle_glb(false, 2)).unwrap();
+    app.run("file.new", serde_json::json!({"width": 120, "height": 90})).unwrap();
     let ctx = egui::Context::default();
-    for _ in 0..2 {
-        let mut out = ctx.run_ui(Default::default(), |ui| show(&mut app, ui.ctx()));
-        out.textures_delta.clear();
-    }
+    crate::menus::invoke(&mut app, &ctx, "ui.scene3d.open", serde_json::json!({})).unwrap();
+    app.scene3d.import_model("hero.vrm", &skinned_triangle_glb(false, 2)).unwrap();
+    wait_for_preview(&mut app, &ctx);
     assert!(app.scene3d.preview.is_some());
     assert!(app.scene3d.status.is_empty(), "{}", app.scene3d.status);
 }

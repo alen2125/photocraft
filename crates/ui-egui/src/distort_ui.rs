@@ -137,6 +137,10 @@ pub fn menu(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, params: &Val
 
 /// Pointer events (document coordinates) while a mode is active. True when consumed.
 pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers) -> bool {
+    if app.scene3d.open {
+        crate::scene3d_canvas::pointer(app, ev, mods);
+        return true;
+    }
     if app.distort.caf.is_some() {
         crate::caf_ui::pointer(app, ev, mods);
         return true;
@@ -164,6 +168,9 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers) ->
 /// of the rest of the app should be skipped.
 pub fn keys(app: &mut PhotocraftApp, ctx: &egui::Context) -> bool {
     use egui::{Key, Modifiers};
+    if app.scene3d.open {
+        return crate::scene3d_canvas::keys(app, ctx);
+    }
     let enter = |ctx: &egui::Context| ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter));
     let esc = |ctx: &egui::Context| ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape));
     if app.distort.gallery.is_some() {
@@ -232,6 +239,9 @@ pub fn keys(app: &mut PhotocraftApp, ctx: &egui::Context) -> bool {
 /// draws right after the document and under the grid and guides (#7781), as Free Transform's
 /// preview is (#5086). Its pins, planes and meshes are [`draw_overlay`], drawn over the guides.
 pub fn draw_content(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform) {
+    if app.scene3d.open {
+        crate::scene3d_canvas::draw_content(app, painter, xf);
+    }
     if let Some(p) = &app.distort.puppet {
         crate::puppet_ui::draw_content(p, painter, xf);
     }
@@ -245,6 +255,9 @@ pub fn draw_content(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform
 
 /// Canvas overlay for the on-canvas modes: pins, planes and meshes over the guides.
 pub fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform) {
+    if app.scene3d.open {
+        crate::scene3d_canvas::draw_overlay(app, painter, xf);
+    }
     if let Some(p) = &app.distort.puppet {
         crate::puppet_ui::draw(p, painter, xf);
     }
@@ -258,6 +271,10 @@ pub fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform
 
 /// Options bar for the on-canvas modes. True when drawn.
 pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> bool {
+    if app.scene3d.open {
+        crate::scene3d_canvas::options_bar(app, ui);
+        return true;
+    }
     if app.distort.puppet.is_some() {
         crate::puppet_ui::options_bar(app, ui);
         return true;

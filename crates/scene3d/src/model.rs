@@ -7,7 +7,7 @@ use std::sync::Arc;
 use glam::{EulerRot, Mat4, Quat, Vec3};
 use photocraft_model3d::{ModelData, ModelFormat};
 
-use crate::scene::{Asset, ModelMesh, Node, NodeId, NodeKind, Pose, PoseBone, Scene, SceneError, Transform, MAX_DEPTH, MAX_NODES};
+use crate::scene::{Asset, ModelMesh, Node, NodeId, NodeKind, Pose, PoseBone, Scene, SceneError, Transform, MAX_NODES};
 
 fn node_transform(n: &photocraft_model3d::ModelNode) -> Transform {
     let q = Quat::from_xyzw(n.rotation[0], n.rotation[1], n.rotation[2], n.rotation[3]);
@@ -99,35 +99,11 @@ impl Scene {
     /// World matrix of every node, computed once. Nodes in a chain deeper than [`MAX_DEPTH`] are left out.
     pub fn world_matrices(&self) -> HashMap<NodeId, Mat4> {
         let by_id: HashMap<NodeId, &Node> = self.nodes.iter().map(|n| (n.id, n)).collect();
+        let find = |id: NodeId| by_id.get(&id).copied();
         let mut out: HashMap<NodeId, Mat4> = HashMap::with_capacity(self.nodes.len());
         for n in &self.nodes {
-            if out.contains_key(&n.id) {
-                continue;
-            }
-            // Walk up to a known ancestor (or the top), then come back down multiplying.
-            let mut chain = vec![n];
-            let mut base = Mat4::IDENTITY;
-            let mut ok = true;
-            while let Some(p) = chain.last().and_then(|last| last.parent) {
-                if let Some(m) = out.get(&p) {
-                    base = *m;
-                    break;
-                }
-                match by_id.get(&p) {
-                    Some(pn) if chain.len() <= MAX_DEPTH => chain.push(pn),
-                    _ => {
-                        ok = false;
-                        break;
-                    }
-                }
-            }
-            if !ok {
-                continue;
-            }
-            for node in chain.iter().rev() {
-                base *= node.transform.matrix();
-                out.insert(node.id, base);
-            }
+            // Parents and link targets first; a node too deep (or in a loop) is left out.
+            let _ = crate::link::resolve(&find, n.id, &mut out, 0);
         }
         out
     }

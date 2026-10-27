@@ -51,11 +51,30 @@ fn clip_near(tri: [Vert; 3]) -> ([[Vert; 3]; 2], usize) {
     }
 }
 
-struct Target {
+/// Rows `y0..y0 + rows` of the sample buffers. Bands are independent, so they can be drawn in
+/// parallel, and the result is the same whatever the number of threads.
+struct Band<'a> {
+    y0: usize,
+    rows: usize,
     sw: usize,
-    sh: usize,
-    depth: Vec<f32>,
-    color: Vec<[f32; 3]>,
+    depth: &'a mut [f32],
+    color: &'a mut [[f32; 3]],
+}
+
+/// Sample rows per band.
+const BAND_ROWS: usize = 16;
+
+/// A clipped triangle in screen space, with everything the rasteriser needs.
+struct SetupTri {
+    draw: usize,
+    v: [Vert; 3],
+    s: [Screen; 3],
+    area: f64,
+    /// Inclusive sample ranges the triangle can touch.
+    x0: usize,
+    x1: usize,
+    y0: usize,
+    y1: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -164,34 +183,41 @@ fn light_vec(l: &LightW, pos: Vec3) -> (Vec3, f32) {
     }
 }
 
-fn draw_triangle(t: &mut Target, d: &Draw, prep: &Prepared, tri: &[Vert; 3]) {
-    let (sw, sh) = (t.sw as f64, t.sh as f64);
-    let (Some(a), Some(b), Some(c)) = (to_screen(&tri[0], sw, sh), to_screen(&tri[1], sw, sh), to_screen(&tri[2], sw, sh)) else { return };
+/// Projects a clipped triangle to the sample grid; `None` when it covers nothing.
+fn setup_triangle(draw: usize, tri: &[Vert; 3], sw: usize, sh: usize) -> Option<SetupTri> {
+    let (fw, fh) = (sw as f64, sh as f64);
+    let (a, b, c) = (to_screen(&tri[0], fw, fh)?, to_screen(&tri[1], fw, fh)?, to_screen(&tri[2], fw, fh)?);
     let area = edge(&b, &c, a.x, a.y);
     if area.abs() < 1e-12 {
-        return;
+        return None;
+    }
+    let x1 = (a.x.max(b.x).max(c.x).ceil().min(fw - 1.0)).max(-1.0);
+    let y1 = (a.y.max(b.y).max(c.y).ceil().min(fh - 1.0)).max(-1.0);
+    if x1 < 0.0 || y1 < 0.0 {
+        return None;
     }
     let x0 = a.x.min(b.x).min(c.x).floor().max(0.0) as usize;
     let y0 = a.y.min(b.y).min(c.y).floor().max(0.0) as usize;
-    let x1 = (a.x.max(b.x).max(c.x).ceil().min(sw - 1.0)).max(-1.0);
-    let y1 = (a.y.max(b.y).max(c.y).ceil().min(sh - 1.0)).max(-1.0);
-    if x1 < 0.0 || y1 < 0.0 {
-        return;
-    }
-    let (x1, y1) = (x1 as usize, y1 as usize);
-    for y in y0..=y1 {
+    Some(SetupTri { draw, v: *tri, s: [a, b, c], area, x0, x1: x1 as usize, y0, y1: y1 as usize })
+}
+
+fn draw_triangle(band: &mut Band, d: &Draw, prep: &Prepared, t: &SetupTri) {
+    let [a, b, c] = t.s;
+    let tri = &t.v;
+    let rows = t.y0.max(band.y0)..=t.y1.min(band.y0 + band.rows - 1);
+    for y in rows {
         let py = y as f64 + 0.5;
-        for x in x0..=x1 {
+        for x in t.x0..=t.x1 {
             let px = x as f64 + 0.5;
-            let w0 = edge(&b, &c, px, py) / area;
-            let w1 = edge(&c, &a, px, py) / area;
+            let w0 = edge(&b, &c, px, py) / t.area;
+            let w1 = edge(&c, &a, px, py) / t.area;
             let w2 = 1.0 - w0 - w1;
             if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 {
                 continue;
             }
             let z = w0 * a.z + w1 * b.z + w2 * c.z;
-            let i = y * t.sw + x;
-            let Some(&zd) = t.depth.get(i) else { continue };
+            let i = (y - band.y0) * band.sw + x;
+            let Some(&zd) = band.depth.get(i) else { continue };
             if !(0.0..=1.0).contains(&z) || z as f32 >= zd {
                 continue;
             }
@@ -206,7 +232,7 @@ fn draw_triangle(t: &mut Target, d: &Draw, prep: &Prepared, tri: &[Vert; 3]) {
             let uv = [tri[0].uv[0] * p0 + tri[1].uv[0] * p1 + tri[2].uv[0] * p2, tri[0].uv[1] * p0 + tri[1].uv[1] * p1 + tri[2].uv[1] * p2];
             // A dropped (transparent) texel leaves the depth buffer alone.
             let Some(col) = shade(d, prep, pos, nrm, uv) else { continue };
-            if let (Some(dz), Some(dc)) = (t.depth.get_mut(i), t.color.get_mut(i)) {
+            if let (Some(dz), Some(dc)) = (band.depth.get_mut(i), band.color.get_mut(i)) {
                 *dz = z as f32;
                 *dc = col.to_array();
             }
@@ -221,41 +247,85 @@ fn alloc<T: Clone>(n: usize, v: T) -> Result<Vec<T>, RenderError> {
     Ok(out)
 }
 
+/// Runs `f` on every band, on all cores where there are threads.
+#[cfg(not(target_arch = "wasm32"))]
+fn run_bands(bands: Vec<Band>, f: impl Fn(&mut Band) + Sync + Send) {
+    use rayon::prelude::*;
+    bands.into_par_iter().for_each(|mut b| f(&mut b));
+}
+
+#[cfg(target_arch = "wasm32")]
+fn run_bands(bands: Vec<Band>, f: impl Fn(&mut Band) + Sync + Send) {
+    for mut b in bands {
+        f(&mut b);
+    }
+}
+
+/// The screen-space triangles of one mesh, near-plane clipped, in index order.
+fn setup_draw(prep: &Prepared, di: usize, d: &Draw, sw: usize, sh: usize) -> Vec<SetupTri> {
+    let verts: Vec<Vert> = d
+        .positions
+        .iter()
+        .zip(&d.normals)
+        .enumerate()
+        .map(|(i, (pos, nrm))| Vert { clip: prep.view_proj * pos.extend(1.0), pos: *pos, nrm: *nrm, uv: d.uvs.get(i).copied().unwrap_or([0.0; 2]) })
+        .collect();
+    let mut out = Vec::with_capacity(d.indices.len() / 3);
+    for &[i0, i1, i2] in d.indices.as_chunks::<3>().0 {
+        let (Some(&v0), Some(&v1), Some(&v2)) = (verts.get(i0 as usize), verts.get(i1 as usize), verts.get(i2 as usize)) else { continue };
+        let (clipped, count) = clip_near([v0, v1, v2]);
+        out.extend(clipped.iter().take(count).filter_map(|c| setup_triangle(di, c, sw, sh)));
+    }
+    out
+}
+
 pub(crate) fn render(prep: &Prepared, opts: &RenderOptions, ss: u32, samples: u64) -> Result<Image, RenderError> {
     let (w, h) = (opts.width as usize, opts.height as usize);
     let ss = ss as usize;
+    let (sw, sh) = (w * ss, h * ss);
     let n = usize::try_from(samples).map_err(|_| RenderError::TooBig)?;
-    let mut t = Target { sw: w * ss, sh: h * ss, depth: alloc(n, f32::INFINITY)?, color: alloc(n, prep.background.to_array())? };
-    for d in &prep.draws {
-        let verts: Vec<Vert> = d
-            .positions
-            .iter()
-            .zip(&d.normals)
-            .enumerate()
-            .map(|(i, (pos, nrm))| Vert { clip: prep.view_proj * pos.extend(1.0), pos: *pos, nrm: *nrm, uv: d.uvs.get(i).copied().unwrap_or([0.0; 2]) })
-            .collect();
-        for &[i0, i1, i2] in d.indices.as_chunks::<3>().0 {
-            let (Some(&v0), Some(&v1), Some(&v2)) = (verts.get(i0 as usize), verts.get(i1 as usize), verts.get(i2 as usize)) else { continue };
-            let (clipped, count) = clip_near([v0, v1, v2]);
-            for c in clipped.iter().take(count) {
-                draw_triangle(&mut t, d, prep, c);
+    let mut depth = alloc(n, f32::INFINITY)?;
+    let mut color = alloc(n, prep.background.to_array())?;
+
+    // Projection and near-plane clipping happen once, meshes in parallel, kept in draw order.
+    #[cfg(not(target_arch = "wasm32"))]
+    let per_draw: Vec<Vec<SetupTri>> = {
+        use rayon::prelude::*;
+        prep.draws.par_iter().enumerate().map(|(di, d)| setup_draw(prep, di, d, sw, sh)).collect()
+    };
+    #[cfg(target_arch = "wasm32")]
+    let per_draw: Vec<Vec<SetupTri>> = prep.draws.iter().enumerate().map(|(di, d)| setup_draw(prep, di, d, sw, sh)).collect();
+    let tris: Vec<SetupTri> = per_draw.into_iter().flatten().collect();
+
+    let bands: Vec<Band> = depth
+        .chunks_mut(sw * BAND_ROWS)
+        .zip(color.chunks_mut(sw * BAND_ROWS))
+        .enumerate()
+        .map(|(i, (d, c))| Band { y0: i * BAND_ROWS, rows: d.len() / sw, sw, depth: d, color: c })
+        .collect();
+    run_bands(bands, |band| {
+        for t in &tris {
+            if t.y1 < band.y0 || t.y0 >= band.y0 + band.rows {
+                continue;
+            }
+            if let Some(d) = prep.draws.get(t.draw) {
+                draw_triangle(band, d, prep, t);
             }
         }
-    }
-    resolve(&t, w, h, ss, opts.transparent)
+    });
+    resolve(&depth, &color, sw, w, h, ss, opts.transparent)
 }
 
-fn resolve(t: &Target, w: usize, h: usize, ss: usize, transparent: bool) -> Result<Image, RenderError> {
-    let mut rgba: Vec<u8> = Vec::new();
-    rgba.try_reserve_exact(w * h * 4).map_err(|_| RenderError::OutOfMemory)?;
+fn resolve(depth: &[f32], color: &[[f32; 3]], sw: usize, w: usize, h: usize, ss: usize, transparent: bool) -> Result<Image, RenderError> {
+    let mut rgba: Vec<u8> = alloc(w * h * 4, 0u8)?;
     let per = (ss * ss) as f32;
-    for y in 0..h {
-        for x in 0..w {
+    let row = |y: usize, out: &mut [u8]| {
+        for (x, px) in out.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             let (mut sum, mut covered) = (Vec3::ZERO, 0u32);
             for sy in 0..ss {
                 for sx in 0..ss {
-                    let i = (y * ss + sy) * t.sw + x * ss + sx;
-                    if let (Some(c), Some(z)) = (t.color.get(i), t.depth.get(i)) {
+                    let i = (y * ss + sy) * sw + x * ss + sx;
+                    if let (Some(c), Some(z)) = (color.get(i), depth.get(i)) {
                         if transparent && !z.is_finite() {
                             continue;
                         }
@@ -265,14 +335,23 @@ fn resolve(t: &Target, w: usize, h: usize, ss: usize, transparent: bool) -> Resu
                 }
             }
             if covered == 0 {
-                rgba.extend([0, 0, 0, 0]);
+                *px = [0, 0, 0, 0];
                 continue;
             }
             let c = sum / covered as f32;
             let alpha = if transparent { covered as f32 / per } else { 1.0 };
             let q = |v: f32| (to_srgb(v) * 255.0 + 0.5) as u8;
-            rgba.extend([q(c.x), q(c.y), q(c.z), (alpha * 255.0 + 0.5) as u8]);
+            *px = [q(c.x), q(c.y), q(c.z), (alpha * 255.0 + 0.5) as u8];
         }
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use rayon::prelude::*;
+        rgba.par_chunks_mut(w * 4).enumerate().for_each(|(y, out)| row(y, out));
+    }
+    #[cfg(target_arch = "wasm32")]
+    for (y, out) in rgba.chunks_mut(w * 4).enumerate() {
+        row(y, out);
     }
     Ok(Image { width: w as u32, height: h as u32, rgba })
 }

@@ -7,14 +7,18 @@
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+mod gizmo;
 mod ik;
+mod link;
 mod mesh;
 mod model;
 mod scene;
 
 pub use glam;
 pub use mesh::Mesh;
+pub use gizmo::{Delta, Drag, Gizmo, GizmoMode, Handle, Ray, closest_on_line, ray_plane};
 pub use ik::{IkResult, rotate_world, solve_ik, translate_to};
+pub use link::{Link, LinkSpace};
 pub use photocraft_model3d as model3d;
 pub use scene::{
     Asset, Camera, FORMAT_VERSION, Light, LightKind, MAX_DEPTH, MAX_FILE_BYTES, MAX_NODES, Material, ModelCache, ModelMesh, Node, NodeId, NodeKind, Pose,
@@ -29,3 +33,9 @@ mod tests_models;
 
 #[cfg(test)]
 mod tests_real;
+
+#[cfg(test)]
+mod tests_gizmo;
+
+#[cfg(test)]
+mod tests_links;

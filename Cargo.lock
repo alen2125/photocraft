@@ -5087,6 +5087,7 @@ name = "photocraft-render3d"
 version = "0.15.1"
 dependencies = [
  "photocraft-scene3d",
+ "rayon",
  "thiserror 2.0.21",
 ]
 

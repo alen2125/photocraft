@@ -2,6 +2,19 @@ use serde_json::json;
 
 use super::*;
 
+/// Draws frames until the background renderer has produced a picture.
+pub(crate) fn wait_for_preview(app: &mut PhotocraftApp, ctx: &egui::Context) {
+    for _ in 0..1000 {
+        let mut out = ctx.run_ui(Default::default(), |ui| show(app, ui.ctx()));
+        // Nothing paints in a test, so the texture deltas are dropped on purpose.
+        out.textures_delta.clear();
+        if app.scene3d.preview.is_some() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
 fn app() -> PhotocraftApp {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
     app.run("file.new", json!({"width": 80, "height": 60, "background": "white"})).unwrap();
@@ -56,9 +69,8 @@ fn render_to_layer_adds_a_layer_through_the_engine() {
     let mut app = app();
     let ctx = egui::Context::default();
     let layers = app.session.active().unwrap().doc.layer_count();
-    app.scene3d.out_width = 40;
-    app.scene3d.out_height = 30;
-    run_action(&mut app, &ctx, Action::Render);
+    app.scene3d.doc_size = [40, 30];
+    run_action(&mut app, &ctx, Action::Bake);
     assert!(app.scene3d.status.is_empty(), "{}", app.scene3d.status);
     assert_eq!(app.session.active().unwrap().doc.layer_count(), layers + 1);
 }
@@ -67,7 +79,7 @@ fn render_to_layer_adds_a_layer_through_the_engine() {
 fn render_without_a_document_reports_instead_of_panicking() {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
     let ctx = egui::Context::default();
-    run_action(&mut app, &ctx, Action::Render);
+    run_action(&mut app, &ctx, Action::Bake);
     assert!(!app.scene3d.status.is_empty());
 }
 
@@ -86,13 +98,9 @@ fn loading_a_scene_adopts_its_camera_and_clears_the_selection() {
 #[test]
 fn the_window_draws_and_previews_a_scene_headlessly() {
     let mut app = app();
-    app.scene3d.open = true;
     let ctx = egui::Context::default();
-    for _ in 0..2 {
-        let mut out = ctx.run_ui(Default::default(), |ui| show(&mut app, ui.ctx()));
-        // Nothing paints in a test, so the texture deltas are dropped on purpose.
-        out.textures_delta.clear();
-    }
+    crate::menus::invoke(&mut app, &ctx, "ui.scene3d.open", json!({})).unwrap();
+    wait_for_preview(&mut app, &ctx);
     assert!(app.scene3d.preview.is_some(), "the viewport should have rendered a preview");
     assert!(app.scene3d.open);
 }

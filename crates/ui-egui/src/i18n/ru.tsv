@@ -4630,3 +4630,13 @@ shape	Appearance	Оформление
 	Max	Макс
 	Reset bone	Сбросить кость
 	Model mesh	Меш модели
+	Exact values	Точные значения
+	Drag a bone dot or a gizmo handle on the canvas. W / E / R: move, rotate, scale.	Тяните точку кости или ручку гизмо на холсте. W / E / R: перемещение, поворот, масштаб.
+	Local	Локально
+	Bake to Layer	Запечь в слой
+	Link to	Связать с
+	Orbit	Орбита
+	Height angle	Угол над горизонтом
+	Aim at target	Целиться на цель
+	Follow target's turn	Поворачиваться вместе с целью
+	Its position follows the link; drag it on the canvas to change the link.	Положение задаёт связь; тяните узел на холсте, чтобы изменить связь.
