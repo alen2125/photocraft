@@ -143,6 +143,7 @@ pub fn load(name: &str, bytes: &[u8]) -> Result<ModelData, ModelError> {
         joint_limits: Vec::new(),
         control_bones: Vec::new(),
         pose_controls: Vec::new(),
+        physics: Default::default(),
     };
     crate::vrm::read(&doc, &mut data);
     Ok(data)

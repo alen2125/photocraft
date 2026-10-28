@@ -173,6 +173,53 @@ pub struct PoseControlData {
     pub links: Vec<(String, f32)>,
 }
 
+/// How hard a drive pulls: spring (per unit of error), damper (per unit of speed), strongest pull.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DriveData {
+    pub spring: f32,
+    pub damper: f32,
+    pub max_force: f32,
+}
+
+/// The physical makeup of one body part, as its model file gives it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BodyData {
+    pub node: usize,
+    pub mass: f32,
+    pub drag: f32,
+    pub angular_drag: f32,
+    /// The muscle holding the joint to the body part above it at its rest pose, if it has one.
+    pub muscle: Option<DriveData>,
+}
+
+/// A capsule on a body part: the end points (in the bone's own axes, from the bone's origin)
+/// and the radius.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ColliderData {
+    pub node: usize,
+    pub a: [f32; 3],
+    pub b: [f32; 3],
+    pub radius: f32,
+}
+
+/// What the physics runs on (the file's `PC_physics` extension). `None` fields keep the editor's
+/// own defaults.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct PhysicsData {
+    /// Seconds per physics step.
+    pub step: Option<f32>,
+    pub iterations: Option<u32>,
+    pub friction: Option<f32>,
+    pub bounciness: Option<f32>,
+    /// A body part never moves faster than this (m/s).
+    pub max_velocity: Option<f32>,
+    /// The drive of a controller that is On (it holds the body part where it was, by spring).
+    pub hold_position: Option<DriveData>,
+    pub hold_rotation: Option<DriveData>,
+    pub bodies: Vec<BodyData>,
+    pub colliders: Vec<ColliderData>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ModelData {
     pub name: String,
@@ -193,6 +240,7 @@ pub struct ModelData {
     pub joint_limits: Vec<JointLimitData>,
     pub control_bones: Vec<ControlBoneData>,
     pub pose_controls: Vec<PoseControlData>,
+    pub physics: PhysicsData,
 }
 
 impl ModelData {

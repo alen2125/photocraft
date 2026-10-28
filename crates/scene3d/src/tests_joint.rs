@@ -90,6 +90,7 @@ fn limited_arm(limit: bool) -> (Scene, NodeId, NodeId) {
         joint_limits: if limit { vec![JointLimitData { node: 1, frame: [0.0, 0.0, 0.0, 1.0], twist: [0.0, 0.0], swing: [0.0, 0.0] }] } else { vec![] },
         control_bones: vec![],
         pose_controls: vec![],
+        physics: Default::default(),
     };
     let mut s = Scene::default();
     s.add_model(Arc::new(m), None).unwrap();

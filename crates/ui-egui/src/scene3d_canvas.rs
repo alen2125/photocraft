@@ -26,7 +26,7 @@ const CLICK_SLOP: f32 = 3.0;
 /// Scene edits kept for undo.
 const HISTORY: usize = 64;
 /// The gizmo's size as a fraction of its distance from the camera (so it keeps its size on screen).
-const GIZMO_SCALE: f32 = 0.16;
+const GIZMO_SCALE: f32 = 0.07;
 /// Screen pixels within which a press grabs a bone dot.
 const BONE_GRAB: f32 = 16.0;
 
@@ -579,9 +579,16 @@ fn draw_gizmo(ed: &Scene3dEditor, g: &Gizmo, view: (u32, u32), painter: &egui::P
                     g.origin + (u * a.cos() + v * a.sin()) * g.size
                 })
                 .collect();
-            let pts: Vec<Option<egui::Pos2>> = project(&ring).into_iter().map(screen).collect();
+            // Points at or behind the camera's near plane would stretch a segment across the
+            // screen: they break the ring instead.
+            let (_, _, fwd) = camera_axes(&ed.scene.camera);
+            let eye = Vec3::from(ed.scene.camera.position);
+            let ahead: Vec<bool> = ring.iter().map(|p| (*p - eye).dot(fwd) > 0.05).collect();
+            let pts: Vec<Option<egui::Pos2>> = project(&ring).into_iter().zip(&ahead).map(|(p, ok)| if *ok { screen(p) } else { None }).collect();
             for w in pts.windows(2) {
-                if let [Some(a), Some(b)] = w {
+                if let [Some(a), Some(b)] = w
+                    && a.distance(*b) < 200.0
+                {
                     painter.line_segment([*a, *b], Stroke::new(width, colour(axis)));
                 }
             }

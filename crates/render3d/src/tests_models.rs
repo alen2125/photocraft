@@ -52,6 +52,7 @@ fn quad_model(skinned: bool, mode: AlphaMode) -> Arc<ModelData> {
         joint_limits: vec![],
         control_bones: vec![],
         pose_controls: vec![],
+        physics: Default::default(),
     })
 }
 

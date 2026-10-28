@@ -1,30 +1,37 @@
-//! Gravity, collisions, ragdoll limbs and hair for the 3D Pose Editor, on rapier. A [`World`] is
-//! built from a scene:
+//! Gravity, collisions, ragdoll bodies and hair for the 3D Pose Editor, on rapier, set up the way
+//! VaM sets up its people. A [`World`] is built from a scene:
 //!
 //! * pinned solids are fixed obstacles; unpinned ones fall and collide (a Plane is the floor);
-//! * every bone of a VRM humanoid gets a collision capsule, so limbs cannot pass through the body
-//!   or each other and solids land on the character; a pinned bone is fixed in its pose, and an
-//!   unpinned bone lets go of its whole limb, which then hangs from the joint above it;
+//! * every hand control (the bones a person moves) is a rigid body with its model's own mass,
+//!   drag and collision capsules, hung from the body part above by a ball joint; a muscle at each
+//!   joint holds it at its rest pose, and a control that is On holds its part where it was put
+//!   by a spring (position and orientation each on their own), as VaM's controllers do (see
+//!   `drive.rs`); a control that is Off lets its part go, and gravity lets the body sag;
 //! * spring bones (hair, skirts) swing under inertia and gravity and stay out of the body's
 //!   colliders.
 //!
-//! Steps are a fixed 1/60 s with no randomness, so the same scene always settles the same way.
-//! Nothing here panics on bad input: shapes with non-finite or degenerate sizes are left out.
+//! Steps are a fixed 1/90 s with 15 solver iterations, the figures VaM runs at, with no
+//! randomness, so the same scene always settles the same way. Nothing here panics on bad input:
+//! shapes with non-finite or degenerate sizes are left out.
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+mod drive;
 mod fit;
+mod ragdoll;
 mod springs;
+mod vam;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
+use photocraft_scene3d::model3d::DriveData;
 use photocraft_scene3d::glam::{Quat, Vec3};
-use photocraft_scene3d::{NodeId, NodeKind, Primitive, Scene, set_world_rotation_unlimited};
+use photocraft_scene3d::{JointLimit, NodeId, NodeKind, Primitive, Scene, set_world_rotation_unlimited};
 use rapier3d::na::{Isometry3, Point3, Quaternion, Translation3, UnitQuaternion};
 use rapier3d::prelude::*;
 
-/// Fixed simulation step in seconds.
-pub const STEP: f32 = 1.0 / 60.0;
+/// Fixed simulation step in seconds (VaM's `Fixed Timestep`).
+pub const STEP: f32 = 1.0 / 90.0;
 /// Most falling bodies and total solids a world takes (more are left out).
 pub const MAX_DYNAMIC: usize = 256;
 pub const MAX_SOLIDS: usize = 1024;
@@ -32,87 +39,55 @@ pub const MAX_SOLIDS: usize = 1024;
 const MIN_SIZE: f32 = 1e-3;
 /// Thickness of a Plane's collision slab (its top face sits at the plane).
 const SLAB: f32 = 0.5;
-/// How far a ragdoll joint may bend on each axis, radians.
+/// How far a ball joint of a model without anatomical limits may bend on each axis, radians.
 const JOINT_LIMIT: f32 = 1.6;
 
-// Collision groups: which things may touch which. A shoulder or upper arm does not collide with
-// the torso it hangs from (their capsules overlap at the joint), but forearms and hands do.
-const G_TORSO: u32 = 1;
-const G_UPPER: u32 = 1 << 1;
-const G_LIMB: u32 = 1 << 2;
-const G_OBJECT: u32 = 1 << 3;
-/// Finger joints touch objects only: they are tiny, overlap their neighbours at every knuckle and
-/// would otherwise fight the hand and each other.
-const G_FINGER: u32 = 1 << 4;
-const ALL: u32 = G_TORSO | G_UPPER | G_LIMB | G_OBJECT | G_FINGER;
-/// No body part is lighter than this (kg): a feather-light finger hanging off a hand makes the
-/// joint solver jitter.
-const MIN_MASS: f32 = 0.15;
-/// How quickly a free limb loses speed, before the damping setting scales it.
-const LIMB_LINEAR_DAMPING: f32 = 0.2;
-const LIMB_ANGULAR_DAMPING: f32 = 1.5;
-/// The part of a joint's overshoot taken out each step.
-const LIMIT_GAIN: f32 = 0.4;
+/// VaM's physics settings, used when a model does not carry its own.
+const SOLVER_ITERATIONS: u32 = 15;
+const FRICTION: f32 = 0.6;
+const BOUNCINESS: f32 = 0.0;
+const MAX_VELOCITY: f32 = 10.0;
+const HOLD: DriveData = DriveData { spring: 1000.0, damper: 50.0, max_force: 10000.0 };
 
-fn groups(member: u32) -> InteractionGroups {
-    let filter = match member {
-        G_TORSO => G_LIMB | G_OBJECT,
-        G_UPPER => G_UPPER | G_LIMB | G_OBJECT,
-        G_FINGER => G_OBJECT,
-        _ => ALL,
-    };
-    InteractionGroups::new(Group::from_bits_truncate(member), Group::from_bits_truncate(filter))
-}
-
-/// Collision group, capsule radius and the length given to a bone with no child, by VRM humanoid name.
-fn region(h: &str) -> Option<(u32, f32, f32)> {
-    Some(match h {
-        "hips" => (G_TORSO, 0.11, 0.10),
-        "spine" | "chest" | "upperChest" => (G_TORSO, 0.11, 0.12),
-        "neck" => (G_TORSO, 0.045, 0.08),
-        "head" => (G_TORSO, 0.09, 0.20),
-        "leftShoulder" | "rightShoulder" => (G_UPPER, 0.04, 0.10),
-        "leftUpperArm" | "rightUpperArm" => (G_UPPER, 0.045, 0.25),
-        "leftLowerArm" | "rightLowerArm" => (G_LIMB, 0.038, 0.25),
-        "leftHand" | "rightHand" => (G_LIMB, 0.035, 0.10),
-        "leftUpperLeg" | "rightUpperLeg" => (G_UPPER, 0.07, 0.40),
-        "leftLowerLeg" | "rightLowerLeg" => (G_LIMB, 0.055, 0.40),
-        "leftFoot" | "rightFoot" => (G_LIMB, 0.04, 0.12),
-        "leftToes" | "rightToes" => (G_LIMB, 0.03, 0.06),
-        h if ["Thumb", "Index", "Middle", "Ring", "Little"].iter().any(|f| h.contains(f)) => (G_FINGER, 0.012, 0.04),
-        _ => return None,
-    })
-}
-
-#[derive(Clone, Copy)]
-struct BoneBody {
+/// A body part: one rigid body for a hand control, and what drives it.
+#[derive(Clone)]
+pub(crate) struct Part {
     id: NodeId,
     handle: RigidBodyHandle,
-    /// Whether the bone has a bone above it in the ragdoll to hang from.
-    has_parent: bool,
+    /// The part above it in `World::parts` (it hangs from it), if any.
+    parent: Option<usize>,
+    /// This part and every part that hangs from it (indices into `World::parts`): what a joint
+    /// limit turns as one piece.
+    subtree: Vec<usize>,
+    /// Centre of mass in the body's own axes.
+    com: Vec3,
+    start_pos: Vec3,
+    start_rot: Quat,
+    /// This part's turn relative to the one above it in the pose the world was built from.
+    rest_rel: Quat,
+    limit: Option<JointLimit>,
+    lin_drag: f32,
+    ang_drag: f32,
 }
 
-/// A bone's body as placed in the world, for the bones below it to hang from or ride on.
-#[derive(Clone, Copy)]
-struct Placed {
-    handle: RigidBodyHandle,
-    pos: Vec3,
-    rot: Quat,
-    pos_locked: bool,
-    rot_locked: bool,
+/// Pairs of colliders that must not touch.
+#[derive(Default)]
+pub(crate) struct IgnorePairs(HashSet<(ColliderHandle, ColliderHandle)>);
+
+impl IgnorePairs {
+    fn key(a: ColliderHandle, b: ColliderHandle) -> (ColliderHandle, ColliderHandle) {
+        if a.into_raw_parts() <= b.into_raw_parts() { (a, b) } else { (b, a) }
+    }
+
+    pub(crate) fn insert(&mut self, a: ColliderHandle, b: ColliderHandle) {
+        self.0.insert(Self::key(a, b));
+    }
 }
 
-/// An anatomical limit on the ball joint between two bodies. Only joints with nothing held at or
-/// below them get one: they are corrected by turning the child with everything below it, as one
-/// piece, about the joint.
-struct LimitJoint {
-    child: RigidBodyHandle,
-    parent: RigidBodyHandle,
-    limit: photocraft_scene3d::JointLimit,
-    /// The child's turn relative to its parent in the pose the world was built from.
-    rest: Quat,
-    /// The child and every body below it.
-    subtree: Vec<RigidBodyHandle>,
+impl PhysicsHooks for IgnorePairs {
+    fn filter_contact_pair(&self, context: &PairFilterContext) -> Option<SolverFlags> {
+        if self.0.contains(&Self::key(context.collider1, context.collider2)) { None } else { Some(SolverFlags::COMPUTE_IMPULSES) }
+    }
 }
 
 pub struct World {
@@ -128,17 +103,23 @@ pub struct World {
     ccd: CCDSolver,
     /// The falling solids and the scene node each drives.
     dynamic: Vec<(NodeId, RigidBodyHandle)>,
-    /// The ragdoll bodies that are not fixed in the world.
-    limbs: Vec<BoneBody>,
-    /// Joints that carry anatomical limits, parents before children.
-    limits: Vec<LimitJoint>,
-    /// Every bone that has a body, parents before children, for writing the pose back.
-    order: Vec<BoneBody>,
+    /// Every body part, parents before children.
+    parts: Vec<Part>,
+    ignore: IgnorePairs,
+    /// A body that never moves, which the controllers that are On are jointed to.
+    anchor: Option<RigidBodyHandle>,
+    solid_count: usize,
     /// Multiplies gravity (1 = Earth's).
     gravity: f32,
     /// Multiplies how quickly limbs lose speed (1 = the default).
     damping: f32,
-    fixed: usize,
+    friction: f32,
+    bounciness: f32,
+    max_velocity: f32,
+    hold_position: DriveData,
+    hold_rotation: DriveData,
+    /// How many times the physics went wrong (a number turned bad) and was put back to the start.
+    resets: u32,
     springs: springs::Springs,
 }
 
@@ -168,9 +149,12 @@ fn shape(p: &Primitive, scale: Vec3) -> Option<(ColliderBuilder, Isometry3<f32>)
 impl World {
     /// Builds the world from the scene's visible solids and bones.
     pub fn new(scene: &Scene) -> World {
+        // The physics settings the model brings (the first one that has any), else VaM's.
+        let own = scene.assets.iter().filter_map(|a| scene.model(a.id)).map(|m| &m.physics).find(|p| p.step.is_some() || !p.bodies.is_empty());
+        let iterations = own.and_then(|p| p.iterations).unwrap_or(SOLVER_ITERATIONS);
         let mut w = World {
             pipeline: PhysicsPipeline::new(),
-            params: IntegrationParameters { dt: STEP, num_solver_iterations: std::num::NonZeroUsize::new(12).unwrap_or(std::num::NonZeroUsize::MIN), ..IntegrationParameters::default() },
+            params: IntegrationParameters { dt: STEP, num_solver_iterations: std::num::NonZeroUsize::new(iterations as usize).unwrap_or(std::num::NonZeroUsize::MIN), ..IntegrationParameters::default() },
             islands: IslandManager::new(),
             broad: DefaultBroadPhase::new(),
             narrow: NarrowPhase::new(),
@@ -180,12 +164,18 @@ impl World {
             multibody: MultibodyJointSet::new(),
             ccd: CCDSolver::new(),
             dynamic: Vec::new(),
-            limbs: Vec::new(),
-            limits: Vec::new(),
-            order: Vec::new(),
+            parts: Vec::new(),
+            ignore: IgnorePairs::default(),
+            anchor: None,
+            solid_count: 0,
             gravity: 1.0,
             damping: 1.0,
-            fixed: 0,
+            friction: own.and_then(|p| p.friction).unwrap_or(FRICTION),
+            bounciness: own.and_then(|p| p.bounciness).unwrap_or(BOUNCINESS),
+            max_velocity: own.and_then(|p| p.max_velocity).unwrap_or(MAX_VELOCITY),
+            hold_position: own.and_then(|p| p.hold_position).unwrap_or(HOLD),
+            hold_rotation: own.and_then(|p| p.hold_rotation).unwrap_or(HOLD),
+            resets: 0,
             springs: springs::Springs::default(),
         };
         let world = scene.world_matrices();
@@ -198,7 +188,7 @@ impl World {
     fn add_solids(&mut self, scene: &Scene, world: &HashMap<NodeId, photocraft_scene3d::glam::Mat4>) {
         for n in &scene.nodes {
             let NodeKind::Primitive { primitive, .. } = &n.kind else { continue };
-            if !scene.is_visible(n.id) || self.dynamic.len() + self.fixed >= MAX_SOLIDS {
+            if !scene.is_visible(n.id) || self.dynamic.len() + self.solid_count >= MAX_SOLIDS {
                 continue;
             }
             let Some(m) = world.get(&n.id) else { continue };
@@ -210,191 +200,19 @@ impl World {
             let falls = !n.pinned && self.dynamic.len() < MAX_DYNAMIC;
             let body = if falls { RigidBodyBuilder::dynamic().ccd_enabled(true) } else { RigidBodyBuilder::fixed() }.position(iso(pos, rot.normalize())).build();
             let handle = self.bodies.insert(body);
-            let collider = builder.position(offset).density(1.0).friction(0.8).restitution(0.1).collision_groups(groups(G_OBJECT)).build();
+            let collider = builder.position(offset).density(1.0).friction(self.friction).restitution(self.bounciness).build();
             self.colliders.insert_with_parent(collider, handle, &mut self.bodies);
             if falls {
                 self.dynamic.push((n.id, handle));
             } else {
-                self.fixed += 1;
+                self.solid_count += 1;
             }
         }
     }
 
-    /// A capsule on every humanoid bone. A hand control gets a body of its own: fixed in the world
-    /// when its position and orientation are both On, held in only one of the two when just one
-    /// is, free otherwise (it then hangs from the bone above by a ball joint). The small joints
-    /// (fingers, the model's minor bones) have no body: their capsules ride on the hand or foot
-    /// body they belong to, so a hand is one solid thing and cannot shake itself apart.
-    fn add_ragdoll(&mut self, scene: &Scene, world: &HashMap<NodeId, photocraft_scene3d::glam::Mat4>) {
-        // Humanoid bones, parents first, and each one's nearest humanoid ancestor.
-        let humanoid: Vec<NodeId> = scene.nodes.iter().filter(|n| matches!(n.kind, NodeKind::Bone) && n.humanoid.as_deref().and_then(region).is_some() && scene.is_visible(n.id)).map(|n| n.id).collect();
-        if humanoid.is_empty() {
-            return;
-        }
-        let set: std::collections::HashSet<NodeId> = humanoid.iter().copied().collect();
-        let ancestor_of = |id: NodeId| -> Option<NodeId> {
-            let mut cur = scene.node(id)?.parent;
-            for _ in 0..photocraft_scene3d::MAX_DEPTH {
-                let c = cur?;
-                if set.contains(&c) {
-                    return Some(c);
-                }
-                cur = scene.node(c)?.parent;
-            }
-            None
-        };
-        let parent_h: HashMap<NodeId, NodeId> = humanoid.iter().filter_map(|&id| Some((id, ancestor_of(id)?))).collect();
-        let depth = |id: NodeId| {
-            let (mut d, mut cur) = (0, id);
-            while let Some(p) = parent_h.get(&cur) {
-                d += 1;
-                cur = *p;
-                if d > photocraft_scene3d::MAX_DEPTH {
-                    break;
-                }
-            }
-            d
-        };
-        let mut order = humanoid.clone();
-        order.sort_by_key(|id| depth(*id));
-        let pose = |id: NodeId| -> Option<(Vec3, Quat)> {
-            let (_, r, t) = world.get(&id)?.to_scale_rotation_translation();
-            (t.is_finite() && r.is_finite()).then_some((t, r.normalize()))
-        };
-        let mut children: HashMap<NodeId, Vec<Vec3>> = HashMap::new();
-        for &c in &humanoid {
-            if let (Some(&p), Some((t, _))) = (parent_h.get(&c), pose(c)) {
-                children.entry(p).or_default().push(t);
-            }
-        }
-        // A held bone, and every bone above it, cannot be turned about its joint by the limit.
-        let mut blocked: std::collections::HashSet<NodeId> = std::collections::HashSet::new();
-        for &id in &humanoid {
-            if scene.node(id).is_some_and(|n| !n.minor && (n.hold.is_some() || n.hold_rot.is_some())) {
-                let mut cur = Some(id);
-                for _ in 0..photocraft_scene3d::MAX_DEPTH {
-                    let Some(c) = cur else { break };
-                    if !blocked.insert(c) {
-                        break;
-                    }
-                    cur = parent_h.get(&c).copied();
-                }
-            }
-        }
-        // Each bone that has a body of its own, as placed so far, and which bodies hang from which.
-        let mut placed: HashMap<NodeId, Placed> = HashMap::new();
-        let mut below: HashMap<RigidBodyHandle, Vec<RigidBodyHandle>> = HashMap::new();
-        let mut pending: Vec<(RigidBodyHandle, RigidBodyHandle, photocraft_scene3d::JointLimit, Quat)> = Vec::new();
-        for id in order {
-            let Some(node) = scene.node(id) else { continue };
-            let Some((member, radius, default_len)) = node.humanoid.as_deref().and_then(region) else { continue };
-            let Some((p0, rot)) = pose(id) else { continue };
-            // The nearest bone above that has a body: the joint to hang from, or the body to ride on.
-            let host = {
-                let mut cur = parent_h.get(&id).copied();
-                let mut found = None;
-                for _ in 0..photocraft_scene3d::MAX_DEPTH {
-                    let Some(c) = cur else { break };
-                    if let Some(p) = placed.get(&c) {
-                        found = Some(*p);
-                        break;
-                    }
-                    cur = parent_h.get(&c).copied();
-                }
-                found
-            };
-            let end = match children.get(&id) {
-                Some(c) if !c.is_empty() => c.iter().copied().sum::<Vec3>() / c.len() as f32,
-                _ => {
-                    let dir = host.map_or(Vec3::Y, |h| (p0 - h.pos).normalize_or(Vec3::Y));
-                    p0 + dir * default_len
-                }
-            };
-            let local_end = rot.inverse() * (end - p0);
-            if !local_end.is_finite() || local_end.length() < MIN_SIZE || self.dynamic.len() + self.limbs.len() + self.fixed >= MAX_SOLIDS {
-                continue;
-            }
-            let volume = std::f32::consts::PI * radius * radius * local_end.length() + 4.0 / 3.0 * std::f32::consts::PI * radius.powi(3);
-
-            // A small joint rides on its host's body.
-            if node.minor || member == G_FINGER {
-                let Some(h) = host else { continue };
-                let (a, b) = (h.rot.inverse() * (p0 - h.pos), h.rot.inverse() * (end - h.pos));
-                let density = if volume > 1e-9 { 500.0f32.max(0.02 / volume) } else { 500.0 };
-                let collider = ColliderBuilder::capsule_from_endpoints(pt(a), pt(b), radius).density(density).friction(0.8).restitution(0.0).collision_groups(groups(member)).build();
-                self.colliders.insert_with_parent(collider, h.handle, &mut self.bodies);
-                continue;
-            }
-
-            // The capsule is as thick as this figure's own limb (from its skin), not a stock one.
-            let radius = fit::fit_radius(scene, node, local_end, radius);
-            let volume = std::f32::consts::PI * radius * radius * local_end.length() + 4.0 / 3.0 * std::f32::consts::PI * radius.powi(3);
-            let (pos_on, rot_on) = (node.hold.is_some(), node.hold_rot.is_some());
-            let fixed = pos_on && rot_on;
-            let builder = if fixed {
-                RigidBodyBuilder::fixed()
-            } else {
-                let mut b = RigidBodyBuilder::dynamic().linear_damping(LIMB_LINEAR_DAMPING * self.damping).angular_damping(LIMB_ANGULAR_DAMPING * self.damping).can_sleep(false).ccd_enabled(true);
-                if pos_on {
-                    b = b.lock_translations();
-                }
-                if rot_on {
-                    b = b.lock_rotations();
-                }
-                b
-            };
-            let handle = self.bodies.insert(builder.position(iso(p0, rot)).build());
-            let density = if volume > 1e-9 { 1000.0f32.max(MIN_MASS / volume) } else { 1000.0 };
-            let collider = ColliderBuilder::capsule_from_endpoints(pt(Vec3::ZERO), pt(local_end), radius).density(density).friction(0.8).restitution(0.0).collision_groups(groups(member)).build();
-            self.colliders.insert_with_parent(collider, handle, &mut self.bodies);
-            let me = Placed { handle, pos: p0, rot, pos_locked: pos_on, rot_locked: rot_on };
-            if let Some(h) = host
-                && !(h.pos_locked && h.rot_locked && fixed)
-            {
-                let anchor = h.rot.inverse() * (p0 - h.pos);
-                // A ball joint; the two bodies it joins never collide (their capsules overlap at
-                // the joint). The model's anatomical limits are enforced after each step instead
-                // of through rapier's per-axis angle limits, which do not hold for combined swings.
-                let mut joint = GenericJointBuilder::new(JointAxesMask::LOCKED_SPHERICAL_AXES).contacts_enabled(false).local_anchor1(pt(anchor)).local_anchor2(pt(Vec3::ZERO));
-                let limit = node.joint.clone().filter(|j| j.enabled && !blocked.contains(&id));
-                if limit.is_none() {
-                    for axis in [JointAxis::AngX, JointAxis::AngY, JointAxis::AngZ] {
-                        joint = joint.limits(axis, [-JOINT_LIMIT, JOINT_LIMIT]);
-                    }
-                }
-                self.joints.insert(h.handle, handle, joint.build(), true);
-                below.entry(h.handle).or_default().push(handle);
-                if let Some(limit) = limit {
-                    pending.push((handle, h.handle, limit, (h.rot.inverse() * rot).normalize()));
-                }
-            }
-            placed.insert(id, me);
-            let body = BoneBody { id, handle, has_parent: host.is_some() };
-            self.order.push(body);
-            if fixed {
-                self.fixed += 1;
-            } else {
-                self.limbs.push(body);
-            }
-        }
-        // The bodies below each limited joint, for turning them together.
-        for (child, parent, limit, rest) in pending {
-            let mut subtree = Vec::new();
-            let mut todo = vec![child];
-            while let Some(h) = todo.pop() {
-                if subtree.len() > MAX_SOLIDS {
-                    break;
-                }
-                subtree.push(h);
-                todo.extend(below.get(&h).into_iter().flatten().copied());
-            }
-            self.limits.push(LimitJoint { child, parent, limit, rest, subtree });
-        }
-    }
-
-    /// How many bodies fall: unpinned solids and released bones.
+    /// How many bodies fall: unpinned solids and body parts.
     pub fn dynamic_count(&self) -> usize {
-        self.dynamic.len() + self.limbs.len()
+        self.dynamic.len() + self.parts.len()
     }
 
     /// How many spring-bone joints (hair, skirt) swing.
@@ -407,8 +225,14 @@ impl World {
         self.dynamic_count() == 0 && self.spring_count() == 0
     }
 
+    /// How many times the physics had to be put back to the start because a number went bad.
+    pub fn resets(&self) -> u32 {
+        self.resets
+    }
+
     /// Advances rapier one fixed step (bodies only; see [`World::step_scene`]).
     pub fn step(&mut self) {
+        self.drive();
         self.pipeline.step(
             &vector![0.0, -9.81 * self.gravity, 0.0],
             &self.params,
@@ -421,69 +245,21 @@ impl World {
             &mut self.multibody,
             &mut self.ccd,
             None,
-            &(),
+            &self.ignore,
             &(),
         );
-        self.enforce_limits();
+        self.guard();
     }
 
     /// Sets gravity (a multiplier of Earth's, 0 to 5) and how quickly limbs lose speed (a
-    /// multiplier of the default, 0.1 to 5). Takes effect at once, also in a running world.
+    /// multiplier of VaM's drag, 0.1 to 5). Takes effect at once, also in a running world.
     pub fn set_tuning(&mut self, gravity: f32, damping: f32) {
         self.gravity = if gravity.is_finite() { gravity.clamp(0.0, 5.0) } else { 1.0 };
         self.damping = if damping.is_finite() { damping.clamp(0.1, 5.0) } else { 1.0 };
-        for l in &self.limbs {
-            if let Some(b) = self.bodies.get_mut(l.handle) {
-                b.set_linear_damping(LIMB_LINEAR_DAMPING * self.damping);
-                b.set_angular_damping(LIMB_ANGULAR_DAMPING * self.damping);
-            }
-        }
-    }
-
-    /// Brings every limited joint back inside its anatomical range: the child is turned, with
-    /// everything below it as one piece, about the joint to the nearest allowed pose, and loses
-    /// a part of its speed. Nothing is stretched, so nothing is yanked about afterwards.
-    fn enforce_limits(&mut self) {
-        let Self { limits, bodies, .. } = self;
-        let rot_of = |b: &RigidBody| {
-            let q = b.rotation().quaternion();
-            Quat::from_xyzw(q.i, q.j, q.k, q.w)
-        };
-        for l in limits.iter() {
-            let (Some(pb), Some(cb)) = (bodies.get(l.parent), bodies.get(l.child)) else { continue };
-            let (pq, cq) = (rot_of(pb), rot_of(cb));
-            if !pq.is_finite() || !cq.is_finite() {
-                continue;
-            }
-            let (pq, cq) = (pq.normalize(), cq.normalize());
-            let rel = (pq.inverse() * cq).normalize();
-            let allowed = l.limit.clamp(l.rest, rel);
-            if !allowed.is_finite() || allowed.angle_between(rel) <= 1e-3 {
-                continue;
-            }
-            // A part of the error each step, so that a floor or a cube in the way can win the tug of war.
-            let r = Quat::IDENTITY.slerp(((pq * allowed).normalize() * cq.inverse()).normalize(), LIMIT_GAIN);
-            let t = cb.translation();
-            let pivot = Vec3::new(t.x, t.y, t.z);
-            let moved: Vec<(RigidBodyHandle, Vec3, Quat, Vec3, Vec3)> = l
-                .subtree
-                .iter()
-                .filter_map(|h| {
-                    let b = bodies.get(*h)?;
-                    let (p, q, lin, ang) = (b.translation(), rot_of(b), b.linvel(), b.angvel());
-                    let pos = pivot + r * (Vec3::new(p.x, p.y, p.z) - pivot);
-                    Some((*h, pos, (r * q).normalize(), r * Vec3::new(lin.x, lin.y, lin.z) * 0.7, r * Vec3::new(ang.x, ang.y, ang.z) * 0.7))
-                })
-                .collect();
-            for (h, pos, rot, lin, ang) in moved {
-                if let Some(b) = bodies.get_mut(h)
-                    && pos.is_finite()
-                    && rot.is_finite()
-                {
-                    b.set_position(iso(pos, rot), true);
-                    b.set_linvel(vector![lin.x, lin.y, lin.z], true);
-                    b.set_angvel(vector![ang.x, ang.y, ang.z], true);
-                }
+        for p in &self.parts {
+            if let Some(b) = self.bodies.get_mut(p.handle) {
+                b.set_linear_damping(p.lin_drag * self.damping);
+                b.set_angular_damping(p.ang_drag * self.damping);
             }
         }
     }
@@ -496,10 +272,10 @@ impl World {
         self.springs.step(scene, STEP);
     }
 
-    /// Whether every falling body has come to rest.
+    /// Whether everything that moves has all but stopped.
     pub fn settled(&self) -> bool {
-        let asleep = |h: &RigidBodyHandle| self.bodies.get(*h).is_none_or(RigidBody::is_sleeping);
-        self.dynamic.iter().all(|(_, h)| asleep(h)) && self.limbs.iter().all(|l| asleep(&l.handle))
+        let slow = |h: &RigidBodyHandle| self.bodies.get(*h).is_none_or(|b| b.is_sleeping() || (b.linvel().norm() < 0.01 && b.angvel().norm() < 0.05));
+        self.dynamic.iter().all(|(_, h)| slow(h)) && self.parts.iter().all(|p| slow(&p.handle))
     }
 
     fn pose_of(&self, h: RigidBodyHandle) -> Option<(Vec3, Quat)> {
@@ -515,18 +291,16 @@ impl World {
         self.dynamic.iter().filter_map(|(id, h)| self.pose_of(*h).map(|(p, r)| (*id, p, r))).collect()
     }
 
-    /// Writes the bodies' places into the scene's nodes. A released bone only turns (it stays
-    /// attached to the bone above, so its length cannot change); one with nothing above it moves too.
+    /// Writes the bodies' places into the scene's nodes. A body part only turns (it stays attached
+    /// to the part above, so its length cannot change); one with nothing above it moves too.
     pub fn apply(&self, scene: &mut Scene) {
         for (id, pos, rot) in self.poses() {
             let _ = scene.place_world(id, pos, rot);
         }
-        // Every bone that has a body, parents first: held bones too, so that a bone that stays
-        // put in the world is not carried round by the turning bones above it.
-        for l in &self.order {
-            let Some((pos, rot)) = self.pose_of(l.handle) else { continue };
-            // The bodies' own joint limits already hold; clamping again would second-guess them.
-            let _ = if l.has_parent { set_world_rotation_unlimited(scene, l.id, rot) } else { scene.place_world(l.id, pos, rot) };
+        for part in &self.parts {
+            let Some((pos, rot)) = self.pose_of(part.handle) else { continue };
+            // The drives and limits already keep the joints right; clamping again would second-guess them.
+            let _ = if part.parent.is_some() { set_world_rotation_unlimited(scene, part.id, rot) } else { scene.place_world(part.id, pos, rot) };
         }
     }
 }

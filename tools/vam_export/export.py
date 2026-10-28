@@ -504,10 +504,87 @@ pc_controls = [{"name": k, "label": c["label"], "group": c["group"], "min": c["m
                 "rot": [{"node": bone_node[b], "deg": v} for b, v in c["rot"].items()], "links": [{"to": a, "mult": m} for a, m in c["links"]]} for k, c in raw.items()]
 print("pose controls:", len(pc_controls), "turning", len(pc_bones), "joints")
 
+# ---- physics: the numbers VaM's bodies, controllers and colliders run on (from its prefab and
+# its manager settings), so the editor's physics can use the same ones.
+def world_scale(pid):
+    t = tr[pid]
+    f = t["m_Father"]["m_PathID"]
+    s_ = max(abs(t["m_LocalScale"][k]) for k in "xyz")
+    return s_ * (world_scale(f) if f in tr else 1.0)
+
+def world_pos(pid):
+    t = tr[pid]
+    f = t["m_Father"]["m_PathID"]
+    lp = tuple(t["m_LocalPosition"][k] for k in "xyz")
+    if f not in tr:
+        return lp
+    fp, fq, fs = world_pos(f), world_q(f), world_scale(f)
+    r = qrot(fq, tuple(c * fs for c in lp))
+    return tuple(fp[i] + r[i] for i in range(3))
+
+phys_bones = {}
+for o in penv.objects:
+    if o.type.name == "Rigidbody":
+        t = o.read_typetree()
+        name = go_name.get(t["m_GameObject"]["m_PathID"])
+        if name in bone_node and name in CONTROLS:
+            phys_bones.setdefault(name, {}).update({"mass": t["m_Mass"], "drag": t["m_Drag"], "angDrag": t["m_AngularDrag"]})
+for o in penv.objects:
+    if o.type.name == "ConfigurableJoint":
+        t = o.read_typetree()
+        name = go_name.get(t["m_GameObject"]["m_PathID"])
+        if name in phys_bones and t["m_AngularXMotion"] == 1:  # the joint to the parent body: the muscle
+            d = t["m_SlerpDrive"]
+            phys_bones[name]["muscle"] = [d["positionSpring"], d["positionDamper"], d["maximumForce"]]
+
+def bone_of(gid):
+    pid = go_tr.get(gid)
+    for _ in range(8):
+        pid = tr[pid]["m_Father"]["m_PathID"] if pid in tr else None
+        if pid not in tr:
+            return None
+        n = go_name.get(tr[pid]["m_GameObject"]["m_PathID"])
+        if n in bone_node:
+            return n, pid
+    return None, None
+
+other_sex = "MaleAutoCollider" if who == "female" else None
+colliders = []
+for o in penv.objects:
+    if o.type.name != "CapsuleCollider":
+        continue
+    t = o.read_typetree()
+    gid = t["m_GameObject"]["m_PathID"]
+    name = go_name.get(gid, "")
+    if not name.startswith("AutoCollider") or (other_sex and other_sex in name.replace("Female", "")) or not t["m_Enabled"]:
+        continue
+    bone, bone_pid = bone_of(gid)
+    if bone not in CONTROLS:
+        continue
+    pid = go_tr[gid]
+    q, wp_, sc = world_q(pid), world_pos(pid), world_scale(pid)
+    axis = qrot(q, [(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)][t["m_Direction"]])
+    c = tuple(t["m_Center"][k] * sc for k in "xyz")
+    centre = tuple(wp_[i] + qrot(q, c)[i] for i in range(3))
+    r_ = t["m_Radius"] * sc
+    half = max(t["m_Height"] * sc / 2 - r_, 0.0)
+    colliders.append((bone, bone_pid, [centre[i] - axis[i] * half for i in range(3)], [centre[i] + axis[i] * half for i in range(3)], r_))
+
+pc_colliders = []
+for bone, bone_pid, a_, b_, r_ in colliders:
+    org = world_pos(bone_pid)  # the bone's own origin, in the same prefab space the colliders sit in
+    loc = lambda p: [p[0] - org[0], p[1] - org[1], -(p[2] - org[2])]  # our axes: z mirrored
+    pc_colliders.append({"node": bone_node[bone], "a": loc(a_), "b": loc(b_), "radius": r_})
+pc_bones_phys = [{"node": bone_node[n], **v} for n, v in phys_bones.items()]
+print("physics: bodies", len(pc_bones_phys), "colliders", len(pc_colliders))
+physics = {"step": 1.0 / 90.0, "iterations": 15, "friction": 0.6, "bounciness": 0.0, "maxVelocity": 10.0,
+           "hold": {"posSpring": 1000.0, "posDamper": 50.0, "posMax": 10000.0, "rotSpring": 1000.0, "rotDamper": 50.0, "rotMax": 10000.0},
+           "bones": pc_bones_phys, "colliders": pc_colliders}
+
 gltf = {
     "asset": {"version": "2.0", "generator": "vam-base-export"},
-    "extensionsUsed": ["VRM", "PC_controls", "PC_limits", "PC_pose_controls"],
-    "extensions": {"PC_controls": {"nodes": controls}, "PC_limits": {"joints": limits}, "PC_pose_controls": {"bones": pc_bones, "controls": pc_controls}, "VRM": {"exporterVersion": "vam-base-export", "specVersion": "0.0", "meta": {"title": "VaM base " + who, "version": "1"}, "humanoid": {"humanBones": human}}},
+    "extensionsUsed": ["VRM", "PC_controls", "PC_limits", "PC_pose_controls", "PC_physics"],
+    "extensions": {"PC_controls": {"nodes": controls}, "PC_limits": {"joints": limits}, "PC_pose_controls": {"bones": pc_bones, "controls": pc_controls}, "PC_physics": physics, "VRM": {"exporterVersion": "vam-base-export", "specVersion": "0.0", "meta": {"title": "VaM base " + who, "version": "1"}, "humanoid": {"humanBones": human}}},
     "scene": 0, "scenes": [{"nodes": [0, mesh_node]}],
     "nodes": nodes, "meshes": [{"name": who, "primitives": prims}],
     "skins": [{"joints": [bone_node[b] for b in need], "inverseBindMatrices": a_ibm, "skeleton": 0}],

@@ -1,6 +1,6 @@
 //! VRM 0.x and 1.0 extensions: humanoid bone map and spring-bone chains.
 
-use crate::{ColliderGroup, ControlBoneData, ControlRot, JointLimitData, ModelData, ModelFormat, PoseControlData, SpringGroup};
+use crate::{BodyData, ColliderData, ColliderGroup, ControlBoneData, ControlRot, DriveData, JointLimitData, ModelData, ModelFormat, PoseControlData, SpringGroup};
 use gltf::json::Value;
 
 fn num(v: &Value, key: &str) -> f32 {
@@ -20,6 +20,9 @@ pub(crate) fn read(doc: &gltf::Document, data: &mut ModelData) {
     let count = data.nodes.len();
     if let Some(v) = doc.extension_value("PC_controls") {
         data.controls = v.get("nodes").and_then(Value::as_array).into_iter().flatten().filter_map(|n| index(n, count)).collect();
+    }
+    if let Some(v) = doc.extension_value("PC_physics") {
+        read_physics(v, data);
     }
     if let Some(v) = doc.extension_value("PC_pose_controls") {
         read_pose_controls(v, data);
@@ -87,6 +90,44 @@ fn floats<const N: usize>(v: Option<&Value>) -> Option<[f32; N]> {
         *o = f;
     }
     Some(out)
+}
+
+/// At most this many bodies and colliders are read.
+const MAX_BODIES: usize = 256;
+const MAX_COLLIDERS: usize = 2048;
+
+fn finite(v: Option<&Value>) -> Option<f32> {
+    v.and_then(Value::as_f64).map(|f| f as f32).filter(|f| f.is_finite())
+}
+
+fn drive(v: Option<&Value>, spring: &str, damper: &str, max: &str) -> Option<DriveData> {
+    let v = v?;
+    Some(DriveData { spring: finite(v.get(spring))?.max(0.0), damper: finite(v.get(damper))?.max(0.0), max_force: finite(v.get(max))?.max(0.0) })
+}
+
+fn read_physics(v: &Value, data: &mut ModelData) {
+    let count = data.nodes.len();
+    let p = &mut data.physics;
+    p.step = finite(v.get("step")).filter(|s| (1e-4..=0.1).contains(s));
+    p.iterations = v.get("iterations").and_then(Value::as_u64).filter(|i| (1..=64).contains(i)).map(|i| i as u32);
+    p.friction = finite(v.get("friction")).map(|f| f.clamp(0.0, 5.0));
+    p.bounciness = finite(v.get("bounciness")).map(|f| f.clamp(0.0, 1.0));
+    p.max_velocity = finite(v.get("maxVelocity")).filter(|m| *m > 0.0);
+    let hold = v.get("hold");
+    p.hold_position = drive(hold, "posSpring", "posDamper", "posMax");
+    p.hold_rotation = drive(hold, "rotSpring", "rotDamper", "rotMax");
+    for b in v.get("bones").and_then(Value::as_array).into_iter().flatten().take(MAX_BODIES) {
+        let (Some(node), Some(mass)) = (b.get("node").and_then(|n| index(n, count)), finite(b.get("mass")).filter(|m| *m > 0.0)) else { continue };
+        let muscle = b.get("muscle").and_then(Value::as_array).and_then(|a| match a.as_slice() {
+            [s, d, m] => Some(DriveData { spring: finite(Some(s))?.max(0.0), damper: finite(Some(d))?.max(0.0), max_force: finite(Some(m))?.max(0.0) }),
+            _ => None,
+        });
+        p.bodies.push(BodyData { node, mass, drag: finite(b.get("drag")).unwrap_or(0.0).max(0.0), angular_drag: finite(b.get("angDrag")).unwrap_or(0.0).max(0.0), muscle });
+    }
+    for c in v.get("colliders").and_then(Value::as_array).into_iter().flatten().take(MAX_COLLIDERS) {
+        let (Some(node), Some(a), Some(b), Some(radius)) = (c.get("node").and_then(|n| index(n, count)), floats::<3>(c.get("a")), floats::<3>(c.get("b")), finite(c.get("radius")).filter(|r| *r > 0.0)) else { continue };
+        p.colliders.push(ColliderData { node, a, b, radius });
+    }
 }
 
 fn read_pose_controls(v: &Value, data: &mut ModelData) {

@@ -35,6 +35,7 @@ fn body() -> (Scene, [NodeId; 5]) {
         joint_limits: vec![],
         control_bones: vec![],
         pose_controls: vec![],
+        physics: Default::default(),
     };
     let mut s = Scene::default();
     s.add_model(Arc::new(m), None).unwrap();

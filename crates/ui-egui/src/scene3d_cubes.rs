@@ -53,7 +53,9 @@ pub(crate) fn visible_faces(eye: Vec3, centre: Vec3, rot: Quat, half: f32) -> Ve
         .filter_map(|(n, idx)| {
             let normal = rot * Vec3::from(*n);
             let face_centre = centre + normal * half;
-            (normal.dot(face_centre - eye) < 0.0).then(|| (face_centre.distance(eye), normal, idx.map(corner)))
+            // A face seen almost edge-on is a sliver that only draws a stripe: leave it out.
+            let look = (face_centre - eye).normalize_or_zero();
+            (normal.dot(look) < -0.08).then(|| (face_centre.distance(eye), normal, idx.map(corner)))
         })
         .collect();
     out.sort_by(|a, b| b.0.total_cmp(&a.0));

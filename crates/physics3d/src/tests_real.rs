@@ -33,7 +33,6 @@ fn the_real_characters_hair_swings_and_stays_finite() {
     let Some(mut scene) = load() else { return };
     let mut w = World::new(&scene);
     assert!(w.spring_count() > 20, "the hair, skirt and accessories chains were found: {}", w.spring_count());
-    assert_eq!(w.dynamic_count(), 0, "everything is pinned");
     let before: Vec<Vec3> = scene.nodes.iter().filter(|n| matches!(n.kind, NodeKind::Bone) && n.humanoid.is_none()).map(|n| pos(&scene, n.id)).collect();
     for _ in 0..120 {
         w.step_scene(&mut scene);
@@ -56,14 +55,14 @@ fn releasing_a_real_arm_lets_it_hang_without_stretching_or_going_through_the_bod
     let len = pos(&scene, hand).distance(pos(&scene, lower));
     let start = pos(&scene, hand);
     let mut w = World::new(&scene);
-    assert!(w.dynamic_count() >= 3, "the arm and everything below it");
+    assert!(w.dynamic_count() >= 3, "the arm and everything below it are bodies");
     for _ in 0..240 {
         w.step_scene(&mut scene);
     }
     let end = pos(&scene, hand);
     assert!(end.y < start.y - 0.15, "the hand dropped from the T-pose: {start:?} -> {end:?}");
     assert!((end.distance(pos(&scene, lower)) - len).abs() < 2e-3, "the forearm kept its length");
-    assert!((pos(&scene, named(&scene, "hips")) - hips).length() < 1e-4 && (pos(&scene, named(&scene, "chest")) - torso).length() < 1e-4, "the body stayed");
+    assert!((pos(&scene, named(&scene, "hips")) - hips).length() < 0.05 && (pos(&scene, named(&scene, "chest")) - torso).length() < 0.05, "the body stayed (held by its springs)");
     // The hand is outside the torso's column (it hangs beside the body rather than through it).
     let axis_distance = ((end.x - torso.x).powi(2) + (end.z - torso.z).powi(2)).sqrt();
     assert!(axis_distance > 0.08, "not inside the torso: {axis_distance}");

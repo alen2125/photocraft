@@ -43,6 +43,7 @@ fn model(format: ModelFormat) -> Arc<ModelData> {
         joint_limits: vec![],
         control_bones: vec![],
         pose_controls: vec![],
+        physics: Default::default(),
     })
 }
 

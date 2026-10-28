@@ -37,6 +37,7 @@ fn hand() -> Scene {
             control("Grasp", -1.0, 1.2, vec![], vec![("Bend", 1.0), ("Bend", 0.5)]),
             control("Twist", 0.0, 1.0, vec![ControlRot { node: 1, deg: [90.0, 0.0, 0.0] }], vec![]),
         ],
+        physics: Default::default(),
     };
     let mut s = Scene::default();
     s.add_model(Arc::new(m), None).unwrap();

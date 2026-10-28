@@ -3788,9 +3788,9 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
     );
     if nav_hovered {
         let pointer = ui.input(|i| i.pointer.hover_pos());
-        // In the 3D pose editor the wheel flies the camera instead of zooming the canvas.
+        // In the 3D pose editor the plain wheel flies the camera; Alt+wheel, pinch and Ctrl/Shift+wheel still move the canvas.
         let wheel = match (wheel, pointer) {
-            (Some(w @ (crate::wheel_nav::Wheel::Pan(_) | crate::wheel_nav::Wheel::Zoom(_))), Some(p)) if app.scene3d.open && crate::scene3d_canvas::wheel(app, xf.to_doc(p), &w) => None,
+            (Some(w @ crate::wheel_nav::Wheel::Pan(_)), Some(p)) if app.scene3d.open && ui.input(|i| i.modifiers.is_none()) && crate::scene3d_canvas::wheel(app, xf.to_doc(p), &w) => None,
             (w, _) => w,
         };
         match (wheel, pointer) {
