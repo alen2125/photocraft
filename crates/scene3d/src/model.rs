@@ -34,7 +34,38 @@ impl Scene {
             return Err(SceneError::Parse(format!("scene has no asset {asset}")));
         }
         self.models.0.insert(asset, model);
+        self.relink_joints(asset);
         Ok(())
+    }
+
+    /// A scene saved before nodes remembered where in the model they came from has bones without
+    /// that link (and without the model's joint limits and controls list). The skinned meshes
+    /// know their joints in the skin's order, so the link is rebuilt from them; joints that
+    /// already have one are left as they are.
+    fn relink_joints(&mut self, asset: u32) {
+        let Some(model) = self.models.0.get(&asset).cloned() else { return };
+        let mut pairs: Vec<(NodeId, usize)> = Vec::new();
+        for n in &self.nodes {
+            let NodeKind::Mesh(m) = &n.kind else { continue };
+            if m.asset != asset {
+                continue;
+            }
+            let Some(skin) = model.meshes.get(m.mesh as usize).and_then(|mesh| mesh.skin).and_then(|s| model.skins.get(s)) else { continue };
+            pairs.extend(m.joints.iter().copied().zip(skin.joints.iter().copied()));
+        }
+        for (id, idx) in pairs {
+            let Some(n) = self.node_mut(id) else { continue };
+            if n.source.is_some() {
+                continue;
+            }
+            n.source = Some((asset, idx as u32));
+            if !model.controls.is_empty() && !model.controls.contains(&idx) {
+                n.minor = true;
+            }
+            if n.joint.is_none() {
+                n.joint = model.joint_limits.iter().find(|j| j.node == idx).map(|j| crate::JointLimit { frame: j.frame, twist: j.twist, swing: j.swing, enabled: true });
+            }
+        }
     }
 
     /// Adds a model as a tree of nodes under a new root and returns the root's id. Joints become
@@ -69,7 +100,7 @@ impl Scene {
             let humanoid = model.humanoid.iter().find(|(_, node)| *node == i).map(|(name, _)| name.clone());
             let minor = matches!(kind, NodeKind::Bone) && !model.controls.is_empty() && !model.controls.contains(&i);
             let joint = model.joint_limits.iter().find(|j| j.node == i).map(|j| crate::JointLimit { frame: j.frame, twist: j.twist, swing: j.swing, enabled: true });
-            let id = self.add(Node { name: n.name.clone(), parent: Some(parent), transform: t.clone(), rest: Some(t), kind, humanoid, minor, joint, ..Node::default() })?;
+            let id = self.add(Node { name: n.name.clone(), parent: Some(parent), transform: t.clone(), rest: Some(t), kind, humanoid, minor, joint, source: Some((asset, i as u32)), ..Node::default() })?;
             if let Some(slot) = ids.get_mut(i) {
                 *slot = Some(id);
             }
@@ -120,7 +151,7 @@ impl Scene {
             .filter(|n| matches!(n.kind, NodeKind::Bone))
             .map(|n| PoseBone { node: n.id, rotation: n.transform.rotation, translation: n.transform.translation })
             .collect();
-        let pose = Pose { name: name.to_string(), bones };
+        let pose = Pose { name: name.to_string(), bones, controls: self.controls.clone() };
         match self.poses.iter().position(|p| p.name == name) {
             Some(i) => {
                 self.poses[i] = pose;
@@ -142,11 +173,14 @@ impl Scene {
                 n.transform.translation = b.translation;
             }
         }
+        // The sliders show what the saved bones were set to.
+        self.controls = pose.controls;
         Ok(())
     }
 
     /// Returns every imported node to the transform it was loaded with.
     pub fn reset_pose(&mut self) {
+        self.controls.clear();
         for n in &mut self.nodes {
             if let Some(rest) = &n.rest {
                 n.transform = rest.clone();

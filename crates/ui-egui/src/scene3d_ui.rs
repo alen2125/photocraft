@@ -89,6 +89,11 @@ pub struct Scene3dEditor {
     pub(crate) pointer: Option<crate::scene3d_canvas::PointerState>,
     /// A camera or pose change happened this frame (the preview goes coarse for a moment).
     pub(crate) pending_change: bool,
+    /// Text typed in the pose-slider filter box.
+    pub(crate) control_filter: String,
+    /// Physics feel: gravity as a multiple of Earth's, and how quickly limbs lose speed.
+    pub(crate) gravity_scale: f32,
+    pub(crate) damping_scale: f32,
     /// What the gizmo does (W/E/R) and whether its axes are the node's own.
     pub(crate) gizmo_mode: GizmoMode,
     pub(crate) gizmo_local: bool,
@@ -153,7 +158,10 @@ impl Default for Scene3dEditor {
             doc_size: [1024, 768],
             pointer: None,
             pending_change: false,
-            gizmo_mode: GizmoMode::Translate,
+            control_filter: String::new(),
+            gravity_scale: 1.0,
+            damping_scale: 1.0,
+            gizmo_mode: GizmoMode::Both,
             gizmo_local: false,
             history: Vec::new(),
             future: Vec::new(),
@@ -355,6 +363,8 @@ fn node_inspector(ui: &mut egui::Ui, ed: &mut Scene3dEditor, id: NodeId) {
     let mut link_action: Option<Option<NodeId>> = None;
     // Some(true) = freeze the bone where it is, Some(false) = release it.
     let mut hold_action: Option<bool> = None;
+    // The same for the bone's orientation.
+    let mut rot_action: Option<bool> = None;
     let Some(node) = ed.scene.node_mut(id) else { return };
     changed |= ui.text_edit_singleline(&mut node.name).changed();
     changed |= ui.checkbox(&mut node.visible, tl!("Visible")).changed();
@@ -378,20 +388,32 @@ fn node_inspector(ui: &mut egui::Ui, ed: &mut Scene3dEditor, id: NodeId) {
     });
     ui.separator();
     if matches!(node.kind, NodeKind::Primitive { .. }) {
-        changed |= ui.checkbox(&mut node.pinned, tl!("Pinned (stays put)")).changed();
+        changed |= ui.checkbox(&mut node.pinned, tl!("On (stays put)")).on_hover_text(tl!("Off: it falls when you press Play.")).changed();
     }
     if matches!(node.kind, NodeKind::Bone) {
-        // Follow: moves with its parent. Hold: frozen at a point. Free: hangs and swings when you press Play.
-        let before = if !node.pinned { 2 } else if node.hold.is_some() { 1 } else { 0 };
-        let mut mode = before;
+        // Position and orientation each On or Off, as in VaM. On: frozen in space; the limb turns
+        // to keep it there while you move the bones above it, and it stays put when you press
+        // Play. Off: it follows the bones above it, and hangs and swings in Play.
+        let pos_before = node.hold.is_some();
+        let mut pos_on = pos_before;
         ui.horizontal(|ui| {
-            ui.radio_value(&mut mode, 0, tl!("Follow parent")).on_hover_text(tl!("The bone moves with the bone above it."));
-            ui.radio_value(&mut mode, 1, tl!("Hold in place")).on_hover_text(tl!("The bone stays at this point while you move the bones above it; the limb turns to keep it there."));
-            ui.radio_value(&mut mode, 2, tl!("Hang free")).on_hover_text(tl!("Unpinned, a bone lets go of its whole limb: it hangs from the joint above when you press Play."));
+            ui.add_sized([80.0, 18.0], egui::Label::new(tl!("Position")));
+            ui.radio_value(&mut pos_on, true, tl!("On")).on_hover_text(tl!("The bone stays at this point in space while you move the bones above it, and does not fall in Play."));
+            ui.radio_value(&mut pos_on, false, tl!("Off")).on_hover_text(tl!("The bone follows the bones above it, and hangs from them in Play."));
         });
-        if mode != before {
-            node.pinned = mode != 2;
-            hold_action = Some(mode == 1);
+        if pos_on != pos_before {
+            hold_action = Some(pos_on);
+            changed = true;
+        }
+        let rot_before = node.hold_rot.is_some();
+        let mut rot_on = rot_before;
+        ui.horizontal(|ui| {
+            ui.add_sized([80.0, 18.0], egui::Label::new(tl!("Orientation")));
+            ui.radio_value(&mut rot_on, true, tl!("On")).on_hover_text(tl!("The bone keeps the way it faces while the bones above it move or turn, and does not spin in Play."));
+            ui.radio_value(&mut rot_on, false, tl!("Off")).on_hover_text(tl!("The bone turns with the bones above it, and swings freely in Play."));
+        });
+        if rot_on != rot_before {
+            rot_action = Some(rot_on);
             changed = true;
         }
     }
@@ -449,6 +471,11 @@ fn node_inspector(ui: &mut egui::Ui, ed: &mut Scene3dEditor, id: NodeId) {
     }
     if let Some(hold) = hold_action
         && let Err(e) = ed.scene.set_hold(id, hold)
+    {
+        ed.status = e.to_string();
+    }
+    if let Some(hold) = rot_action
+        && let Err(e) = ed.scene.set_hold_rotation(id, hold)
     {
         ed.status = e.to_string();
     }
@@ -660,7 +687,7 @@ fn side_panels(ui: &mut egui::Ui, ed: &mut Scene3dEditor) {
     });
     ui.horizontal(|ui| {
         if ed.physics.is_none() {
-            if ui.button(tl!("▶ Play")).on_hover_text(tl!("Unpinned objects and limbs fall and collide; hair swings.")).clicked()
+            if ui.button(tl!("▶ Play")).on_hover_text(tl!("Everything that is Off falls and collides; what is On stays put; hair swings.")).clicked()
                 && let Err(e) = crate::scene3d_canvas::play(ed)
             {
                 ed.status = e;
@@ -674,6 +701,16 @@ fn side_panels(ui: &mut egui::Ui, ed: &mut Scene3dEditor) {
             }
         }
     });
+    // How the physics feels; takes effect at once, also while it runs.
+    ui.horizontal(|ui| {
+        let g = ui.add(egui::Slider::new(&mut ed.gravity_scale, 0.0..=3.0).text(tl!("Gravity")).max_decimals(2));
+        let d = ui.add(egui::Slider::new(&mut ed.damping_scale, 0.1..=3.0).logarithmic(true).text(tl!("Damping")).max_decimals(2));
+        if (g.changed() || d.changed())
+            && let Some(world) = ed.physics.as_mut()
+        {
+            world.set_tuning(ed.gravity_scale, ed.damping_scale);
+        }
+    });
     ui.separator();
     egui::ScrollArea::vertical().id_salt("scene3d-nodes").max_height(200.0).show(ui, |ui| node_list(ui, ed));
     ui.separator();
@@ -681,6 +718,10 @@ fn side_panels(ui: &mut egui::Ui, ed: &mut Scene3dEditor) {
         if ed.scene.nodes.iter().any(|n| matches!(n.kind, NodeKind::Bone)) {
             egui::CollapsingHeader::new(tl!("Pose")).default_open(true).show(ui, |ui| pose_panel(ui, ed));
             ui.separator();
+            if ed.scene.assets.iter().any(|a| ed.scene.model(a.id).is_some_and(|m| !m.pose_controls.is_empty())) {
+                egui::CollapsingHeader::new(tl!("Pose sliders")).default_open(false).show(ui, |ui| controls_panel(ui, ed));
+                ui.separator();
+            }
         }
         match ed.selected {
         Some(id) if ed.scene.node(id).is_some() => node_inspector(ui, ed, id),
@@ -701,6 +742,61 @@ fn side_panels(ui: &mut egui::Ui, ed: &mut Scene3dEditor) {
         }
         }
     });
+}
+
+/// The sliders a model ships with (fingers, toes, tongue…), grouped, with a filter box.
+fn controls_panel(ui: &mut egui::Ui, ed: &mut Scene3dEditor) {
+    let mut changed = false;
+    let mut error = None;
+    ui.horizontal(|ui| {
+        ui.add(egui::TextEdit::singleline(&mut ed.control_filter).hint_text(tl!("Filter…")).desired_width(140.0));
+        if ui.button(tl!("Reset sliders")).clicked() {
+            for a in ed.scene.assets.clone() {
+                if let Err(e) = ed.scene.reset_controls(a.id) {
+                    error = Some(e.to_string());
+                }
+            }
+            changed = true;
+        }
+    });
+    let filter = ed.control_filter.trim().to_lowercase();
+    for asset in ed.scene.assets.clone() {
+        let Some(model) = ed.scene.model(asset.id).cloned() else { continue };
+        if model.pose_controls.is_empty() {
+            continue;
+        }
+        let mut groups: Vec<&str> = Vec::new();
+        for c in &model.pose_controls {
+            if !groups.contains(&c.group.as_str()) {
+                groups.push(c.group.as_str());
+            }
+        }
+        for group in groups {
+            let shown: Vec<_> = model.pose_controls.iter().filter(|c| c.group == group && (filter.is_empty() || c.label.to_lowercase().contains(&filter))).collect();
+            if shown.is_empty() {
+                continue;
+            }
+            egui::CollapsingHeader::new(group.replace('/', " · ")).id_salt((asset.id, group)).default_open(!filter.is_empty()).show(ui, |ui| {
+                for c in shown {
+                    let mut v = ed.scene.control_value(asset.id, &c.name);
+                    let (lo, hi) = if c.min <= c.max { (c.min, c.max) } else { (c.max, c.min) };
+                    if ui.add(egui::Slider::new(&mut v, lo..=hi).text(&c.label).max_decimals(2)).changed() {
+                        match ed.scene.set_control(asset.id, &c.name, v) {
+                            Ok(()) => changed = true,
+                            Err(e) => error = Some(e.to_string()),
+                        }
+                    }
+                }
+            });
+        }
+    }
+    if let Some(e) = error {
+        ed.status = e;
+    }
+    if changed {
+        ed.touch();
+        ed.pending_change = true;
+    }
 }
 
 /// Skeleton display, what dragging does, and saved poses.
@@ -726,7 +822,21 @@ fn pose_panel(ui: &mut egui::Ui, ed: &mut Scene3dEditor) {
         ui.add(egui::Slider::new(&mut ed.ik_chain, 1..=8).text(tl!("IK chain")));
     }
     ui.weak(tl!("Drag a bone dot or a gizmo handle on the canvas. W / E / R: move, rotate, scale."));
-    ui.weak(tl!("A bone set to Hold stays put while you move the bones above it."));
+    ui.weak(tl!("A bone whose Position or Orientation is On stays put while you move the bones above it and in Play."));
+    ui.horizontal_wrapped(|ui| {
+        if ui.button(tl!("All On")).clicked() {
+            ed.scene.set_all_holds(None);
+            changed = true;
+        }
+        if ui.button(tl!("All Off")).clicked() {
+            ed.scene.set_all_holds(Some(&[]));
+            changed = true;
+        }
+        if ui.button(tl!("Feet and head only")).on_hover_text(tl!("Switch everything Off except the feet and the head.")).clicked() {
+            ed.scene.set_all_holds(Some(&["head", "leftFoot", "rightFoot"]));
+            changed = true;
+        }
+    });
     if ui.button(tl!("Reset pose")).clicked() {
         ed.scene.reset_pose();
         changed = true;

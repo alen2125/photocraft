@@ -89,8 +89,11 @@ for b in need:
 # ---- weights per base vertex
 w = {}
 primary = {}
+general_idx = set()
 for n in skin["nodes"]:
     src = [(g["vertex"], g["weight"]) for g in n["generalWeights"]] or [(g["vertex"], (g["xweight"] + g["yweight"] + g["zweight"]) / 3) for g in n["weights"]]
+    for g in n["generalWeights"]:
+        general_idx.add(g["vertex"])
     for vtx, wt in src:
         d = w.setdefault(vtx, {})
         d[n["name"]] = d.get(n["name"], 0.0) + wt
@@ -98,6 +101,97 @@ for n in skin["nodes"]:
     # binding only for vertices that have no blended weights
     for f in n["fullyWeightedVertices"]:
         primary[f] = n["name"]
+# Graft (genital) vertices have no blended weights in the file: the game moves them with the body
+# seam. Give them the distance-weighted weights of the nearest body vertices instead, so they bend
+# with the thighs and hips and never tear away from the body.
+nv_all = len(uv_pos)
+_cell = 0.03
+_grid = {}
+_body = [j for j in range(nv_all) if j in w and sum(w[j].values()) > 0]
+for j in _body:
+    p = uv_pos[j]
+    _grid.setdefault((int(p["x"] // _cell), int(p["y"] // _cell), int(p["z"] // _cell)), []).append(j)
+def _nearest(p, k=8):
+    cx, cy, cz = int(p["x"] // _cell), int(p["y"] // _cell), int(p["z"] // _cell)
+    for r in (1, 2, 3, 5):
+        cand = [j for dx in range(-r, r + 1) for dy in range(-r, r + 1) for dz in range(-r, r + 1) for j in _grid.get((cx + dx, cy + dy, cz + dz), [])]
+        if len(cand) >= k:
+            break
+    d = sorted(((uv_pos[j]["x"] - p["x"]) ** 2 + (uv_pos[j]["y"] - p["y"]) ** 2 + (uv_pos[j]["z"] - p["z"]) ** 2, j) for j in cand)[:k]
+    return d
+grafted = 0
+for j in range(nv_all):
+    if (j in w and sum(w[j].values()) > 0) or primary.get(j) not in ("pelvis", "hip"):
+        continue
+    blend = {}
+    near = _nearest(uv_pos[j])
+    tot = 0.0
+    for d2, k in near:
+        wt = 1.0 / (d2 + 1e-6)
+        tot += wt
+        for bone, v in w[k].items():
+            blend[bone] = blend.get(bone, 0.0) + v * wt
+    if tot > 0:
+        w[j] = {b: v / tot for b, v in blend.items()}
+        grafted += 1
+print("graft vertices skinned from the body:", grafted)
+
+# Refine: the graft is welded to the body along a seam (pairs of vertices that coincide). Seam
+# vertices take their body twin's weights exactly; the vertices between them take the smooth
+# average of their neighbours' weights (relaxed over the graft's own edges), so the patch follows
+# the thighs and hips as one piece instead of tearing between a left and a right attachment.
+pairs, graft_start = [], mesh["startGraftVertIndex"]
+for o in env.objects:
+    if o.type.name == "MonoBehaviour" and o.read(check_read=False).m_Script.read().m_ClassName == "DAZMesh":
+        t = o.read_typetree()
+        if t["meshGraft"]["vertexPairs"]:
+            pairs = [(q["vertexNum"], q["graftToVertexNum"]) for q in t["meshGraft"]["vertexPairs"]]
+            break
+if pairs:
+    def _norm(d):
+        tot = sum(d.values()) or 1.0
+        return {b: v / tot for b, v in d.items()}
+    G = [j for j in range(nv_all) if j not in general_idx and primary.get(j) in ("pelvis", "hip")]
+    GB = sorted({base_of(j) for j in G})
+    GBset = set(GB)
+    cur = {}
+    for b in GB:  # start from the nearest-body-vertices blend
+        near = _nearest(uv_pos[b] if b < nv_all else uv_pos[0])
+        blend, tot = {}, 0.0
+        for d2, k in near:
+            wt = 1.0 / (d2 + 1e-6)
+            tot += wt
+            for bone, v in w[k].items():
+                blend[bone] = blend.get(bone, 0.0) + v * wt
+        cur[b] = _norm(blend) if tot > 0 else {}
+    # The graft's seam vertices are copies of body vertices (they map back to a body index below
+    # the graft's start): those keep the body's own weights.
+    fixed = {}
+    for b in GB:
+        if b < graft_start and b in w and sum(w[b].values()) > 0:
+            fixed[b] = _norm(w[b])
+            cur[b] = fixed[b]
+    nbr = {b: set() for b in GB}
+    for pl in mesh["_UVPolyList"]:
+        poly = pl["vertices"]
+        for a, c in zip(poly, poly[1:] + poly[:1]):
+            ba, bc = base_of(a), base_of(c)
+            if ba in GBset and bc in GBset and ba != bc:
+                nbr[ba].add(bc)
+                nbr[bc].add(ba)
+    free = [b for b in GB if b not in fixed and nbr[b]]
+    for _ in range(400):
+        for b in free:
+            acc = {}
+            for q in nbr[b]:
+                for bone, v in cur[q].items():
+                    acc[bone] = acc.get(bone, 0.0) + v
+            cur[b] = _norm(acc)
+    for j in G:
+        if cur.get(base_of(j)):
+            w[j] = cur[base_of(j)]
+    print("graft relaxed:", len(free), "free of", len(GB), "vertices;", len(fixed), "welded to the seam")
+
 joint_index = {b: i for i, b in enumerate(need)}
 root = next(b for b in need if parent[b] is None)
 
@@ -357,10 +451,63 @@ for o in penv.objects:
                    "swing": [t["m_AngularYLimit"]["limit"], t["m_AngularZLimit"]["limit"]]})
 print("joint limits:", len(limits))
 
+# ---- pose controls: VaM's slider list (fingers, toes, tongue, breasts...) that turn minor joints.
+# Only the ones that are pure bone rotations (no corrective shapes) and touch minor joints; a
+# value of 1 turns each joint by `x, y, z` degrees about its own DAZ axes (frame + order below).
+menv = UnityPy.load(os.path.join(SA, "f_mb" if who == "female" else "m_mb"))
+mgo = {o.path_id: o.read().m_Name for o in menv.objects if o.type.name == "GameObject"}
+ROT = {13: 0, 14: 1, 15: 2}
+minor_ok = set(bone_node) - set(CONTROLS)
+raw = {}
+for o in menv.objects:
+    if o.type.name != "MonoBehaviour" or o.read(check_read=False).m_Script.read().m_ClassName != "DAZMorphSubBank":
+        continue
+    t = o.read_typetree()
+    region = mgo.get(t["m_GameObject"]["m_PathID"], "")
+    if not region.startswith("Pose Controls/") or region.startswith("Pose Controls/Hidden"):
+        continue
+    for m in t["_morphs"]:
+        if m.get("numDeltas", 0) or not m["formulas"]:
+            continue
+        rot, links, ok = {}, [], True
+        for f in m["formulas"]:
+            tt = f["targetType"]
+            if tt in ROT:
+                if f["target"] not in minor_ok:
+                    ok = False
+                    break
+                rot.setdefault(f["target"], [0.0, 0.0, 0.0])[ROT[tt]] += f["multiplier"]
+            elif tt == 0:
+                links.append((f["target"], f["multiplier"]))
+            else:
+                ok = False
+                break
+        if ok and (rot or links):
+            raw[m["morphName"]] = {"label": m["displayName"].strip(), "group": region[len("Pose Controls/"):], "min": m["min"], "max": m["max"], "rot": rot, "links": links}
+# links must point at controls we kept; a control that only links to nothing is dropped
+changed = True
+while changed:
+    changed = False
+    for k in list(raw):
+        raw[k]["links"] = [l for l in raw[k]["links"] if l[0] in raw]
+        if not raw[k]["rot"] and not raw[k]["links"]:
+            del raw[k]
+            changed = True
+used = sorted({b for c in raw.values() for b in c["rot"]})
+order_key = "_rotationOrder" if who == "female" else "_maleRotationOrder"
+pc_bones = []
+for b in used:
+    d = pick(b)
+    q = world_q(go_tr[d["m_GameObject"]["m_PathID"]])  # the bone's own axes, in Unity world space (not mirrored)
+    pc_bones.append({"node": bone_node[b], "frame": list(q), "order": d[order_key]})
+pc_controls = [{"name": k, "label": c["label"], "group": c["group"], "min": c["min"], "max": c["max"],
+                "rot": [{"node": bone_node[b], "deg": v} for b, v in c["rot"].items()], "links": [{"to": a, "mult": m} for a, m in c["links"]]} for k, c in raw.items()]
+print("pose controls:", len(pc_controls), "turning", len(pc_bones), "joints")
+
 gltf = {
     "asset": {"version": "2.0", "generator": "vam-base-export"},
-    "extensionsUsed": ["VRM", "PC_controls", "PC_limits"],
-    "extensions": {"PC_controls": {"nodes": controls}, "PC_limits": {"joints": limits}, "VRM": {"exporterVersion": "vam-base-export", "specVersion": "0.0", "meta": {"title": "VaM base " + who, "version": "1"}, "humanoid": {"humanBones": human}}},
+    "extensionsUsed": ["VRM", "PC_controls", "PC_limits", "PC_pose_controls"],
+    "extensions": {"PC_controls": {"nodes": controls}, "PC_limits": {"joints": limits}, "PC_pose_controls": {"bones": pc_bones, "controls": pc_controls}, "VRM": {"exporterVersion": "vam-base-export", "specVersion": "0.0", "meta": {"title": "VaM base " + who, "version": "1"}, "humanoid": {"humanBones": human}}},
     "scene": 0, "scenes": [{"nodes": [0, mesh_node]}],
     "nodes": nodes, "meshes": [{"name": who, "primitives": prims}],
     "skins": [{"joints": [bone_node[b] for b in need], "inverseBindMatrices": a_ibm, "skeleton": 0}],

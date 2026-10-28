@@ -129,10 +129,11 @@ pub(crate) fn play(ed: &mut Scene3dEditor) -> Result<(), String> {
     if ed.physics.is_some() {
         return Ok(());
     }
-    let world = photocraft_physics3d::World::new(&ed.scene);
+    let mut world = photocraft_physics3d::World::new(&ed.scene);
     if world.is_inert() {
-        return Err(tl!("Nothing to move: untick Pinned on an object or a bone, or use a model with hair.").to_string());
+        return Err(tl!("Nothing to move: switch a bone or an object Off, or use a model with hair.").to_string());
     }
+    world.set_tuning(ed.gravity_scale, ed.damping_scale);
     remember_edit(ed);
     ed.play_base = Some(ed.scene.clone());
     ed.play_acc = 0.0;
@@ -299,8 +300,8 @@ pub(crate) fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifi
                         apply_camera(ed);
                     }
                     PointerKind::Dolly => {
-                        ed.orbit.distance = (ed.orbit.distance * (1.0 + d.1 * 0.005)).clamp(0.2, 500.0);
-                        apply_camera(ed);
+                        // Towards (or away from) the point that was under the pointer at the press.
+                        crate::scene3d_zoom::zoom_toward(ed, view, s.start, 1.0 + d.1 * 0.005);
                     }
                     PointerKind::Bone(drag) => {
                         drag_bone(ed, *drag, view, p, d);
@@ -327,13 +328,35 @@ pub(crate) fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifi
     }
 }
 
+/// The mouse wheel over the picture: plain scrolling and Alt-scrolling move the 3D camera towards
+/// (or away from) the point under the cursor. `doc` is the pointer in document pixels. Returns
+/// whether the wheel was used, so the canvas leaves its own zoom alone.
+pub(crate) fn wheel(app: &mut PhotocraftApp, doc: [f64; 2], wheel: &crate::wheel_nav::Wheel) -> bool {
+    use crate::wheel_nav::Wheel;
+    let ed = &mut app.scene3d;
+    if !ed.open {
+        return false;
+    }
+    // Wheel up (positive) zooms in.
+    let factor = match wheel {
+        Wheel::Pan(s) if s.y.is_finite() => (-s.y * 0.003).exp(),
+        Wheel::Zoom(f) if f.is_finite() && *f > 0.0 => 1.0 / f,
+        _ => return false,
+    };
+    let view = view_size(ed.doc_size);
+    let p = (doc[0] as f32 / ed.doc_size[0].max(1) as f32 * view.0 as f32, doc[1] as f32 / ed.doc_size[1].max(1) as f32 * view.1 as f32);
+    crate::scene3d_zoom::zoom_toward(ed, view, p, factor);
+    true
+}
+
 /// Starts a gizmo drag if the press at preview pixel `p` lands on a handle of the selection's gizmo.
 fn begin_gizmo(ed: &Scene3dEditor, view: (u32, u32), p: (f32, f32)) -> Option<GizmoDrag> {
     let gizmo = gizmo_for(ed)?;
     let ray = ray_at(ed, view, p)?;
-    let handle = gizmo.pick(ed.gizmo_mode, ray)?;
+    // With arrows and rings together, what was grabbed decides whether this is a move or a turn.
+    let (mode, handle) = if ed.gizmo_mode == GizmoMode::Both { gizmo.pick_both(ray)? } else { (ed.gizmo_mode, gizmo.pick(ed.gizmo_mode, ray)?) };
     let (_, up, _) = camera_axes(&ed.scene.camera);
-    let drag = gizmo.begin(ed.gizmo_mode, handle, ray, up)?;
+    let drag = gizmo.begin(mode, handle, ray, up)?;
     let id = ed.selected?;
     let base_scale = ed.scene.node(id)?.transform.scale;
     Some(GizmoDrag { drag, id, origin: gizmo.origin, base: ed.scene.nodes.clone(), base_scale })
@@ -419,7 +442,7 @@ pub(crate) fn keys(app: &mut PhotocraftApp, ctx: &egui::Context) -> bool {
         step_history(&mut app.scene3d, true);
         return true;
     }
-    for (key, mode) in [(Key::W, GizmoMode::Translate), (Key::E, GizmoMode::Rotate), (Key::R, GizmoMode::Scale)] {
+    for (key, mode) in [(Key::Q, GizmoMode::Both), (Key::W, GizmoMode::Translate), (Key::E, GizmoMode::Rotate), (Key::R, GizmoMode::Scale)] {
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, key)) {
             app.scene3d.gizmo_mode = mode;
             return true;
@@ -480,14 +503,25 @@ pub(crate) fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &Vi
     let to_screen = |x: f32, y: f32| xf.to_screen(x / view.0 as f32 * dw, y / view.1 as f32 * dh);
     let bones = if ed.show_bones { bone_screen(&ed.scene, view) } else { Vec::new() };
     let screen_of = |id| bones.iter().find(|b| b.0 == id).map(|b| to_screen(b.2.0, b.2.1));
-    for (id, parent, (x, y)) in &bones {
-        let c = to_screen(*x, *y);
+    // The bones' lines first, then a cube on each bone: turned the way the bone faces and coloured
+    // by what is On (see `scene3d_cubes`). The selected one gets a big see-through cube round it.
+    for (_, parent, (x, y)) in &bones {
         if let Some(pp) = parent.and_then(screen_of) {
-            painter.line_segment([pp, c], Stroke::new(2.0, Color32::from_rgba_unmultiplied(120, 200, 255, 200)));
+            painter.line_segment([pp, to_screen(*x, *y)], Stroke::new(2.0, Color32::from_rgba_unmultiplied(120, 200, 255, 200)));
         }
-        let (r, col) = if ed.selected == Some(*id) { (8.0, Color32::from_rgb(255, 170, 40)) } else { (5.5, Color32::from_rgb(120, 200, 255)) };
-        painter.circle_filled(c, r, col);
-        painter.circle_stroke(c, r, Stroke::new(1.0, Color32::from_black_alpha(160)));
+    }
+    let world = ed.scene.world_matrices();
+    let mut cubes: Vec<(f32, NodeId)> = bones.iter().filter_map(|(id, _, _)| Some(((world.get(id)?.transform_point3(Vec3::ZERO) - Vec3::from(ed.scene.camera.position)).length(), *id))).collect();
+    cubes.sort_by(|a, b| b.0.total_cmp(&a.0));
+    for (_, id) in cubes {
+        let (Some(node), Some(m)) = (ed.scene.node(id), world.get(&id)) else { continue };
+        let (_, rot, centre) = m.to_scale_rotation_translation();
+        let selected = ed.selected == Some(id);
+        if selected {
+            crate::scene3d_cubes::draw_cube(painter, &to_screen, &ed.scene, view, centre, rot, crate::scene3d_cubes::HALF_PX * 2.4, Color32::from_rgb(90, 120, 255), 90, Color32::from_rgba_unmultiplied(160, 190, 255, 200));
+        }
+        let outline = if selected { Color32::WHITE } else { Color32::from_black_alpha(200) };
+        crate::scene3d_cubes::draw_cube(painter, &to_screen, &ed.scene, view, centre, rot, crate::scene3d_cubes::HALF_PX, crate::scene3d_cubes::bone_color(node), 255, outline);
     }
     draw_links(ed, view, painter, &to_screen);
     if let Some(gizmo) = gizmo_for(ed) {
@@ -535,26 +569,45 @@ fn draw_gizmo(ed: &Scene3dEditor, g: &Gizmo, view: (u32, u32), painter: &egui::P
     let colour = |axis: usize| if active == Some(Handle::Axis(axis)) { HOT } else { AXIS_COLORS[axis] };
     let project = |pts: &[Vec3]| photocraft_render3d::project_points(&ed.scene, view.0, view.1, pts);
     let screen = |p: Option<(f32, f32)>| p.map(|(x, y)| to_screen(x, y));
-    match ed.gizmo_mode {
-        GizmoMode::Rotate => {
-            for axis in 0..3 {
-                let u = g.axes[axis].any_orthonormal_vector();
-                let v = g.axes[axis].cross(u);
-                let ring: Vec<Vec3> = (0..=64)
-                    .map(|i| {
-                        let a = i as f32 / 64.0 * std::f32::consts::TAU;
-                        g.origin + (u * a.cos() + v * a.sin()) * g.size
-                    })
-                    .collect();
-                let pts: Vec<Option<egui::Pos2>> = project(&ring).into_iter().map(screen).collect();
-                for w in pts.windows(2) {
-                    if let [Some(a), Some(b)] = w {
-                        painter.line_segment([*a, *b], Stroke::new(4.0, colour(axis)));
-                    }
+    let rings = |width: f32| {
+        for axis in 0..3 {
+            let u = g.axes[axis].any_orthonormal_vector();
+            let v = g.axes[axis].cross(u);
+            let ring: Vec<Vec3> = (0..=64)
+                .map(|i| {
+                    let a = i as f32 / 64.0 * std::f32::consts::TAU;
+                    g.origin + (u * a.cos() + v * a.sin()) * g.size
+                })
+                .collect();
+            let pts: Vec<Option<egui::Pos2>> = project(&ring).into_iter().map(screen).collect();
+            for w in pts.windows(2) {
+                if let [Some(a), Some(b)] = w {
+                    painter.line_segment([*a, *b], Stroke::new(width, colour(axis)));
                 }
             }
         }
+    };
+    // An arrow: a line to a cone, in the axis colour.
+    let arrows = || {
+        for axis in 0..3 {
+            let (base, tip) = (g.origin + g.axes[axis] * (g.size * 0.8), g.origin + g.axes[axis] * (g.size * 1.12));
+            let pts = project(&[g.origin, base]);
+            if let [Some(o), Some(b)] = pts.as_slice().iter().map(|p| screen(*p)).collect::<Vec<_>>()[..] {
+                painter.line_segment([o, b], Stroke::new(4.0, colour(axis)));
+            }
+            crate::scene3d_cubes::draw_cone(painter, to_screen, &ed.scene, view, base, tip, g.size * 0.07, colour(axis));
+        }
+    };
+    match ed.gizmo_mode {
+        GizmoMode::Both => {
+            rings(2.5);
+            arrows();
+        }
+        GizmoMode::Rotate => rings(4.0),
         GizmoMode::Translate | GizmoMode::Scale => {
+            if ed.gizmo_mode == GizmoMode::Translate {
+                arrows();
+            }
             let mut pts = vec![g.origin];
             pts.extend((0..3).map(|a| g.origin + g.axes[a] * g.size));
             let s: Vec<Option<egui::Pos2>> = project(&pts).into_iter().map(screen).collect();
@@ -563,8 +616,6 @@ fn draw_gizmo(ed: &Scene3dEditor, g: &Gizmo, view: (u32, u32), painter: &egui::P
                     painter.line_segment([*o, *t], Stroke::new(4.5, colour(axis)));
                     if ed.gizmo_mode == GizmoMode::Scale {
                         painter.rect_filled(egui::Rect::from_center_size(*t, egui::vec2(14.0, 14.0)), 0.0, colour(axis));
-                    } else {
-                        painter.circle_filled(*t, 8.0, colour(axis));
                     }
                 }
             }
@@ -582,7 +633,7 @@ fn draw_gizmo(ed: &Scene3dEditor, g: &Gizmo, view: (u32, u32), painter: &egui::P
 pub(crate) fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
     ui.label(tl!("3D Pose Editor"));
-    for (mode, label) in [(GizmoMode::Translate, tl!("Move")), (GizmoMode::Rotate, tl!("Rotate")), (GizmoMode::Scale, tl!("Scale"))] {
+    for (mode, label) in [(GizmoMode::Both, tl!("Move + Turn")), (GizmoMode::Translate, tl!("Move")), (GizmoMode::Rotate, tl!("Rotate")), (GizmoMode::Scale, tl!("Scale"))] {
         ui.selectable_value(&mut app.scene3d.gizmo_mode, mode, label);
     }
     ui.checkbox(&mut app.scene3d.gizmo_local, tl!("Local"));

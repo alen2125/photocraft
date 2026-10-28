@@ -50,6 +50,8 @@ fn quad_model(skinned: bool, mode: AlphaMode) -> Arc<ModelData> {
         collider_groups: vec![],
         controls: vec![],
         joint_limits: vec![],
+        control_bones: vec![],
+        pose_controls: vec![],
     })
 }
 

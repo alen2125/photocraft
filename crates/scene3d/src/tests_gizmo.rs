@@ -110,3 +110,25 @@ fn degenerate_input_is_refused_not_trusted() {
     assert_eq!(ray_plane(at(0.0, 0.0), Vec3::ZERO, Vec3::X), None);
     assert!(closest_on_line(Vec3::ZERO, Vec3::Z, at(0.0, 0.0)).is_none());
 }
+
+#[test]
+fn arrows_and_rings_together_tell_a_move_from_a_turn() {
+    let g = unit();
+    // Out along an arrow: move that axis.
+    assert_eq!(g.pick_both(at(0.7, 0.02)), Some((GizmoMode::Translate, Handle::Axis(0))));
+    assert_eq!(g.pick_both(at(0.02, 0.7)), Some((GizmoMode::Translate, Handle::Axis(1))));
+    // On the ring about Z (radius 1 in the XY plane), away from every arrow: turn about Z.
+    let on_ring = at(std::f32::consts::FRAC_1_SQRT_2, std::f32::consts::FRAC_1_SQRT_2);
+    assert_eq!(g.pick_both(on_ring), Some((GizmoMode::Rotate, Handle::Axis(2))));
+    // Between the arrows and inside the rings nothing is grabbed, and far away neither.
+    assert_eq!(g.pick_both(at(0.5, 0.5)), None);
+    assert_eq!(g.pick_both(at(3.0, 3.0)), None);
+    // `pick` in this mode names the handle; garbage never grabs anything.
+    assert_eq!(g.pick(GizmoMode::Both, at(0.7, 0.02)), Some(Handle::Axis(0)));
+    assert_eq!(g.pick_both(Ray { origin: Vec3::NAN, dir: Vec3::NEG_Z }), None);
+    // Beginning a drag with the resolved mode works for both kinds.
+    let (m, h) = g.pick_both(on_ring).unwrap();
+    assert!(g.begin(m, h, on_ring, UP).is_some());
+    let (m, h) = g.pick_both(at(0.7, 0.02)).unwrap();
+    assert!(g.begin(m, h, at(0.7, 0.02), UP).is_some());
+}

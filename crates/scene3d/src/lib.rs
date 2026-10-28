@@ -13,15 +13,17 @@ mod ik;
 mod joint;
 mod link;
 mod mesh;
+mod pose_control;
 mod model;
 mod scene;
 
 pub use glam;
 pub use mesh::Mesh;
 pub use gizmo::{Delta, Drag, Gizmo, GizmoMode, Handle, Ray, closest_on_line, ray_plane};
-pub use ik::{IkResult, rotate_world, set_world_rotation, solve_ik, translate_to};
+pub use ik::{IkResult, rotate_world, set_world_rotation, set_world_rotation_unlimited, solve_ik, translate_to};
 pub use hold::enforce_holds;
 pub use joint::JointLimit;
+pub use pose_control::ControlValue;
 pub use link::{Link, LinkSpace};
 pub use photocraft_model3d as model3d;
 pub use scene::{
@@ -52,3 +54,6 @@ mod tests_vam;
 
 #[cfg(test)]
 mod tests_hold;
+
+#[cfg(test)]
+mod tests_controls;

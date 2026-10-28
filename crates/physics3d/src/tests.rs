@@ -153,3 +153,19 @@ fn a_crowd_beyond_the_limit_is_trimmed_not_refused() {
     }
     assert_eq!(w.poses().len(), MAX_DYNAMIC);
 }
+
+#[test]
+fn a_very_fast_small_ball_does_not_tunnel_through_the_floor() {
+    let mut s = Scene::default();
+    s.add_primitive(Primitive::Plane { size: [20.0, 20.0] }, Transform::default()).unwrap();
+    let ball = s.add_primitive(Primitive::Sphere { radius: 0.03, segments: 12 }, Transform::at(0.0, 400.0, 0.0)).unwrap();
+    s.node_mut(ball).unwrap().pinned = false;
+    let mut w = World::new(&s);
+    // Falling 400 m takes about 9 s; by then it moves more than the floor is thick per step.
+    for _ in 0..700 {
+        w.step();
+        w.apply(&mut s);
+    }
+    let y = s.world_matrix(ball).unwrap().transform_point3(photocraft_scene3d::glam::Vec3::ZERO).y;
+    assert!(y > 0.0, "the ball is on the floor, not under it: {y}");
+}

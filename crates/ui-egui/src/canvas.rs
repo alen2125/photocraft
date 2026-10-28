@@ -3788,6 +3788,11 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
     );
     if nav_hovered {
         let pointer = ui.input(|i| i.pointer.hover_pos());
+        // In the 3D pose editor the wheel flies the camera instead of zooming the canvas.
+        let wheel = match (wheel, pointer) {
+            (Some(w @ (crate::wheel_nav::Wheel::Pan(_) | crate::wheel_nav::Wheel::Zoom(_))), Some(p)) if app.scene3d.open && crate::scene3d_canvas::wheel(app, xf.to_doc(p), &w) => None,
+            (w, _) => w,
+        };
         match (wheel, pointer) {
             (Some(crate::wheel_nav::Wheel::Zoom(f)), Some(p)) => {
                 // At a limit the view stays put, as in Photoshop: a notch past 12800 % neither

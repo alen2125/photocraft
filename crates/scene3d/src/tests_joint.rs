@@ -88,6 +88,8 @@ fn limited_arm(limit: bool) -> (Scene, NodeId, NodeId) {
         controls: vec![],
         // The elbow bends one way only, 0 to 130 degrees, about Z.
         joint_limits: if limit { vec![JointLimitData { node: 1, frame: [0.0, 0.0, 0.0, 1.0], twist: [0.0, 0.0], swing: [0.0, 0.0] }] } else { vec![] },
+        control_bones: vec![],
+        pose_controls: vec![],
     };
     let mut s = Scene::default();
     s.add_model(Arc::new(m), None).unwrap();

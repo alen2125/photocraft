@@ -5,6 +5,7 @@ use photocraft_scene3d::model3d::{ColliderGroup, ModelData, ModelFormat, ModelNo
 use photocraft_scene3d::{Node, NodeId, NodeKind, Primitive, Scene, Transform};
 
 use super::*;
+use crate::testutil::{release, stand};
 
 /// A small T-pose humanoid standing with its hips at (0, 1, 0): spine, chest, both arms, a head,
 /// and a strand of hair that sticks out backwards from the top of the head.
@@ -65,6 +66,8 @@ fn humanoid_model(hair_collider: bool) -> Arc<ModelData> {
         collider_groups: vec![ColliderGroup { node: 9, spheres: vec![([0.0, 0.0, 0.0], 0.12)] }],
         controls: vec![],
         joint_limits: vec![],
+        control_bones: vec![],
+        pose_controls: vec![],
     })
 }
 
@@ -74,6 +77,7 @@ fn scene_with(model: Arc<ModelData>, floor: bool) -> Scene {
         s.add_primitive(Primitive::Plane { size: [20.0, 20.0] }, Transform::default()).unwrap();
     }
     s.add_model(model, None).unwrap();
+    stand(&mut s);
     s
 }
 
@@ -85,9 +89,10 @@ fn pos(s: &Scene, id: NodeId) -> Vec3 {
     s.world_matrix(id).unwrap().transform_point3(Vec3::ZERO)
 }
 
+/// Lets go of a bone and everything below it.
 fn unpin(s: &mut Scene, name: &str) {
     let id = bone(s, name);
-    s.node_mut(id).unwrap().pinned = false;
+    release(s, id);
 }
 
 fn run(s: &mut Scene, seconds: f32) -> World {

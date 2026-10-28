@@ -41,6 +41,15 @@ fn reads_vrm0_humanoid_and_spring_bones_and_drops_bad_references() {
     assert_eq!(s.gravity_dir, [0.0, -1.0, 0.0]);
     assert_eq!(m.controls, vec![1], "the PC_controls list keeps real nodes only");
     assert!(load("tri.glb", &glb(false, 2)).unwrap().controls.is_empty(), "no extension, no list");
+    // The pose-slider list keeps what is well formed and drops the rest.
+    assert_eq!(m.control_bones.len(), 1);
+    assert_eq!((m.control_bones[0].node, m.control_bones[0].order), (1, 2));
+    assert_eq!(m.pose_controls.len(), 1, "a nameless slider and one with a bad range are dropped");
+    let c = &m.pose_controls[0];
+    assert_eq!((c.name.as_str(), c.label.as_str(), c.group.as_str(), c.min, c.max), ("Bend", "Bend it", "Hand/Left", -1.0, 1.0));
+    assert_eq!(c.rot.len(), 1, "joints that do not exist or have short angles are dropped");
+    assert_eq!((c.rot[0].node, c.rot[0].deg), (1, [0.0, 0.0, 45.0]));
+    assert_eq!(c.links, vec![("Other".to_string(), 0.5)]);
 }
 
 #[test]

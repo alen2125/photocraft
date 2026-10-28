@@ -41,6 +41,8 @@ fn model(format: ModelFormat) -> Arc<ModelData> {
         collider_groups: vec![],
         controls: vec![],
         joint_limits: vec![],
+        control_bones: vec![],
+        pose_controls: vec![],
     })
 }
 

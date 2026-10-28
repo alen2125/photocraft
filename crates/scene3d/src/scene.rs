@@ -239,6 +239,9 @@ impl Default for PoseBone {
 pub struct Pose {
     pub name: String,
     pub bones: Vec<PoseBone>,
+    /// The pose sliders' values when it was saved.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub controls: Vec<crate::pose_control::ControlValue>,
 }
 
 /// Models loaded in memory, by asset id. Not part of the scene file.
@@ -290,8 +293,16 @@ pub struct Node {
     pub joint: Option<crate::JointLimit>,
     /// A bone frozen at this world position: moving the bones above it turns the limb to keep it
     /// there (see [`crate::enforce_holds`]).
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "no_anchor")]
     pub hold: Option<[f32; 3]>,
+    /// A bone whose orientation is frozen: this world rotation (`[x, y, z, w]`) is kept while the
+    /// bones above it move or turn. Independent of [`Node::hold`], like VaM's separate position and
+    /// rotation controls.
+    #[serde(skip_serializing_if = "no_anchor")]
+    pub hold_rot: Option<[f32; 4]>,
+    /// For a node of an imported model: the model's asset id and the node's index in the file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<(u32, u32)>,
 }
 
 fn is_true(b: &bool) -> bool {
@@ -302,9 +313,15 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
+/// An anchor that is missing or not made of finite numbers is not saved (JSON has no NaN, and a
+/// scene with `null` in an anchor would not open).
+fn no_anchor<const N: usize>(a: &Option<[f32; N]>) -> bool {
+    a.is_none_or(|v| !v.iter().all(|c| c.is_finite()))
+}
+
 impl Default for Node {
     fn default() -> Self {
-        Self { id: 0, name: String::new(), parent: None, visible: true, transform: Transform::default(), kind: NodeKind::Empty, rest: None, limits: None, link: None, pinned: true, humanoid: None, minor: false, joint: None, hold: None }
+        Self { id: 0, name: String::new(), parent: None, visible: true, transform: Transform::default(), kind: NodeKind::Empty, rest: None, limits: None, link: None, pinned: true, humanoid: None, minor: false, joint: None, hold: None, hold_rot: None, source: None }
     }
 }
 
@@ -348,6 +365,9 @@ pub struct Scene {
     pub ambient: [f32; 3],
     pub assets: Vec<Asset>,
     pub poses: Vec<Pose>,
+    /// Values of the pose sliders that are not at 0.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub controls: Vec<crate::pose_control::ControlValue>,
     next_id: NodeId,
     #[serde(skip)]
     pub(crate) models: ModelCache,
@@ -355,7 +375,7 @@ pub struct Scene {
 
 impl Default for Scene {
     fn default() -> Self {
-        Self { version: FORMAT_VERSION, nodes: Vec::new(), camera: Camera::default(), background: [0.18, 0.19, 0.22], ambient: [0.18, 0.18, 0.2], assets: Vec::new(), poses: Vec::new(), next_id: 1, models: ModelCache::default() }
+        Self { version: FORMAT_VERSION, nodes: Vec::new(), camera: Camera::default(), background: [0.18, 0.19, 0.22], ambient: [0.18, 0.18, 0.2], assets: Vec::new(), poses: Vec::new(), controls: Vec::new(), next_id: 1, models: ModelCache::default() }
     }
 }
 

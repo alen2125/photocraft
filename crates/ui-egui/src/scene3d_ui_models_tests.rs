@@ -160,12 +160,75 @@ fn the_inspector_shows_a_bones_three_modes_and_its_anatomical_limit() {
     app.scene3d.scene.node_mut(spine).unwrap().joint = Some(photocraft_scene3d::JointLimit::default());
     // Holding it records where it is; releasing clears that.
     app.scene3d.scene.set_hold(spine, true).unwrap();
-    assert!(app.scene3d.scene.node(spine).unwrap().hold.is_some());
+    app.scene3d.scene.set_hold_rotation(spine, true).unwrap();
+    assert!(app.scene3d.scene.node(spine).unwrap().hold.is_some() && app.scene3d.scene.node(spine).unwrap().hold_rot.is_some());
     for _ in 0..3 {
         let mut out = ctx.run_ui(Default::default(), |ui| crate::scene3d_ui::show(&mut app, ui.ctx()));
         out.textures_delta.clear();
     }
     assert!(app.scene3d.status.is_empty(), "{}", app.scene3d.status);
     app.scene3d.scene.set_hold(spine, false).unwrap();
-    assert!(app.scene3d.scene.node(spine).unwrap().hold.is_none());
+    app.scene3d.scene.set_hold_rotation(spine, false).unwrap();
+    assert!(app.scene3d.scene.node(spine).unwrap().hold.is_none() && app.scene3d.scene.node(spine).unwrap().hold_rot.is_none());
+}
+
+#[test]
+fn the_pose_sliders_panel_lists_a_models_sliders_and_moving_one_poses_the_bone() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+    app.run("file.new", serde_json::json!({"width": 120, "height": 90})).unwrap();
+    let ctx = egui::Context::default();
+    crate::menus::invoke(&mut app, &ctx, "ui.scene3d.open", serde_json::json!({})).unwrap();
+    app.scene3d.import_model("hero.vrm", &skinned_triangle_glb(true, 2)).unwrap();
+    let asset = app.scene3d.scene.assets[0].id;
+    assert_eq!(app.scene3d.scene.model(asset).unwrap().pose_controls.len(), 1);
+    let spine = app.scene3d.scene.nodes.iter().find(|n| n.name == "spine").unwrap().id;
+    app.scene3d.control_filter = "bend".into();
+    for _ in 0..3 {
+        let mut out = ctx.run_ui(Default::default(), |ui| crate::scene3d_ui::show(&mut app, ui.ctx()));
+        out.textures_delta.clear();
+    }
+    assert!(app.scene3d.status.is_empty(), "{}", app.scene3d.status);
+    let before = app.scene3d.scene.node(spine).unwrap().transform.rotation;
+    app.scene3d.scene.set_control(asset, "Bend", 1.0).unwrap();
+    assert_ne!(app.scene3d.scene.node(spine).unwrap().transform.rotation, before);
+    // A saved pose remembers the slider; resetting the pose puts both back.
+    let i = app.scene3d.scene.capture_pose("bent");
+    app.scene3d.scene.reset_pose();
+    assert_eq!(app.scene3d.scene.node(spine).unwrap().transform.rotation, before);
+    assert_eq!(app.scene3d.scene.control_value(asset, "Bend"), 0.0);
+    app.scene3d.scene.apply_pose(i).unwrap();
+    assert_eq!(app.scene3d.scene.control_value(asset, "Bend"), 1.0);
+}
+
+#[test]
+fn a_pose_slider_changes_the_picture_of_the_real_figure_fresh_from_import_and_from_an_old_scene() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../samples/vam_base_female.vrm");
+    let Ok(bytes) = std::fs::read(&path) else { return };
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+    app.run("file.new", serde_json::json!({"width": 200, "height": 200})).unwrap();
+    let ctx = egui::Context::default();
+    crate::menus::invoke(&mut app, &ctx, "ui.scene3d.open", serde_json::json!({})).unwrap();
+    app.scene3d.import_model("vam_base_female.vrm", &bytes).unwrap();
+    let asset = app.scene3d.scene.assets[0].id;
+    // Look at the left hand from close by.
+    let hand = app.scene3d.scene.nodes.iter().find(|n| n.name == "lHand").unwrap().id;
+    let at = app.scene3d.scene.world_position(hand).unwrap();
+    app.scene3d.scene.camera.target = at.to_array();
+    app.scene3d.scene.camera.position = (at + Vec3::new(0.0, 0.5, 0.6)).to_array();
+    let shot = |scene: &photocraft_scene3d::Scene| photocraft_render3d::render(scene, &photocraft_render3d::RenderOptions { ssaa: 1, ..photocraft_render3d::RenderOptions::new(160, 160) }).unwrap().rgba;
+    let rest = shot(&app.scene3d.scene);
+    app.scene3d.scene.set_control(asset, "CTRLlHandFist", 1.0).unwrap();
+    let fist = shot(&app.scene3d.scene);
+    let changed = rest.iter().zip(&fist).filter(|(a, b)| a != b).count();
+    assert!(changed > 500, "a fist looks different from an open hand: {changed} bytes changed");
+    // The same through a scene file written before nodes remembered their model.
+    let mut old = app.scene3d.scene.clone();
+    old.reset_pose();
+    for n in &mut old.nodes {
+        n.source = None;
+    }
+    let mut old = photocraft_scene3d::Scene::from_json(&old.to_json().unwrap()).unwrap();
+    old.attach_model(asset, app.scene3d.scene.model(asset).unwrap().clone()).unwrap();
+    old.set_control(asset, "CTRLlHandFist", 1.0).unwrap();
+    assert_eq!(shot(&old), fist, "the reopened scene poses the same way");
 }

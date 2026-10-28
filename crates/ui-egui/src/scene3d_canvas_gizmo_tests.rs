@@ -220,3 +220,28 @@ fn undo_with_nothing_to_undo_is_harmless_and_deleted_selections_are_dropped() {
     assert!(app.scene3d.scene.node(sphere).is_none() && app.scene3d.selected.is_none());
     assert!(app.scene3d.scene.node(id).is_some());
 }
+
+#[test]
+fn with_arrows_and_rings_together_an_arrow_moves_and_a_ring_turns() {
+    let mut app = app();
+    let id = cube_scene(&mut app);
+    assert_eq!(app.scene3d.gizmo_mode, GizmoMode::Both, "the arrows and rings come first");
+    let g = gizmo_for(&app.scene3d).unwrap();
+    // A ring point between two arrows: a quarter turn about Z.
+    let k = std::f32::consts::FRAC_1_SQRT_2 * g.size;
+    drag(&mut app, g.origin + Vec3::new(k, k, 0.0), g.origin + Vec3::new(-k, k, 0.0));
+    let t = app.scene3d.scene.node(id).unwrap().transform.clone();
+    assert!((t.rotation[2] - 90.0).abs() < 8.0, "turned about Z: {:?}", t.rotation);
+    assert!(t.translation.iter().all(|c| c.abs() < 0.02), "and did not move: {:?}", t.translation);
+    // The same gizmo's arrow moves it without turning it any more.
+    app.scene3d.scene.node_mut(id).unwrap().transform.rotation = [0.0; 3];
+    let g = gizmo_for(&app.scene3d).unwrap();
+    drag(&mut app, g.origin + Vec3::Y * g.size * 0.6, g.origin + Vec3::Y * g.size * 1.1);
+    let t = app.scene3d.scene.node(id).unwrap().transform.clone();
+    assert!(t.translation[1] > 0.1 && t.rotation.iter().all(|c| c.abs() < 1.0), "moved up, not turned: {t:?}");
+    // The key Q brings the combined mode back after W / E / R.
+    let ctx = egui::Context::default();
+    app.scene3d.gizmo_mode = GizmoMode::Scale;
+    assert!(key(&ctx, &mut app, egui::Key::Q, NONE));
+    assert_eq!(app.scene3d.gizmo_mode, GizmoMode::Both);
+}

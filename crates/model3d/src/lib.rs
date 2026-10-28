@@ -144,6 +144,35 @@ pub struct JointLimitData {
     pub swing: [f32; 2],
 }
 
+/// A joint some slider turns: its own axes (`frame`, a quaternion `[x, y, z, w]` in the file's
+/// space) and the order its three turns are applied in.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ControlBoneData {
+    pub node: usize,
+    pub frame: [f32; 4],
+    pub order: u8,
+}
+
+/// How far a slider at 1 turns one joint, in degrees about each of the joint's own axes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ControlRot {
+    pub node: usize,
+    pub deg: [f32; 3],
+}
+
+/// A pose slider (the file's `PC_pose_controls` extension): joint turns, plus links that add the
+/// slider's value to other sliders.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct PoseControlData {
+    pub name: String,
+    pub label: String,
+    pub group: String,
+    pub min: f32,
+    pub max: f32,
+    pub rot: Vec<ControlRot>,
+    pub links: Vec<(String, f32)>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ModelData {
     pub name: String,
@@ -162,6 +191,8 @@ pub struct ModelData {
     /// (fingers, face, tongue…) are driven by sliders and poses; empty means every joint counts.
     pub controls: Vec<usize>,
     pub joint_limits: Vec<JointLimitData>,
+    pub control_bones: Vec<ControlBoneData>,
+    pub pose_controls: Vec<PoseControlData>,
 }
 
 impl ModelData {

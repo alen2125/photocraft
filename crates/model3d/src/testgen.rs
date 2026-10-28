@@ -25,7 +25,10 @@ pub fn skinned_triangle_glb(vrm0: bool, last_index: u16) -> Vec<u8> {
         }
     }
     let ext = if vrm0 {
-        r#","extensionsUsed":["VRM","PC_controls"],"extensions":{"PC_controls":{"nodes":[1,99,"x"]},"VRM":{"humanoid":{"humanBones":[{"bone":"hips","node":0},{"bone":"spine","node":1},{"bone":"bad","node":99}]},
+        r#","extensionsUsed":["VRM","PC_controls","PC_pose_controls"],"extensions":{"PC_controls":{"nodes":[1,99,"x"]},
+        "PC_pose_controls":{"bones":[{"node":1,"frame":[0,0,0,1],"order":2},{"node":42,"frame":[0,0,0,1]},{"node":0,"frame":[0,0]}],
+         "controls":[{"name":"Bend","label":"Bend it","group":"Hand/Left","min":-1,"max":1,"rot":[{"node":1,"deg":[0,0,45]},{"node":77,"deg":[1,1,1]},{"node":0,"deg":[1]}],"links":[{"to":"Other","mult":0.5},{"to":3,"mult":1}]},
+          {"name":"","min":0,"max":1},{"name":"Bad","min":"x","max":1}]},"VRM":{"humanoid":{"humanBones":[{"bone":"hips","node":0},{"bone":"spine","node":1},{"bone":"bad","node":99}]},
         "secondaryAnimation":{"colliderGroups":[{"node":0,"colliders":[{"offset":{"x":0,"y":0.1,"z":0},"radius":0.05}]}],
         "boneGroups":[{"comment":"hair","stiffiness":0.5,"gravityPower":0.1,"dragForce":0.4,"hitRadius":0.02,"gravityDir":{"x":0,"y":-1,"z":0},"bones":[1,77],"colliderGroups":[0,5]}]}}}"#
     } else {

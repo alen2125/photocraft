@@ -4659,3 +4659,24 @@ shape	Appearance	Оформление
 	The bone moves with the bone above it.	Кость движется вместе с костью выше.
 	The bone stays at this point while you move the bones above it; the limb turns to keep it there.	Кость остаётся в этой точке, пока вы двигаете кости выше; конечность поворачивается, чтобы удержать её.
 	A bone set to Hold stays put while you move the bones above it.	Кость в режиме «Заморозить» остаётся на месте, пока вы двигаете кости выше.
+	Pose sliders	Слайдеры позы
+	Reset sliders	Сбросить слайдеры
+	Filter…	Фильтр…
+	The bone turns with the bone above it.	Кость поворачивается вместе с костью выше.
+	The bone keeps the way it faces while the bones above it move or turn.	Кость сохраняет направление, пока кости выше двигаются или поворачиваются.
+	The bone stays at this point in space while you move the bones above it, and does not fall in Play.	Кость остаётся в этой точке пространства, пока вы двигаете кости выше, и не падает при «Пуск».
+	The bone follows the bones above it, and hangs from them in Play.	Кость следует за костями выше и при «Пуск» висит на них.
+	The bone keeps the way it faces while the bones above it move or turn, and does not spin in Play.	Кость сохраняет направление, пока кости выше двигаются или поворачиваются, и не вращается при «Пуск».
+	The bone turns with the bones above it, and swings freely in Play.	Кость поворачивается вместе с костями выше и при «Пуск» качается свободно.
+	On (stays put)	Вкл (стоит на месте)
+	Off: it falls when you press Play.	Выкл: при «Пуск» падает.
+	A bone whose Position or Orientation is On stays put while you move the bones above it and in Play.	Кость с включёнными положением или ориентацией остаётся на месте, пока вы двигаете кости выше, и при «Пуск».
+	All On	Включить всё
+	All Off	Выключить всё
+	Feet and head only	Только ступни и голова
+	Switch everything Off except the feet and the head.	Всё выключить, кроме ступней и головы.
+	Everything that is Off falls and collides; what is On stays put; hair swings.	Всё, что выключено, падает и сталкивается; включённое остаётся на месте; волосы качаются.
+	Gravity	Гравитация
+	Damping	Затухание
+	Nothing to move: switch a bone or an object Off, or use a model with hair.	Нечему двигаться: выключите кость или предмет либо возьмите модель с волосами.
+	Move + Turn	Двигать и вращать

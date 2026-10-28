@@ -11,6 +11,8 @@ pub enum GizmoMode {
     Translate,
     Rotate,
     Scale,
+    /// Arrows and rings at once, as in VaM: take an arrow to move, a ring to turn.
+    Both,
 }
 
 /// A handle that can be grabbed.
@@ -70,6 +72,9 @@ const EPS: f32 = 1e-6;
 const GRAB: f32 = 0.24;
 /// Scale handles sit at the tips of the axes: grabbed from this fraction of the way out.
 const TIP: f32 = 0.55;
+/// With arrows and rings together the arrows are grabbed from this fraction of the way out, so
+/// the middle of the gizmo is left to the rings and the selection.
+const ARROW_FROM: f32 = 0.3;
 
 fn ok(v: Vec3) -> bool {
     v.is_finite()
@@ -115,10 +120,39 @@ impl Gizmo {
         self.origin + self.axes.get(axis).copied().unwrap_or(Vec3::X) * self.size
     }
 
+    /// With arrows and rings together: which of the two the ray grabs, and which handle of it. The
+    /// nearest to the ray wins; where an arrow's tip meets a ring, the arrow.
+    pub fn pick_both(&self, ray: Ray) -> Option<(GizmoMode, Handle)> {
+        if !self.is_valid() || !ok(ray.origin) || !ok(ray.dir) {
+            return None;
+        }
+        let reach = self.size * GRAB;
+        let mut best: Option<(f32, GizmoMode, Handle)> = None;
+        let mut offer = |d: f32, m: GizmoMode, h: Handle| {
+            if d <= reach && best.is_none_or(|(bd, _, _)| d < bd) {
+                best = Some((d, m, h));
+            }
+        };
+        for axis in 0..3 {
+            let a = self.origin + self.axes[axis] * (self.size * ARROW_FROM);
+            let (d, _) = segment_ray_distance(a, self.tip(axis), ray);
+            offer(d, GizmoMode::Translate, Handle::Axis(axis));
+        }
+        for axis in 0..3 {
+            if let Some(hit) = ray_plane(ray, self.origin, self.axes[axis]) {
+                offer((hit.distance(self.origin) - self.size).abs(), GizmoMode::Rotate, Handle::Axis(axis));
+            }
+        }
+        best.map(|(_, m, h)| (m, h))
+    }
+
     /// The handle the ray grabs, if any. Of several, the nearest to the ray wins.
     pub fn pick(&self, mode: GizmoMode, ray: Ray) -> Option<Handle> {
         if !self.is_valid() || !ok(ray.origin) || !ok(ray.dir) {
             return None;
+        }
+        if mode == GizmoMode::Both {
+            return self.pick_both(ray).map(|(_, h)| h);
         }
         let reach = self.size * GRAB;
         let mut best: Option<(f32, Handle)> = None;
@@ -148,6 +182,7 @@ impl Gizmo {
                     }
                 }
             }
+            GizmoMode::Both => {}
         }
         best.map(|(_, h)| h)
     }

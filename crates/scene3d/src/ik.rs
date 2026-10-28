@@ -20,12 +20,27 @@ fn euler_quat(e: [f32; 3]) -> Quat {
     if q.is_finite() { q } else { Quat::IDENTITY }
 }
 
-fn rotation_of(m: &Mat4) -> Quat {
+pub(crate) fn rotation_of(m: &Mat4) -> Quat {
     let (_, r, _) = m.to_scale_rotation_translation();
     if r.is_finite() && r.length_squared() > 1e-12 { r.normalize() } else { Quat::IDENTITY }
 }
 
-/// Sets the joint's world rotation, converting to its local Euler angles and applying limits.
+/// Sets a node's world rotation exactly as given (its position stays), with no limits applied.
+/// For a simulation that enforces its own limits and must not be second-guessed.
+pub fn set_world_rotation_unlimited(scene: &mut Scene, id: NodeId, world_rotation: Quat) -> Result<(), SceneError> {
+    let parent = scene.node(id).ok_or(SceneError::NoSuchNode(id))?.parent;
+    let parent_rot = parent.and_then(|p| scene.world_matrix(p)).map_or(Quat::IDENTITY, |m| rotation_of(&m));
+    let local = (parent_rot.inverse() * world_rotation).normalize();
+    if !local.is_finite() {
+        return Ok(());
+    }
+    let (x, y, z) = local.to_euler(EulerRot::XYZ);
+    if let Some(n) = scene.node_mut(id) {
+        n.transform.rotation = [x.to_degrees(), y.to_degrees(), z.to_degrees()];
+    }
+    Ok(())
+}
+
 /// Sets a node's world rotation (its position stays), applying the node's rotation limits.
 pub fn set_world_rotation(scene: &mut Scene, id: NodeId, world_rotation: Quat) -> Result<(), SceneError> {
     let parent = scene.node(id).ok_or(SceneError::NoSuchNode(id))?.parent;

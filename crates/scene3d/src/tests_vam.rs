@@ -112,3 +112,35 @@ fn an_elbow_bends_forward_and_a_shoulder_cannot_swing_the_arm_behind_the_back() 
         assert!(dir.angle_between(rest_dir).to_degrees() < 105.0, "{axis:?} {deg}: {}", dir.angle_between(rest_dir).to_degrees());
     }
 }
+
+fn y_of(s: &Scene, name: &str) -> f32 {
+    pos(s, bone(s, name)).y
+}
+
+#[test]
+fn the_figures_pose_sliders_curl_the_fingers_towards_the_palm_and_agree_with_each_other() {
+    for who in ["female", "male"] {
+        let Some(mut s) = load(who) else { return };
+        let asset = s.assets[0].id;
+        let model = s.model(asset).unwrap().clone();
+        assert!(model.pose_controls.len() >= 40, "{who}: {} sliders", model.pose_controls.len());
+        let rest = y_of(&s, "lIndex3");
+        let hand_y = y_of(&s, "lHand");
+        s.set_control(asset, "CTRLlIndexBend", 1.0).unwrap();
+        // Palms face down in the T-pose, so a curl takes the fingertip down and towards the wrist.
+        let (curled_y, wrist) = (y_of(&s, "lIndex3"), pos(&s, bone(&s, "lHand")));
+        assert!(curled_y < rest - 0.02, "{who}: the index finger curled down: {rest} -> {curled_y}");
+        assert!((y_of(&s, "lHand") - hand_y).abs() < 1e-5 && pos(&s, bone(&s, "lHand")).distance(wrist) < 1e-5, "the hand did not move");
+        // Other fingers are untouched, and the fingertip bone keeps its distance to its parent.
+        assert!((y_of(&s, "lMid3") - hand_y).abs() < 0.05);
+        s.set_control(asset, "CTRLlIndexBend", -1.0).unwrap();
+        assert!(y_of(&s, "lIndex3") > curled_y + 0.02, "{who}: the other way bends it back");
+        s.reset_controls(asset).unwrap();
+        assert!((y_of(&s, "lIndex3") - rest).abs() < 1e-4);
+        // A fist is every finger at once, through the link sliders.
+        s.set_control(asset, "CTRLlHandFist", 1.0).unwrap();
+        for f in ["lIndex3", "lMid3", "lRing3", "lPinky3"] {
+            assert!(y_of(&s, f) < hand_y - 0.02, "{who}: {f} is curled in the fist");
+        }
+    }
+}

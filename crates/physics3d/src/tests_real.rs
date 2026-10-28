@@ -8,6 +8,7 @@ use photocraft_scene3d::model3d;
 use photocraft_scene3d::{NodeId, NodeKind, Primitive, Scene, Transform};
 
 use super::*;
+use crate::testutil::{release, stand};
 
 fn load() -> Option<Scene> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../samples/8590256991748008892.vrm");
@@ -15,6 +16,7 @@ fn load() -> Option<Scene> {
     let mut scene = Scene::default();
     scene.add_primitive(Primitive::Plane { size: [20.0, 20.0] }, Transform::default()).unwrap();
     scene.add_model(Arc::new(model3d::load("hero.vrm", &bytes).unwrap()), None).unwrap();
+    stand(&mut scene);
     Some(scene)
 }
 
@@ -48,7 +50,7 @@ fn the_real_characters_hair_swings_and_stays_finite() {
 fn releasing_a_real_arm_lets_it_hang_without_stretching_or_going_through_the_body() {
     let Some(mut scene) = load() else { return };
     let upper = named(&scene, "leftUpperArm");
-    scene.node_mut(upper).unwrap().pinned = false;
+    release(&mut scene, upper);
     let (lower, hand) = (named(&scene, "leftLowerArm"), named(&scene, "leftHand"));
     let (hips, torso) = (pos(&scene, named(&scene, "hips")), pos(&scene, named(&scene, "chest")));
     let len = pos(&scene, hand).distance(pos(&scene, lower));

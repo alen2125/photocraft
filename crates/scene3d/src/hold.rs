@@ -2,9 +2,9 @@
 //! bones between them turn to keep it there as far as bone lengths and joint limits allow (it
 //! ends as near as the body can reach, rather than breaking anything).
 
-use glam::Vec3;
+use glam::{Quat, Vec3};
 
-use crate::ik::solve_chain;
+use crate::ik::{rotation_of, set_world_rotation, solve_chain};
 use crate::scene::{NodeId, NodeKind, Scene, SceneError};
 
 /// How many bones up from a held one are walked looking for the one being dragged.
@@ -24,6 +24,43 @@ impl Scene {
         node.hold = if hold && matches!(node.kind, NodeKind::Bone) { at.map(|p| p.to_array()) } else { None };
         Ok(())
     }
+
+    /// Freezes a bone's orientation as it is now (`true`) or lets it turn with its parent again.
+    pub fn set_hold_rotation(&mut self, id: NodeId, hold: bool) -> Result<(), SceneError> {
+        let q = self.world_matrix(id).map(|m| rotation_of(&m));
+        let node = self.node_mut(id).ok_or(SceneError::NoSuchNode(id))?;
+        node.hold_rot = if hold && matches!(node.kind, NodeKind::Bone) { q.map(|q| q.to_array()) } else { None };
+        Ok(())
+    }
+
+    /// Switches the hand controls (bones that are not minor) of the scene On or Off in one go:
+    /// `None` puts every one On (position and orientation); `Some(names)` puts On only those whose
+    /// humanoid name or node name is in the list, and every other one Off.
+    pub fn set_all_holds(&mut self, only: Option<&[&str]>) {
+        let ids: Vec<(NodeId, bool)> = self
+            .nodes
+            .iter()
+            .filter(|n| matches!(n.kind, NodeKind::Bone) && !n.minor)
+            .map(|n| (n.id, only.is_none_or(|names| names.iter().any(|w| n.humanoid.as_deref() == Some(*w) || n.name == *w))))
+            .collect();
+        for (id, on) in ids {
+            let _ = self.set_hold(id, on);
+            let _ = self.set_hold_rotation(id, on);
+        }
+    }
+
+    /// Whether `ancestor` is somewhere above `id` (bounded, so a loop cannot hang it).
+    fn is_above(&self, ancestor: NodeId, id: NodeId) -> bool {
+        let mut cur = self.node(id).and_then(|n| n.parent);
+        for _ in 0..MAX_CHAIN {
+            match cur {
+                Some(p) if p == ancestor => return true,
+                Some(p) => cur = self.node(p).and_then(|n| n.parent),
+                None => return false,
+            }
+        }
+        false
+    }
 }
 
 /// Call after `dragged` was moved (`turned` false) or turned by the user (`turned` true). The bone
@@ -37,6 +74,10 @@ pub fn enforce_holds(scene: &mut Scene, dragged: NodeId, turned: bool, iteration
     }
     if scene.node(dragged).is_some_and(|n| n.hold.is_some()) {
         scene.set_hold(dragged, true)?;
+    }
+    // A bone the user turned keeps the angle they gave it: that is its new frozen orientation.
+    if turned && scene.node(dragged).is_some_and(|n| n.hold_rot.is_some()) {
+        scene.set_hold_rotation(dragged, true)?;
     }
     let held: Vec<(NodeId, Vec3)> = scene
         .nodes
@@ -74,6 +115,20 @@ pub fn enforce_holds(scene: &mut Scene, dragged: NodeId, turned: bool, iteration
                 solve_chain(scene, *id, *anchor, &chain, iterations)?;
             }
         }
+    }
+    // Frozen orientations last: pulling a limb into place turned its joints, and the held bones
+    // below (and the dragged bone itself, when it was only moved) put their orientation back.
+    let frozen: Vec<(NodeId, Quat)> = scene
+        .nodes
+        .iter()
+        .filter(|n| matches!(n.kind, NodeKind::Bone))
+        .filter(|n| n.id != dragged || !turned)
+        .filter(|n| n.id == dragged || scene.is_above(dragged, n.id))
+        .filter_map(|n| n.hold_rot.map(|q| (n.id, Quat::from_xyzw(q[0], q[1], q[2], q[3]))))
+        .filter(|(_, q)| q.is_finite() && q.length_squared() > 1e-12)
+        .collect();
+    for (id, q) in frozen {
+        set_world_rotation(scene, id, q.normalize())?;
     }
     Ok(())
 }

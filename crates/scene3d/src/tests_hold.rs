@@ -33,6 +33,8 @@ fn body() -> (Scene, [NodeId; 5]) {
         collider_groups: vec![],
         controls: vec![],
         joint_limits: vec![],
+        control_bones: vec![],
+        pose_controls: vec![],
     };
     let mut s = Scene::default();
     s.add_model(Arc::new(m), None).unwrap();
@@ -133,4 +135,79 @@ fn turning_a_bone_by_hand_is_respected_but_the_hold_still_pulls_the_rest_of_the_
     assert_eq!(s.node(spine).unwrap().transform.rotation, turned, "the bone the user turned keeps their angle");
     assert!(at(&s, hand).distance(anchor) < 0.15, "{:?} vs {anchor:?}", at(&s, hand));
     assert!(s.node(shoulder).unwrap().transform.rotation != [0.0; 3], "the limb below turned to compensate");
+}
+
+fn world_rot(s: &Scene, id: NodeId) -> glam::Quat {
+    s.world_matrix(id).unwrap().to_scale_rotation_translation().1
+}
+
+#[test]
+fn a_frozen_orientation_survives_the_limb_being_pulled_about_and_is_independent_of_the_position_hold() {
+    let (mut s, [hips, _, _, elbow, hand]) = body();
+    s.set_hold_rotation(hand, true).unwrap();
+    assert!(s.node(hand).unwrap().hold.is_none(), "only the orientation is frozen");
+    let rot = world_rot(&s, hand);
+    // Bending the elbow by IK turns the hand with it, unless its orientation is frozen.
+    let target = at(&s, elbow) + Vec3::new(0.0, 0.6, 0.0);
+    solve_ik(&mut s, elbow, target, 2, 32).unwrap();
+    assert!(world_rot(&s, hand).angle_between(rot) > 0.1, "without the freeze the hand would have turned");
+    enforce_holds(&mut s, elbow, false, 32).unwrap();
+    assert!(world_rot(&s, hand).angle_between(rot) < 1e-3, "frozen: {:?}", world_rot(&s, hand));
+    // Its position was free the whole time.
+    assert!(s.node(hand).unwrap().hold.is_none());
+    // Moving the hips changes nothing about it either.
+    translate_to(&mut s, hips, Vec3::new(0.3, 0.0, 0.0)).unwrap();
+    enforce_holds(&mut s, hips, false, 32).unwrap();
+    assert!(world_rot(&s, hand).angle_between(rot) < 1e-3);
+}
+
+#[test]
+fn dragging_a_bone_with_a_frozen_orientation_keeps_it_while_turning_it_by_hand_changes_it() {
+    let (mut s, [_, _, _, elbow, hand]) = body();
+    s.set_hold_rotation(hand, true).unwrap();
+    let rot = world_rot(&s, hand);
+    // The hand dragged to a new place by IK: it arrives with the orientation it had.
+    let target = at(&s, hand) + Vec3::new(-0.2, 0.5, 0.0);
+    solve_ik(&mut s, hand, target, 3, 32).unwrap();
+    enforce_holds(&mut s, hand, false, 32).unwrap();
+    assert!(world_rot(&s, hand).angle_between(rot) < 1e-3);
+    // Turned by hand it takes the new angle as the frozen one.
+    rotate_world(&mut s, hand, glam::Quat::from_rotation_z(0.5)).unwrap();
+    let turned = world_rot(&s, hand);
+    enforce_holds(&mut s, hand, true, 32).unwrap();
+    assert!(world_rot(&s, hand).angle_between(turned) < 1e-4);
+    assert!(glam::Quat::from_array(s.node(hand).unwrap().hold_rot.unwrap()).angle_between(turned) < 1e-4, "the anchor followed");
+    // Position and orientation freeze together, and release independently.
+    s.set_hold(hand, true).unwrap();
+    s.set_hold_rotation(hand, false).unwrap();
+    assert!(s.node(hand).unwrap().hold.is_some() && s.node(hand).unwrap().hold_rot.is_none());
+    // Only bones can be frozen; a hostile anchor is ignored.
+    let skin = s.nodes.iter().find(|n| n.name == "skin").unwrap().id;
+    s.set_hold_rotation(skin, true).unwrap();
+    assert!(s.node(skin).unwrap().hold_rot.is_none());
+    s.node_mut(hand).unwrap().hold_rot = Some([f32::NAN, 0.0, 0.0, 0.0]);
+    enforce_holds(&mut s, elbow, false, 8).unwrap();
+    assert!(at(&s, hand).is_finite());
+    let back = Scene::from_json(&s.to_json().unwrap()).unwrap();
+    assert_eq!(back.node(skin).unwrap().hold_rot, None);
+}
+
+#[test]
+fn all_on_all_off_and_only_some_switch_every_hand_control_at_once() {
+    let (mut s, [hips, spine, shoulder, elbow, hand]) = body();
+    let on = |s: &Scene, id: NodeId| s.node(id).unwrap().hold.is_some() && s.node(id).unwrap().hold_rot.is_some();
+    let off = |s: &Scene, id: NodeId| s.node(id).unwrap().hold.is_none() && s.node(id).unwrap().hold_rot.is_none();
+    s.set_all_holds(None);
+    assert!([hips, spine, shoulder, elbow, hand].iter().all(|&b| on(&s, b)));
+    s.set_all_holds(Some(&["hand", "hips"]));
+    assert!(on(&s, hand) && on(&s, hips) && [spine, shoulder, elbow].iter().all(|&b| off(&s, b)));
+    s.set_all_holds(Some(&[]));
+    assert!([hips, spine, shoulder, elbow, hand].iter().all(|&b| off(&s, b)));
+    // Minor joints are left alone; only controls are switched.
+    s.node_mut(spine).unwrap().minor = true;
+    s.set_all_holds(None);
+    assert!(off(&s, spine) && on(&s, hand));
+    // Something that is not a bone has nothing to hold.
+    let skin = s.nodes.iter().find(|n| n.name == "skin").unwrap().id;
+    assert!(s.node(skin).unwrap().hold.is_none());
 }

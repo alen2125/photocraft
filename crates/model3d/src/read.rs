@@ -141,6 +141,8 @@ pub fn load(name: &str, bytes: &[u8]) -> Result<ModelData, ModelError> {
         collider_groups: Vec::new(),
         controls: Vec::new(),
         joint_limits: Vec::new(),
+        control_bones: Vec::new(),
+        pose_controls: Vec::new(),
     };
     crate::vrm::read(&doc, &mut data);
     Ok(data)

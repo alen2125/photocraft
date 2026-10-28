@@ -1,6 +1,6 @@
 //! VRM 0.x and 1.0 extensions: humanoid bone map and spring-bone chains.
 
-use crate::{ColliderGroup, JointLimitData, ModelData, ModelFormat, SpringGroup};
+use crate::{ColliderGroup, ControlBoneData, ControlRot, JointLimitData, ModelData, ModelFormat, PoseControlData, SpringGroup};
 use gltf::json::Value;
 
 fn num(v: &Value, key: &str) -> f32 {
@@ -20,6 +20,9 @@ pub(crate) fn read(doc: &gltf::Document, data: &mut ModelData) {
     let count = data.nodes.len();
     if let Some(v) = doc.extension_value("PC_controls") {
         data.controls = v.get("nodes").and_then(Value::as_array).into_iter().flatten().filter_map(|n| index(n, count)).collect();
+    }
+    if let Some(v) = doc.extension_value("PC_pose_controls") {
+        read_pose_controls(v, data);
     }
     if let Some(v) = doc.extension_value("PC_limits") {
         for j in v.get("joints").and_then(Value::as_array).into_iter().flatten().take(count) {
@@ -63,6 +66,64 @@ pub(crate) fn read(doc: &gltf::Document, data: &mut ModelData) {
             }
         }
         read_springs_v0(v, data);
+    }
+}
+
+/// At most this many sliders, joint turns per slider and links per slider are read.
+const MAX_CONTROLS: usize = 512;
+const MAX_PER_CONTROL: usize = 256;
+
+fn floats<const N: usize>(v: Option<&Value>) -> Option<[f32; N]> {
+    let a = v?.as_array()?;
+    if a.len() != N {
+        return None;
+    }
+    let mut out = [0.0; N];
+    for (o, x) in out.iter_mut().zip(a) {
+        let f = x.as_f64()? as f32;
+        if !f.is_finite() {
+            return None;
+        }
+        *o = f;
+    }
+    Some(out)
+}
+
+fn read_pose_controls(v: &Value, data: &mut ModelData) {
+    let count = data.nodes.len();
+    for b in v.get("bones").and_then(Value::as_array).into_iter().flatten().take(count) {
+        let (Some(node), Some(frame)) = (b.get("node").and_then(|n| index(n, count)), floats::<4>(b.get("frame"))) else { continue };
+        let order = b.get("order").and_then(Value::as_u64).map_or(0, |o| o.min(5) as u8);
+        data.control_bones.push(ControlBoneData { node, frame, order });
+    }
+    for c in v.get("controls").and_then(Value::as_array).into_iter().flatten().take(MAX_CONTROLS) {
+        let Some(name) = c.get("name").and_then(Value::as_str).filter(|n| !n.is_empty()) else { continue };
+        let text = |k: &str| c.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+        let (Some(min), Some(max)) = (c.get("min").and_then(Value::as_f64).map(|f| f as f32), c.get("max").and_then(Value::as_f64).map(|f| f as f32)) else { continue };
+        if !min.is_finite() || !max.is_finite() {
+            continue;
+        }
+        let rot = c
+            .get("rot")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .take(MAX_PER_CONTROL)
+            .filter_map(|r| Some(ControlRot { node: index(r.get("node")?, count)?, deg: floats::<3>(r.get("deg"))? }))
+            .collect();
+        let links = c
+            .get("links")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .take(MAX_PER_CONTROL)
+            .filter_map(|l| {
+                let to = l.get("to")?.as_str()?.to_string();
+                let m = l.get("mult")?.as_f64()? as f32;
+                m.is_finite().then_some((to, m))
+            })
+            .collect();
+        data.pose_controls.push(PoseControlData { name: name.to_string(), label: if text("label").is_empty() { name.to_string() } else { text("label") }, group: text("group"), min, max, rot, links });
     }
 }
 
