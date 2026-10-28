@@ -353,6 +353,8 @@ fn node_inspector(ui: &mut egui::Ui, ed: &mut Scene3dEditor, id: NodeId) {
     let mut reparent: Option<Option<NodeId>> = None;
     // Some(None) = unlink, Some(Some(t)) = link to `t`; applied once the node borrow ends.
     let mut link_action: Option<Option<NodeId>> = None;
+    // Some(true) = freeze the bone where it is, Some(false) = release it.
+    let mut hold_action: Option<bool> = None;
     let Some(node) = ed.scene.node_mut(id) else { return };
     changed |= ui.text_edit_singleline(&mut node.name).changed();
     changed |= ui.checkbox(&mut node.visible, tl!("Visible")).changed();
@@ -375,11 +377,22 @@ fn node_inspector(ui: &mut egui::Ui, ed: &mut Scene3dEditor, id: NodeId) {
         changed |= vec3_row(ui, tl!("Scale"), &mut node.transform.scale, 0.01);
     });
     ui.separator();
-    if matches!(node.kind, NodeKind::Primitive { .. } | NodeKind::Bone) {
-        let pin = ui.checkbox(&mut node.pinned, tl!("Pinned (stays put)"));
-        changed |= pin.changed();
-        if matches!(node.kind, NodeKind::Bone) {
-            pin.on_hover_text(tl!("Unpinned, a bone lets go of its whole limb: it hangs from the joint above when you press Play."));
+    if matches!(node.kind, NodeKind::Primitive { .. }) {
+        changed |= ui.checkbox(&mut node.pinned, tl!("Pinned (stays put)")).changed();
+    }
+    if matches!(node.kind, NodeKind::Bone) {
+        // Follow: moves with its parent. Hold: frozen at a point. Free: hangs and swings when you press Play.
+        let before = if !node.pinned { 2 } else if node.hold.is_some() { 1 } else { 0 };
+        let mut mode = before;
+        ui.horizontal(|ui| {
+            ui.radio_value(&mut mode, 0, tl!("Follow parent")).on_hover_text(tl!("The bone moves with the bone above it."));
+            ui.radio_value(&mut mode, 1, tl!("Hold in place")).on_hover_text(tl!("The bone stays at this point while you move the bones above it; the limb turns to keep it there."));
+            ui.radio_value(&mut mode, 2, tl!("Hang free")).on_hover_text(tl!("Unpinned, a bone lets go of its whole limb: it hangs from the joint above when you press Play."));
+        });
+        if mode != before {
+            node.pinned = mode != 2;
+            hold_action = Some(mode == 1);
+            changed = true;
         }
     }
     match &mut node.kind {
@@ -398,6 +411,9 @@ fn node_inspector(ui: &mut egui::Ui, ed: &mut Scene3dEditor, id: NodeId) {
             changed |= ui.checkbox(&mut material.unlit, tl!("Unlit")).changed();
         }
         NodeKind::Bone => {
+            if let Some(j) = &mut node.joint {
+                changed |= ui.checkbox(&mut j.enabled, tl!("Anatomical limit")).on_hover_text(tl!("The joint stops where a body's joint would. Untick to move it past that.")).changed();
+            }
             let mut limited = node.limits.is_some();
             if ui.checkbox(&mut limited, tl!("Limit rotation")).changed() {
                 node.limits = limited.then(RotationLimits::default);
@@ -430,6 +446,11 @@ fn node_inspector(ui: &mut egui::Ui, ed: &mut Scene3dEditor, id: NodeId) {
                 changed |= ui.add(egui::Slider::new(angle, 5.0..=170.0).text(tl!("Cone angle"))).changed();
             }
         }
+    }
+    if let Some(hold) = hold_action
+        && let Err(e) = ed.scene.set_hold(id, hold)
+    {
+        ed.status = e.to_string();
     }
     if let Some(p) = reparent {
         match ed.scene.set_parent(id, p) {
@@ -597,7 +618,7 @@ pub(crate) fn drag_bone(ed: &mut Scene3dEditor, drag: BoneDrag, size: (u32, u32)
             }
         }
     };
-    if let Err(e) = result {
+    if let Err(e) = result.and_then(|()| photocraft_scene3d::enforce_holds(&mut ed.scene, drag.id, ed.pose_mode == PoseMode::Rotate, 12)) {
         ed.status = e.to_string();
     }
 }
@@ -686,6 +707,17 @@ fn side_panels(ui: &mut egui::Ui, ed: &mut Scene3dEditor) {
 fn pose_panel(ui: &mut egui::Ui, ed: &mut Scene3dEditor) {
     let mut changed = false;
     changed |= ui.checkbox(&mut ed.show_bones, tl!("Show skeleton")).changed();
+    // One switch for every joint that carries anatomical limits (the figure's own numbers).
+    let any = ed.scene.nodes.iter().any(|n| n.joint.is_some());
+    if any {
+        let mut on = ed.scene.nodes.iter().filter_map(|n| n.joint.as_ref()).all(|j| j.enabled);
+        if ui.checkbox(&mut on, tl!("Anatomical limits")).on_hover_text(tl!("Joints stop where a body's would. Untick to pose without limits.")).changed() {
+            for j in ed.scene.nodes.iter_mut().filter_map(|n| n.joint.as_mut()) {
+                j.enabled = on;
+            }
+            changed = true;
+        }
+    }
     ui.horizontal(|ui| {
         ui.radio_value(&mut ed.pose_mode, PoseMode::Ik, tl!("Move (IK)"));
         ui.radio_value(&mut ed.pose_mode, PoseMode::Rotate, tl!("Rotate"));
@@ -694,6 +726,7 @@ fn pose_panel(ui: &mut egui::Ui, ed: &mut Scene3dEditor) {
         ui.add(egui::Slider::new(&mut ed.ik_chain, 1..=8).text(tl!("IK chain")));
     }
     ui.weak(tl!("Drag a bone dot or a gizmo handle on the canvas. W / E / R: move, rotate, scale."));
+    ui.weak(tl!("A bone set to Hold stays put while you move the bones above it."));
     if ui.button(tl!("Reset pose")).clicked() {
         ed.scene.reset_pose();
         changed = true;

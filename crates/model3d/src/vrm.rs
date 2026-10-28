@@ -1,6 +1,6 @@
 //! VRM 0.x and 1.0 extensions: humanoid bone map and spring-bone chains.
 
-use crate::{ColliderGroup, ModelData, ModelFormat, SpringGroup};
+use crate::{ColliderGroup, JointLimitData, ModelData, ModelFormat, SpringGroup};
 use gltf::json::Value;
 
 fn num(v: &Value, key: &str) -> f32 {
@@ -20,6 +20,28 @@ pub(crate) fn read(doc: &gltf::Document, data: &mut ModelData) {
     let count = data.nodes.len();
     if let Some(v) = doc.extension_value("PC_controls") {
         data.controls = v.get("nodes").and_then(Value::as_array).into_iter().flatten().filter_map(|n| index(n, count)).collect();
+    }
+    if let Some(v) = doc.extension_value("PC_limits") {
+        for j in v.get("joints").and_then(Value::as_array).into_iter().flatten().take(count) {
+            let Some(node) = j.get("node").and_then(|n| index(n, count)) else { continue };
+            let pair = |key: &str, fallback: [f32; 2]| -> [f32; 2] {
+                match j.get(key).and_then(Value::as_array).map(|a| a.iter().map(|x| x.as_f64().map(|f| f as f32)).collect::<Vec<_>>()) {
+                    Some(a) => match a.as_slice() {
+                        [Some(x), Some(y)] if x.is_finite() && y.is_finite() => [*x, *y],
+                        _ => fallback,
+                    },
+                    None => fallback,
+                }
+            };
+            let frame = match j.get("frame").and_then(Value::as_array).map(|a| a.iter().map(|x| x.as_f64().map(|f| f as f32)).collect::<Vec<_>>()) {
+                Some(a) => match a.as_slice() {
+                    [Some(x), Some(y), Some(z), Some(w)] if [x, y, z, w].iter().all(|c| c.is_finite()) => [*x, *y, *z, *w],
+                    _ => [0.0, 0.0, 0.0, 1.0],
+                },
+                None => [0.0, 0.0, 0.0, 1.0],
+            };
+            data.joint_limits.push(JointLimitData { node, frame, twist: pair("twist", [-180.0, 180.0]), swing: pair("swing", [180.0, 180.0]) });
+        }
     }
     if let Some(v) = doc.extension_value("VRMC_vrm") {
         data.format = ModelFormat::Vrm1;

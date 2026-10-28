@@ -368,7 +368,7 @@ fn apply_gizmo(ed: &mut Scene3dEditor, g: &GizmoDrag, ray: Ray) {
             Ok(())
         }
     };
-    if let Err(e) = result {
+    if let Err(e) = result.and_then(|()| photocraft_scene3d::enforce_holds(&mut ed.scene, g.id, matches!(delta, Delta::Rotate(_)), 12)) {
         ed.status = e.to_string();
     }
     ed.touch();

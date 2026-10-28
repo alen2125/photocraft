@@ -40,6 +40,7 @@ fn model(format: ModelFormat) -> Arc<ModelData> {
         springs: vec![],
         collider_groups: vec![],
         controls: vec![],
+        joint_limits: vec![],
     })
 }
 

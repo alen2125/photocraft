@@ -134,6 +134,16 @@ pub struct ColliderGroup {
     pub spheres: Vec<([f32; 3], f32)>,
 }
 
+/// Swing-twist limits of one joint node (the file's `PC_limits` extension; degrees).
+#[derive(Clone, Debug, PartialEq)]
+pub struct JointLimitData {
+    pub node: usize,
+    /// The joint frame as a quaternion `[x, y, z, w]` in the node's rest axes.
+    pub frame: [f32; 4],
+    pub twist: [f32; 2],
+    pub swing: [f32; 2],
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ModelData {
     pub name: String,
@@ -151,6 +161,7 @@ pub struct ModelData {
     /// Nodes meant to be moved by hand (the file's `PC_controls` extension). The other joints
     /// (fingers, face, tongue…) are driven by sliders and poses; empty means every joint counts.
     pub controls: Vec<usize>,
+    pub joint_limits: Vec<JointLimitData>,
 }
 
 impl ModelData {

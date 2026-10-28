@@ -285,6 +285,13 @@ pub struct Node {
     /// row in the list. It is still posed by sliders and saved poses, and still simulated.
     #[serde(skip_serializing_if = "is_false")]
     pub minor: bool,
+    /// Anatomical swing-twist limits (from the model file); honoured by posing and IK.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub joint: Option<crate::JointLimit>,
+    /// A bone frozen at this world position: moving the bones above it turns the limb to keep it
+    /// there (see [`crate::enforce_holds`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hold: Option<[f32; 3]>,
 }
 
 fn is_true(b: &bool) -> bool {
@@ -297,7 +304,7 @@ fn is_false(b: &bool) -> bool {
 
 impl Default for Node {
     fn default() -> Self {
-        Self { id: 0, name: String::new(), parent: None, visible: true, transform: Transform::default(), kind: NodeKind::Empty, rest: None, limits: None, link: None, pinned: true, humanoid: None, minor: false }
+        Self { id: 0, name: String::new(), parent: None, visible: true, transform: Transform::default(), kind: NodeKind::Empty, rest: None, limits: None, link: None, pinned: true, humanoid: None, minor: false, joint: None, hold: None }
     }
 }
 

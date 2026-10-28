@@ -4649,3 +4649,13 @@ shape	Appearance	Оформление
 	Nothing to move: untick Pinned on an object or a bone, or use a model with hair.	Нечему двигаться: снимите «Привязан» у объекта или кости либо возьмите модель с волосами.
 	Unpinned, a bone lets go of its whole limb: it hangs from the joint above when you press Play.	Отвязанная кость отпускает всю конечность: по «Пуск» она повисает на суставе выше.
 	Unpinned objects and limbs fall and collide; hair swings.	Непривязанные объекты и конечности падают и сталкиваются; волосы качаются.
+	Anatomical limit	Лимит сустава
+	The joint stops where a body's joint would. Untick to move it past that.	Сустав останавливается там, где остановился бы настоящий. Снимите галочку, чтобы двигать его дальше.
+	Anatomical limits	Лимиты суставов
+	Joints stop where a body's would. Untick to pose without limits.	Суставы останавливаются как у настоящего тела. Снимите галочку, чтобы позировать без лимитов.
+	Follow parent	Следует за родителем
+	Hold in place	Заморозить
+	Hang free	Свободно висит
+	The bone moves with the bone above it.	Кость движется вместе с костью выше.
+	The bone stays at this point while you move the bones above it; the limb turns to keep it there.	Кость остаётся в этой точке, пока вы двигаете кости выше; конечность поворачивается, чтобы удержать её.
+	A bone set to Hold stays put while you move the bones above it.	Кость в режиме «Заморозить» остаётся на месте, пока вы двигаете кости выше.

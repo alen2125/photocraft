@@ -146,3 +146,26 @@ fn the_window_draws_with_a_model_and_its_skeleton() {
     assert!(app.scene3d.preview.is_some());
     assert!(app.scene3d.status.is_empty(), "{}", app.scene3d.status);
 }
+
+#[test]
+fn the_inspector_shows_a_bones_three_modes_and_its_anatomical_limit() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+    app.run("file.new", serde_json::json!({"width": 120, "height": 90})).unwrap();
+    let ctx = egui::Context::default();
+    crate::menus::invoke(&mut app, &ctx, "ui.scene3d.open", serde_json::json!({})).unwrap();
+    app.scene3d.import_model("hero.vrm", &skinned_triangle_glb(false, 2)).unwrap();
+    let spine = app.scene3d.scene.nodes.iter().find(|n| n.name == "spine").unwrap().id;
+    app.scene3d.selected = Some(spine);
+    // A limit on the bone brings its switch into the inspector and the panel.
+    app.scene3d.scene.node_mut(spine).unwrap().joint = Some(photocraft_scene3d::JointLimit::default());
+    // Holding it records where it is; releasing clears that.
+    app.scene3d.scene.set_hold(spine, true).unwrap();
+    assert!(app.scene3d.scene.node(spine).unwrap().hold.is_some());
+    for _ in 0..3 {
+        let mut out = ctx.run_ui(Default::default(), |ui| crate::scene3d_ui::show(&mut app, ui.ctx()));
+        out.textures_delta.clear();
+    }
+    assert!(app.scene3d.status.is_empty(), "{}", app.scene3d.status);
+    app.scene3d.scene.set_hold(spine, false).unwrap();
+    assert!(app.scene3d.scene.node(spine).unwrap().hold.is_none());
+}

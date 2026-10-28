@@ -292,10 +292,75 @@ CONTROLS = ["hip", "pelvis", "abdomen", "abdomen2", "chest", "neck", "head", "lC
 controls = [bone_node[b] for b in CONTROLS if b in bone_node]
 print("controls:", len(controls), "of", len(need), "bones")
 
+# ---- joint limits: the Limited ConfigurableJoint of each bone in the person prefab (VaM's own numbers)
+tr, go_tr, go_name = {}, {}, {}
+for o in penv.objects:
+    if o.type.name == "Transform":
+        t = o.read_typetree()
+        tr[o.path_id] = t
+        go_tr[t["m_GameObject"]["m_PathID"]] = o.path_id
+    elif o.type.name == "GameObject":
+        go_name[o.path_id] = o.read().m_Name
+
+def qmul(a, b):
+    ax, ay, az, aw = a
+    bx, by, bz, bw = b
+    return (aw * bx + ax * bw + ay * bz - az * by, aw * by - ax * bz + ay * bw + az * bx, aw * bz + ax * by - ay * bx + az * bw, aw * bw - ax * bx - ay * by - az * bz)
+
+def qrot(q, v):
+    x, y, z, w = q
+    c1 = (y * v[2] - z * v[1], z * v[0] - x * v[2], x * v[1] - y * v[0])
+    c2 = (y * c1[2] - z * c1[1], z * c1[0] - x * c1[2], x * c1[1] - y * c1[0])
+    return tuple(v[i] + 2 * (w * c1[i] + c2[i]) for i in range(3))
+
+def world_q(pid):
+    t = tr[pid]
+    q = tuple(t["m_LocalRotation"][k] for k in "xyzw")
+    f = t["m_Father"]["m_PathID"]
+    return qmul(world_q(f), q) if f in tr else q
+
+def mat_to_quat(x, y, z):  # columns of a rotation matrix -> (x, y, z, w)
+    m00, m10, m20, m01, m11, m21, m02, m12, m22 = x[0], x[1], x[2], y[0], y[1], y[2], z[0], z[1], z[2]
+    tr_ = m00 + m11 + m22
+    if tr_ > 0:
+        s_ = (tr_ + 1.0) ** 0.5 * 2
+        q = ((m21 - m12) / s_, (m02 - m20) / s_, (m10 - m01) / s_, 0.25 * s_)
+    elif m00 > m11 and m00 > m22:
+        s_ = (1.0 + m00 - m11 - m22) ** 0.5 * 2
+        q = (0.25 * s_, (m01 + m10) / s_, (m02 + m20) / s_, (m21 - m12) / s_)
+    elif m11 > m22:
+        s_ = (1.0 + m11 - m00 - m22) ** 0.5 * 2
+        q = ((m01 + m10) / s_, 0.25 * s_, (m12 + m21) / s_, (m02 - m20) / s_)
+    else:
+        s_ = (1.0 + m22 - m00 - m11) ** 0.5 * 2
+        q = ((m02 + m20) / s_, (m12 + m21) / s_, 0.25 * s_, (m10 - m01) / s_)
+    n = sum(c * c for c in q) ** 0.5 or 1.0
+    return [c / n for c in q]
+
+def axial(v):  # a rotation axis seen through the mirrored z axis: -M v (same angle)
+    return (-v[0], -v[1], v[2])
+
+limits = []
+for o in penv.objects:
+    if o.type.name != "ConfigurableJoint":
+        continue
+    t = o.read_typetree()
+    name = go_name.get(t["m_GameObject"]["m_PathID"])
+    if name not in bone_node or t["m_AngularXMotion"] != 1:
+        continue
+    q = world_q(go_tr[t["m_GameObject"]["m_PathID"]])
+    ax = qrot(q, tuple(t["m_Axis"][k] for k in "xyz"))
+    sec = qrot(q, tuple(t["m_SecondaryAxis"][k] for k in "xyz"))
+    zz = (ax[1] * sec[2] - ax[2] * sec[1], ax[2] * sec[0] - ax[0] * sec[2], ax[0] * sec[1] - ax[1] * sec[0])
+    frame = mat_to_quat(axial(ax), axial(sec), axial(zz))
+    limits.append({"node": bone_node[name], "frame": frame, "twist": [-t["m_HighAngularXLimit"]["limit"], -t["m_LowAngularXLimit"]["limit"]],  # PhysX reports twist with the opposite sign
+                   "swing": [t["m_AngularYLimit"]["limit"], t["m_AngularZLimit"]["limit"]]})
+print("joint limits:", len(limits))
+
 gltf = {
     "asset": {"version": "2.0", "generator": "vam-base-export"},
-    "extensionsUsed": ["VRM", "PC_controls"],
-    "extensions": {"PC_controls": {"nodes": controls}, "VRM": {"exporterVersion": "vam-base-export", "specVersion": "0.0", "meta": {"title": "VaM base " + who, "version": "1"}, "humanoid": {"humanBones": human}}},
+    "extensionsUsed": ["VRM", "PC_controls", "PC_limits"],
+    "extensions": {"PC_controls": {"nodes": controls}, "PC_limits": {"joints": limits}, "VRM": {"exporterVersion": "vam-base-export", "specVersion": "0.0", "meta": {"title": "VaM base " + who, "version": "1"}, "humanoid": {"humanBones": human}}},
     "scene": 0, "scenes": [{"nodes": [0, mesh_node]}],
     "nodes": nodes, "meshes": [{"name": who, "primitives": prims}],
     "skins": [{"joints": [bone_node[b] for b in need], "inverseBindMatrices": a_ibm, "skeleton": 0}],

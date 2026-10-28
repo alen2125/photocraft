@@ -68,7 +68,8 @@ impl Scene {
             let kind = if model.is_joint(i) { NodeKind::Bone } else { NodeKind::Empty };
             let humanoid = model.humanoid.iter().find(|(_, node)| *node == i).map(|(name, _)| name.clone());
             let minor = matches!(kind, NodeKind::Bone) && !model.controls.is_empty() && !model.controls.contains(&i);
-            let id = self.add(Node { name: n.name.clone(), parent: Some(parent), transform: t.clone(), rest: Some(t), kind, humanoid, minor, ..Node::default() })?;
+            let joint = model.joint_limits.iter().find(|j| j.node == i).map(|j| crate::JointLimit { frame: j.frame, twist: j.twist, swing: j.swing, enabled: true });
+            let id = self.add(Node { name: n.name.clone(), parent: Some(parent), transform: t.clone(), rest: Some(t), kind, humanoid, minor, joint, ..Node::default() })?;
             if let Some(slot) = ids.get_mut(i) {
                 *slot = Some(id);
             }

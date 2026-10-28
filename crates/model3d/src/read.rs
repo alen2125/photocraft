@@ -140,6 +140,7 @@ pub fn load(name: &str, bytes: &[u8]) -> Result<ModelData, ModelError> {
         springs: Vec::new(),
         collider_groups: Vec::new(),
         controls: Vec::new(),
+        joint_limits: Vec::new(),
     };
     crate::vrm::read(&doc, &mut data);
     Ok(data)

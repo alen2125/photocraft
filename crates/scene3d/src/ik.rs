@@ -15,6 +15,11 @@ pub struct IkResult {
     pub iterations: usize,
 }
 
+fn euler_quat(e: [f32; 3]) -> Quat {
+    let q = Quat::from_euler(EulerRot::XYZ, e[0].to_radians(), e[1].to_radians(), e[2].to_radians());
+    if q.is_finite() { q } else { Quat::IDENTITY }
+}
+
 fn rotation_of(m: &Mat4) -> Quat {
     let (_, r, _) = m.to_scale_rotation_translation();
     if r.is_finite() && r.length_squared() > 1e-12 { r.normalize() } else { Quat::IDENTITY }
@@ -25,9 +30,16 @@ fn rotation_of(m: &Mat4) -> Quat {
 pub fn set_world_rotation(scene: &mut Scene, id: NodeId, world_rotation: Quat) -> Result<(), SceneError> {
     let parent = scene.node(id).ok_or(SceneError::NoSuchNode(id))?.parent;
     let parent_rot = parent.and_then(|p| scene.world_matrix(p)).map_or(Quat::IDENTITY, |m| rotation_of(&m));
-    let local = (parent_rot.inverse() * world_rotation).normalize();
+    let mut local = (parent_rot.inverse() * world_rotation).normalize();
     if !local.is_finite() {
         return Ok(());
+    }
+    // Anatomical limits first, relative to the pose the joint was imported in.
+    if let Some(n) = scene.node(id)
+        && let Some(joint) = &n.joint
+    {
+        let rest = n.rest.as_ref().map_or(Quat::IDENTITY, |r| euler_quat(r.rotation));
+        local = joint.clamp(rest, local);
     }
     let (x, y, z) = local.to_euler(EulerRot::XYZ);
     let mut euler = [x.to_degrees(), y.to_degrees(), z.to_degrees()];
@@ -69,11 +81,16 @@ pub fn solve_ik(scene: &mut Scene, effector: NodeId, target: Vec3, chain_len: us
         chain.push(p);
         cur = n.parent;
     }
+    solve_chain(scene, effector, target, &chain, iterations)
+}
+
+/// The cyclic-coordinate-descent sweeps over an explicit `chain` of bones (nearest first).
+pub(crate) fn solve_chain(scene: &mut Scene, effector: NodeId, target: Vec3, chain: &[NodeId], iterations: usize) -> Result<IkResult, SceneError> {
     let pos = |scene: &Scene, id: NodeId| scene.world_matrix(id).map(|m| m.transform_point3(Vec3::ZERO));
     let mut done = 0;
     for sweep in 0..iterations.min(64) {
         done = sweep + 1;
-        for &joint in &chain {
+        for &joint in chain {
             let (Some(pj), Some(pe)) = (pos(scene, joint), pos(scene, effector)) else { continue };
             let (to_e, to_t) = ((pe - pj).normalize_or_zero(), (target - pj).normalize_or_zero());
             if to_e == Vec3::ZERO || to_t == Vec3::ZERO {
