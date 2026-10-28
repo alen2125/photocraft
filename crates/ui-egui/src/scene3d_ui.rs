@@ -519,6 +519,9 @@ fn node_list(ui: &mut egui::Ui, ed: &mut Scene3dEditor) {
     let mut clicked = None;
     for id in tree_order(&ed.scene) {
         let Some(n) = ed.scene.node(id) else { continue };
+        if n.minor && ed.selected != Some(id) {
+            continue;
+        }
         let icon = match n.kind {
             NodeKind::Empty => "◇",
             NodeKind::Primitive { .. } => "■",

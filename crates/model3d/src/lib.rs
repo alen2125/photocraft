@@ -148,6 +148,9 @@ pub struct ModelData {
     pub humanoid: Vec<(String, usize)>,
     pub springs: Vec<SpringGroup>,
     pub collider_groups: Vec<ColliderGroup>,
+    /// Nodes meant to be moved by hand (the file's `PC_controls` extension). The other joints
+    /// (fingers, face, tongue…) are driven by sliders and poses; empty means every joint counts.
+    pub controls: Vec<usize>,
 }
 
 impl ModelData {

@@ -281,15 +281,23 @@ pub struct Node {
     /// uses it to size and group the bone's collision capsule.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub humanoid: Option<String>,
+    /// A joint that is not a hand control (fingers, face, tongue…): no dot on the canvas and no
+    /// row in the list. It is still posed by sliders and saved poses, and still simulated.
+    #[serde(skip_serializing_if = "is_false")]
+    pub minor: bool,
 }
 
 fn is_true(b: &bool) -> bool {
     *b
 }
 
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
 impl Default for Node {
     fn default() -> Self {
-        Self { id: 0, name: String::new(), parent: None, visible: true, transform: Transform::default(), kind: NodeKind::Empty, rest: None, limits: None, link: None, pinned: true, humanoid: None }
+        Self { id: 0, name: String::new(), parent: None, visible: true, transform: Transform::default(), kind: NodeKind::Empty, rest: None, limits: None, link: None, pinned: true, humanoid: None, minor: false }
     }
 }
 

@@ -67,7 +67,8 @@ impl Scene {
             let t = node_transform(n);
             let kind = if model.is_joint(i) { NodeKind::Bone } else { NodeKind::Empty };
             let humanoid = model.humanoid.iter().find(|(_, node)| *node == i).map(|(name, _)| name.clone());
-            let id = self.add(Node { name: n.name.clone(), parent: Some(parent), transform: t.clone(), rest: Some(t), kind, humanoid, ..Node::default() })?;
+            let minor = matches!(kind, NodeKind::Bone) && !model.controls.is_empty() && !model.controls.contains(&i);
+            let id = self.add(Node { name: n.name.clone(), parent: Some(parent), transform: t.clone(), rest: Some(t), kind, humanoid, minor, ..Node::default() })?;
             if let Some(slot) = ids.get_mut(i) {
                 *slot = Some(id);
             }
@@ -152,15 +153,31 @@ impl Scene {
         }
     }
 
-    /// Positions of the world origin of every bone, for drawing the skeleton.
+    /// Positions of the world origin of every bone that is a hand control, for drawing the
+    /// skeleton. A bone's parent is its nearest control ancestor, so lines skip the minor joints.
     pub fn bone_positions(&self) -> Vec<(NodeId, Option<NodeId>, Vec3)> {
         let world = self.world_matrices();
+        let is_bone = |id: NodeId| self.node(id).filter(|n| matches!(n.kind, NodeKind::Bone));
         self.nodes
             .iter()
-            .filter(|n| matches!(n.kind, NodeKind::Bone))
+            .filter(|n| matches!(n.kind, NodeKind::Bone) && !n.minor)
             .filter_map(|n| {
                 let p = world.get(&n.id)?.transform_point3(Vec3::ZERO);
-                let parent = n.parent.filter(|p| self.node(*p).is_some_and(|pn| matches!(pn.kind, NodeKind::Bone)));
+                // Walk up (bounded) to the nearest bone that is shown.
+                let mut parent = n.parent;
+                for _ in 0..crate::MAX_DEPTH {
+                    match parent.and_then(is_bone) {
+                        Some(pn) if pn.minor => parent = pn.parent,
+                        Some(pn) => {
+                            parent = Some(pn.id);
+                            break;
+                        }
+                        None => {
+                            parent = None;
+                            break;
+                        }
+                    }
+                }
                 p.is_finite().then_some((n.id, parent, p))
             })
             .collect()

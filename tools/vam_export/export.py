@@ -25,7 +25,8 @@ uv_pos = mesh["_UVVertices"]
 uv_uv = mesh["_OrigUV"]
 extra = {m["tovert"]: m["fromvert"] for m in mesh["_baseVerticesToUVVertices"]}
 def base_of(j):
-    return j if j < n_base else extra[j]
+    # seam copies of a vertex (also some below n_base) map back to the vertex they duplicate
+    return extra.get(j, j)
 
 # ---- skeleton (DAZBone components from the person atom)
 penv = UnityPy.load(os.path.join(SA, person))
@@ -47,9 +48,13 @@ for pid, t in bones.items():
 dups = {k: len(v) for k, v in by_id.items() if len(v) > 1}
 print("distinct bone ids:", len(by_id), "duplicated ids:", len(dups))
 
+import collections
+MAIN_OWNER = collections.Counter(t["dazBones"]["m_PathID"] for t in bones.values()).most_common(1)[0][0]
+
 def pick(bid):
-    # the bone of this id (several atoms carry the same rig; they hold the same data)
-    return bones[by_id[bid][0]]
+    # a_per holds the main rig (most bones, with parents) and a small helper rig; take the main one
+    ids = by_id[bid]
+    return bones[next((i for i in ids if bones[i]["dazBones"]["m_PathID"] == MAIN_OWNER), ids[0])]
 
 skin_names = []
 for n in skin["nodes"]:
@@ -83,14 +88,16 @@ for b in need:
 
 # ---- weights per base vertex
 w = {}
+primary = {}
 for n in skin["nodes"]:
     src = [(g["vertex"], g["weight"]) for g in n["generalWeights"]] or [(g["vertex"], (g["xweight"] + g["yweight"] + g["zweight"]) / 3) for g in n["weights"]]
     for vtx, wt in src:
         d = w.setdefault(vtx, {})
         d[n["name"]] = d.get(n["name"], 0.0) + wt
+    # fullyWeightedVertices is each vertex's primary bone (every vertex is listed once); it is the
+    # binding only for vertices that have no blended weights
     for f in n["fullyWeightedVertices"]:
-        vtx = f if isinstance(f, int) else f.get("vertex", f.get("index", -1))
-        w.setdefault(vtx, {})[n["name"]] = 1.0
+        primary[f] = n["name"]
 joint_index = {b: i for i, b in enumerate(need)}
 root = next(b for b in need if parent[b] is None)
 
@@ -143,23 +150,99 @@ a_n = add_acc(add_view(bytes(nbytes), 34962), 5126, nv, "VEC3")
 
 jb, wb = bytearray(), bytearray()
 unweighted = 0
+lost = {}
 for j in range(nv):
-    d = w.get(base_of(j), {})
+    # skin weights are indexed by UV vertex (seam copies carry their own entry); fall back to the base vertex
+    d = w.get(j) or w.get(base_of(j)) or ({primary[j]: 1.0} if j in primary else {})
     items = sorted(((joint_index[k], v) for k, v in d.items() if k in joint_index and v > 0), key=lambda x: -x[1])[:4]
     s = sum(v for _, v in items)
+    if s <= 0 and primary.get(j) in joint_index:  # blended weights were all zero: use the primary bone
+        items, s = [(joint_index[primary[j]], 1.0)], 1.0
     if s <= 0:
         items, s = [(joint_index[root], 1.0)], 1.0
         unweighted += 1
+        lost[str(sorted(d))] = lost.get(str(sorted(d)), 0) + 1
     items += [(0, 0.0)] * (4 - len(items))
     jb += struct.pack("<4H", *[i for i, _ in items])
     wb += struct.pack("<4f", *[v / s for _, v in items])
 a_j = add_acc(add_view(bytes(jb), 34962), 5123, nv, "VEC4")
 a_w = add_acc(add_view(bytes(wb), 34962), 5126, nv, "VEC4")
-print("vertices", nv, "unweighted (bound to root):", unweighted)
+print("vertices", nv, "unweighted (bound to root):", unweighted, dict(list(lost.items())[:6]))
 
+# ---- skin: one material per slot (Head, Torso, ...) with its main colour map, from the skin bundle
+import io
+import re
+from PIL import Image
+
+SKIN = sys.argv[3] if len(sys.argv) > 3 else ("f_1" if who == "female" else "m_1")
+TEX_MAX = 2048
+senv = UnityPy.load(*[os.path.join(SA, n) for n in (SKIN + "_mat", "p_eye_mat", "p_sha_mat", "z_sha")])
+slot_mat = {}
+for o in senv.objects:
+    if o.type.name == "Material":
+        d = o.read()
+        if d.m_Name.endswith("ForDefaults"):
+            continue
+        slot = re.sub(r"-\d+$", "", d.m_Name)
+        # an exact name beats a numbered copy; otherwise the first one wins
+        if slot not in slot_mat or d.m_Name == slot:
+            slot_mat[slot] = d
+print("skin", SKIN, "materials:", len(slot_mat))
+images, textures, tex_cache = [], [], {}
+
+def embed(ptr, alpha_from_mask=False):
+    """Embed a texture as an image once and return its glTF texture index (None if unreadable)."""
+    try:
+        t = ptr.read()
+    except BaseException:
+        return None
+    key = (t.m_Name, alpha_from_mask)
+    if key in tex_cache:
+        return tex_cache[key]
+    img = t.image.convert("RGBA")
+    if max(img.size) > TEX_MAX:
+        k = TEX_MAX / max(img.size)
+        img = img.resize((max(1, int(img.width * k)), max(1, int(img.height * k))), Image.LANCZOS)
+    buf = io.BytesIO()
+    if alpha_from_mask:
+        a = img.getchannel("A")
+        mask = a if a.getextrema()[0] < 250 else img.getchannel("R")
+        Image.merge("RGBA", (*Image.new("RGB", img.size, (255, 255, 255)).split(), mask)).save(buf, "PNG")
+        mime = "image/png"
+    else:
+        img.convert("RGB").save(buf, "JPEG", quality=90)
+        mime = "image/jpeg"
+    images.append({"bufferView": add_view(buf.getvalue()), "mimeType": mime, "name": t.m_Name})
+    textures.append({"source": len(images) - 1, "sampler": 0})
+    tex_cache[key] = len(textures) - 1
+    return tex_cache[key]
+
+def build_material(slot):
+    d = slot_mat.get(slot)
+    pbr = {"baseColorFactor": [0.85, 0.7, 0.62, 1.0], "metallicFactor": 0.0, "roughnessFactor": 0.7}
+    mat = {"name": slot, "pbrMetallicRoughness": pbr, "doubleSided": False}
+    if d is None:
+        return mat
+    cols = {k: c for k, c in d.m_SavedProperties.m_Colors}
+    c = cols.get("_Color")
+    envs = {k: v for k, v in d.m_SavedProperties.m_TexEnvs}
+    main, alpha = envs.get("_MainTex"), envs.get("_AlphaTex")
+    pbr["baseColorFactor"] = [c.r, c.g, c.b, 1.0] if c else [1.0, 1.0, 1.0, 1.0]
+    if alpha is not None and alpha.m_Texture.path_id:  # eyelashes: colour from the material, shape from the mask
+        i = embed(alpha.m_Texture, alpha_from_mask=True)
+        if i is not None:
+            pbr["baseColorTexture"] = {"index": i}
+            mat.update({"alphaMode": "MASK", "alphaCutoff": 0.5, "doubleSided": True})
+    elif main is not None and main.m_Texture.path_id:
+        i = embed(main.m_Texture)
+        if i is not None:
+            pbr["baseColorTexture"] = {"index": i}
+    return mat
+
+HIDDEN = ("Hidden", "Cornea", "Tear", "EyeReflection")
 prims, materials = [], []
 for m, polys in sorted(by_mat.items()):
-    if mat_names[m] in ("Hidden",):
+    if mat_names[m] in HIDDEN:
         continue
     idx = []
     for v in polys:
@@ -167,7 +250,7 @@ for m, polys in sorted(by_mat.items()):
         for a, b, c in tris:
             idx += [a, c, b]  # mirrored axis flips the winding
     iv = add_view(struct.pack(f"<{len(idx)}I", *idx), 34963)
-    materials.append({"name": mat_names[m], "pbrMetallicRoughness": {"baseColorFactor": [0.85, 0.7, 0.62, 1.0], "metallicFactor": 0.0, "roughnessFactor": 0.8}, "doubleSided": False})
+    materials.append(build_material(mat_names[m]))
     prims.append({"attributes": {"POSITION": a_pos, "NORMAL": a_n, "TEXCOORD_0": a_uv, "JOINTS_0": a_j, "WEIGHTS_0": a_w}, "indices": add_acc(iv, 5125, len(idx), "SCALAR"), "material": len(materials) - 1})
 
 # joints and inverse bind matrices
@@ -202,14 +285,22 @@ for s, side in (("l", "left"), ("r", "right")):
 human = [{"bone": v, "node": bone_node[k], "useDefaultValues": True} for k, v in H.items() if k in bone_node]
 print("humanoid bones mapped:", len(human), "of", len(H))
 
+# the joints VaM lets you move by hand (its FreeControllerV3 list, minus the nipples and genitals);
+# fingers, face and tongue are driven by pose-control sliders there, so they are minor here
+CONTROLS = ["hip", "pelvis", "abdomen", "abdomen2", "chest", "neck", "head", "lCollar", "rCollar", "lShldr", "rShldr",
+            "lForeArm", "rForeArm", "lHand", "rHand", "lThigh", "rThigh", "lShin", "rShin", "lFoot", "rFoot", "lToe", "rToe"]
+controls = [bone_node[b] for b in CONTROLS if b in bone_node]
+print("controls:", len(controls), "of", len(need), "bones")
+
 gltf = {
     "asset": {"version": "2.0", "generator": "vam-base-export"},
-    "extensionsUsed": ["VRM"],
-    "extensions": {"VRM": {"exporterVersion": "vam-base-export", "specVersion": "0.0", "meta": {"title": "VaM base " + who, "version": "1"}, "humanoid": {"humanBones": human}}},
+    "extensionsUsed": ["VRM", "PC_controls"],
+    "extensions": {"PC_controls": {"nodes": controls}, "VRM": {"exporterVersion": "vam-base-export", "specVersion": "0.0", "meta": {"title": "VaM base " + who, "version": "1"}, "humanoid": {"humanBones": human}}},
     "scene": 0, "scenes": [{"nodes": [0, mesh_node]}],
     "nodes": nodes, "meshes": [{"name": who, "primitives": prims}],
     "skins": [{"joints": [bone_node[b] for b in need], "inverseBindMatrices": a_ibm, "skeleton": 0}],
-    "materials": materials, "accessors": accessors, "bufferViews": views, "buffers": [{"byteLength": len(blob)}],
+    "materials": materials, "accessors": accessors,
+    **({"images": images, "textures": textures, "samplers": [{"magFilter": 9729, "minFilter": 9987, "wrapS": 10497, "wrapT": 10497}]} if images else {}), "bufferViews": views, "buffers": [{"byteLength": len(blob)}],
 }
 js = json.dumps(gltf, separators=(",", ":")).encode()
 js += b" " * (-len(js) % 4)

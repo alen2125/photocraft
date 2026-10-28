@@ -39,6 +39,7 @@ fn model(format: ModelFormat) -> Arc<ModelData> {
         humanoid: vec![("hips".into(), 0)],
         springs: vec![],
         collider_groups: vec![],
+        controls: vec![],
     })
 }
 
@@ -196,4 +197,30 @@ fn translate_to_puts_a_bone_at_a_world_position_through_its_parents() {
     assert!((h.distance(p) - 2.0).abs() < 1e-4);
     assert!(translate_to(&mut s, hips, Vec3::NAN).is_err());
     assert!(translate_to(&mut s, 4242, Vec3::ZERO).is_err());
+}
+
+#[test]
+fn joints_outside_the_controls_list_are_minor_and_the_skeleton_skips_them() {
+    let mut m = (*model(ModelFormat::Gltf)).clone();
+    m.controls = vec![0, 2]; // hips and head are controls, the spine is not
+    let mut s = Scene::default();
+    s.add_model(Arc::new(m), None).unwrap();
+    let (hips, spine, head) = (bone(&s, "hips"), bone(&s, "spine"), bone(&s, "head"));
+    assert!(!s.node(hips).unwrap().minor && s.node(spine).unwrap().minor && !s.node(head).unwrap().minor);
+    // Not a joint, so never minor.
+    assert!(!s.node(bone(&s, "body")).unwrap().minor);
+    let shown = s.bone_positions();
+    assert_eq!(shown.len(), 2);
+    assert!(shown.iter().all(|b| b.0 != spine));
+    // The head's line goes to the hips, past the hidden spine; the spine is still posable.
+    assert_eq!(shown.iter().find(|b| b.0 == head).unwrap().1, Some(hips));
+    crate::rotate_world(&mut s, spine, Quat::from_rotation_z(0.5)).unwrap();
+    let moved = s.world_matrix(head).unwrap().transform_point3(Vec3::ZERO);
+    assert!((moved - Vec3::new(0.0, 2.0, 0.0)).length() > 0.1, "turning a minor joint still moves what hangs from it");
+    // No list means every joint counts, and the flag survives a save.
+    let mut all = Scene::default();
+    all.add_model(model(ModelFormat::Gltf), None).unwrap();
+    assert_eq!(all.bone_positions().len(), 3);
+    let back = Scene::from_json(&s.to_json().unwrap()).unwrap();
+    assert!(back.node(spine).unwrap().minor);
 }

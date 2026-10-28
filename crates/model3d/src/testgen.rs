@@ -25,7 +25,7 @@ pub fn skinned_triangle_glb(vrm0: bool, last_index: u16) -> Vec<u8> {
         }
     }
     let ext = if vrm0 {
-        r#","extensionsUsed":["VRM"],"extensions":{"VRM":{"humanoid":{"humanBones":[{"bone":"hips","node":0},{"bone":"spine","node":1},{"bone":"bad","node":99}]},
+        r#","extensionsUsed":["VRM","PC_controls"],"extensions":{"PC_controls":{"nodes":[1,99,"x"]},"VRM":{"humanoid":{"humanBones":[{"bone":"hips","node":0},{"bone":"spine","node":1},{"bone":"bad","node":99}]},
         "secondaryAnimation":{"colliderGroups":[{"node":0,"colliders":[{"offset":{"x":0,"y":0.1,"z":0},"radius":0.05}]}],
         "boneGroups":[{"comment":"hair","stiffiness":0.5,"gravityPower":0.1,"dragForce":0.4,"hitRadius":0.02,"gravityDir":{"x":0,"y":-1,"z":0},"bones":[1,77],"colliderGroups":[0,5]}]}}}"#
     } else {

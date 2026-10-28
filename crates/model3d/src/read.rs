@@ -139,6 +139,7 @@ pub fn load(name: &str, bytes: &[u8]) -> Result<ModelData, ModelError> {
         humanoid: Vec::new(),
         springs: Vec::new(),
         collider_groups: Vec::new(),
+        controls: Vec::new(),
     };
     crate::vrm::read(&doc, &mut data);
     Ok(data)

@@ -39,6 +39,8 @@ fn reads_vrm0_humanoid_and_spring_bones_and_drops_bad_references() {
     assert_eq!(s.roots, vec![1], "bone 77 does not exist");
     assert_eq!(s.collider_groups, vec![0], "collider group 5 does not exist");
     assert_eq!(s.gravity_dir, [0.0, -1.0, 0.0]);
+    assert_eq!(m.controls, vec![1], "the PC_controls list keeps real nodes only");
+    assert!(load("tri.glb", &glb(false, 2)).unwrap().controls.is_empty(), "no extension, no list");
 }
 
 #[test]

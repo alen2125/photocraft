@@ -18,6 +18,9 @@ fn index(v: &Value, count: usize) -> Option<usize> {
 
 pub(crate) fn read(doc: &gltf::Document, data: &mut ModelData) {
     let count = data.nodes.len();
+    if let Some(v) = doc.extension_value("PC_controls") {
+        data.controls = v.get("nodes").and_then(Value::as_array).into_iter().flatten().filter_map(|n| index(n, count)).collect();
+    }
     if let Some(v) = doc.extension_value("VRMC_vrm") {
         data.format = ModelFormat::Vrm1;
         if let Some(bones) = v.pointer("/humanoid/humanBones").and_then(Value::as_object) {

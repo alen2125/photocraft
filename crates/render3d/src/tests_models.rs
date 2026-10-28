@@ -48,6 +48,7 @@ fn quad_model(skinned: bool, mode: AlphaMode) -> Arc<ModelData> {
         humanoid: vec![],
         springs: vec![],
         collider_groups: vec![],
+        controls: vec![],
     })
 }
 

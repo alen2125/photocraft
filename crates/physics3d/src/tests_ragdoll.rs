@@ -63,6 +63,7 @@ fn humanoid_model(hair_collider: bool) -> Arc<ModelData> {
             collider_groups: if hair_collider { vec![0] } else { vec![] },
         }],
         collider_groups: vec![ColliderGroup { node: 9, spheres: vec![([0.0, 0.0, 0.0], 0.12)] }],
+        controls: vec![],
     })
 }
 
