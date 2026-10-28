@@ -277,6 +277,10 @@ pub struct Node {
     /// Pinned solids stay where they are when the physics runs; unpinned ones fall and collide.
     #[serde(skip_serializing_if = "is_true")]
     pub pinned: bool,
+    /// For a bone of a VRM humanoid: its standard name (`leftUpperArm`, `hips`, …). The physics
+    /// uses it to size and group the bone's collision capsule.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub humanoid: Option<String>,
 }
 
 fn is_true(b: &bool) -> bool {
@@ -285,7 +289,7 @@ fn is_true(b: &bool) -> bool {
 
 impl Default for Node {
     fn default() -> Self {
-        Self { id: 0, name: String::new(), parent: None, visible: true, transform: Transform::default(), kind: NodeKind::Empty, rest: None, limits: None, link: None, pinned: true }
+        Self { id: 0, name: String::new(), parent: None, visible: true, transform: Transform::default(), kind: NodeKind::Empty, rest: None, limits: None, link: None, pinned: true, humanoid: None }
     }
 }
 

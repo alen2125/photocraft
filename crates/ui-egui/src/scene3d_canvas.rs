@@ -130,8 +130,8 @@ pub(crate) fn play(ed: &mut Scene3dEditor) -> Result<(), String> {
         return Ok(());
     }
     let world = photocraft_physics3d::World::new(&ed.scene);
-    if world.dynamic_count() == 0 {
-        return Err(tl!("Nothing to drop: untick Pinned on an object so it can fall.").to_string());
+    if world.is_inert() {
+        return Err(tl!("Nothing to move: untick Pinned on an object or a bone, or use a model with hair.").to_string());
     }
     remember_edit(ed);
     ed.play_base = Some(ed.scene.clone());
@@ -170,12 +170,12 @@ pub(crate) fn tick(ed: &mut Scene3dEditor, dt: f32) {
     ed.play_acc += if dt.is_finite() { dt.clamp(0.0, 0.1) } else { 0.0 };
     let mut steps = 0;
     while ed.play_acc >= photocraft_physics3d::STEP && steps < 6 {
-        world.step();
+        // Bodies, limbs and hair, each step written into the scene.
+        world.step_scene(&mut ed.scene);
         ed.play_acc -= photocraft_physics3d::STEP;
         steps += 1;
     }
     if steps > 0 {
-        world.apply(&mut ed.scene);
         ed.touch();
         ed.pending_change = true;
     }

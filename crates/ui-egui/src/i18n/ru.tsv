@@ -4646,3 +4646,6 @@ shape	Appearance	Оформление
 	Pinned (stays put)	Привязан (стоит на месте)
 	Unpinned objects fall and collide.	Непривязанные объекты падают и сталкиваются.
 	Nothing to drop: untick Pinned on an object so it can fall.	Нечему падать: снимите «Привязан» у объекта, чтобы он упал.
+	Nothing to move: untick Pinned on an object or a bone, or use a model with hair.	Нечему двигаться: снимите «Привязан» у объекта или кости либо возьмите модель с волосами.
+	Unpinned, a bone lets go of its whole limb: it hangs from the joint above when you press Play.	Отвязанная кость отпускает всю конечность: по «Пуск» она повисает на суставе выше.
+	Unpinned objects and limbs fall and collide; hair swings.	Непривязанные объекты и конечности падают и сталкиваются; волосы качаются.

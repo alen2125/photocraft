@@ -66,7 +66,8 @@ impl Scene {
             let parent = n.parent.and_then(|p| ids.get(p).copied().flatten()).unwrap_or(root);
             let t = node_transform(n);
             let kind = if model.is_joint(i) { NodeKind::Bone } else { NodeKind::Empty };
-            let id = self.add(Node { name: n.name.clone(), parent: Some(parent), transform: t.clone(), rest: Some(t), kind, ..Node::default() })?;
+            let humanoid = model.humanoid.iter().find(|(_, node)| *node == i).map(|(name, _)| name.clone());
+            let id = self.add(Node { name: n.name.clone(), parent: Some(parent), transform: t.clone(), rest: Some(t), kind, humanoid, ..Node::default() })?;
             if let Some(slot) = ids.get_mut(i) {
                 *slot = Some(id);
             }

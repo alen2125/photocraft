@@ -375,8 +375,12 @@ fn node_inspector(ui: &mut egui::Ui, ed: &mut Scene3dEditor, id: NodeId) {
         changed |= vec3_row(ui, tl!("Scale"), &mut node.transform.scale, 0.01);
     });
     ui.separator();
-    if matches!(node.kind, NodeKind::Primitive { .. }) {
-        changed |= ui.checkbox(&mut node.pinned, tl!("Pinned (stays put)")).changed();
+    if matches!(node.kind, NodeKind::Primitive { .. } | NodeKind::Bone) {
+        let pin = ui.checkbox(&mut node.pinned, tl!("Pinned (stays put)"));
+        changed |= pin.changed();
+        if matches!(node.kind, NodeKind::Bone) {
+            pin.on_hover_text(tl!("Unpinned, a bone lets go of its whole limb: it hangs from the joint above when you press Play."));
+        }
     }
     match &mut node.kind {
         NodeKind::Empty => {}
@@ -523,7 +527,7 @@ fn node_list(ui: &mut egui::Ui, ed: &mut Scene3dEditor) {
             NodeKind::Mesh(_) => "▲",
         };
         let hidden = if n.visible { "" } else { " ·" };
-        let falls = if !n.pinned && matches!(n.kind, NodeKind::Primitive { .. }) { " ↓" } else { "" };
+        let falls = if !n.pinned && matches!(n.kind, NodeKind::Primitive { .. } | NodeKind::Bone) { " ↓" } else { "" };
         let label = format!("{}{icon}  {}{hidden}{falls}", "    ".repeat(depth_of(&ed.scene, id)), n.name);
         if ui.selectable_label(ed.selected == Some(id), label).clicked() {
             clicked = Some(id);
@@ -632,7 +636,7 @@ fn side_panels(ui: &mut egui::Ui, ed: &mut Scene3dEditor) {
     });
     ui.horizontal(|ui| {
         if ed.physics.is_none() {
-            if ui.button(tl!("▶ Play")).on_hover_text(tl!("Unpinned objects fall and collide.")).clicked()
+            if ui.button(tl!("▶ Play")).on_hover_text(tl!("Unpinned objects and limbs fall and collide; hair swings.")).clicked()
                 && let Err(e) = crate::scene3d_canvas::play(ed)
             {
                 ed.status = e;

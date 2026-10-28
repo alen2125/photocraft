@@ -21,7 +21,8 @@ fn rotation_of(m: &Mat4) -> Quat {
 }
 
 /// Sets the joint's world rotation, converting to its local Euler angles and applying limits.
-fn set_world_rotation(scene: &mut Scene, id: NodeId, world_rotation: Quat) -> Result<(), SceneError> {
+/// Sets a node's world rotation (its position stays), applying the node's rotation limits.
+pub fn set_world_rotation(scene: &mut Scene, id: NodeId, world_rotation: Quat) -> Result<(), SceneError> {
     let parent = scene.node(id).ok_or(SceneError::NoSuchNode(id))?.parent;
     let parent_rot = parent.and_then(|p| scene.world_matrix(p)).map_or(Quat::IDENTITY, |m| rotation_of(&m));
     let local = (parent_rot.inverse() * world_rotation).normalize();

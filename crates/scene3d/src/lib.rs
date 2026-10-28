@@ -17,7 +17,7 @@ mod scene;
 pub use glam;
 pub use mesh::Mesh;
 pub use gizmo::{Delta, Drag, Gizmo, GizmoMode, Handle, Ray, closest_on_line, ray_plane};
-pub use ik::{IkResult, rotate_world, solve_ik, translate_to};
+pub use ik::{IkResult, rotate_world, set_world_rotation, solve_ik, translate_to};
 pub use link::{Link, LinkSpace};
 pub use photocraft_model3d as model3d;
 pub use scene::{

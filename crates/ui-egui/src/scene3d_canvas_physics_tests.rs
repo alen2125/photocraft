@@ -135,3 +135,31 @@ fn a_pinned_flag_survives_a_saved_scene_and_defaults_to_pinned() {
     assert!(old.nodes[0].pinned, "files from before the flag stay pinned");
     assert!(!s.to_json().unwrap().contains("\"pinned\": true"));
 }
+
+#[test]
+fn a_model_with_hair_can_be_played_and_an_unpinned_bone_hangs_from_the_one_above() {
+    use photocraft_model3d::testgen::skinned_triangle_glb;
+    let mut app = app();
+    let ctx = egui::Context::default();
+    crate::menus::invoke(&mut app, &ctx, "ui.scene3d.open", json!({})).unwrap();
+    // A VRM 0 file with a humanoid (hips, spine) and a spring-bone chain.
+    app.scene3d.import_model("hero.vrm", &skinned_triangle_glb(true, 2)).unwrap();
+    let find = |app: &PhotocraftApp, n: &str| app.scene3d.scene.nodes.iter().find(|x| x.name == n).unwrap().id;
+    let (hips, spine) = (find(&app, "hips"), find(&app, "spine"));
+    // Everything is pinned, but the chain swings, so Play is allowed and changes nothing else.
+    play(&mut app.scene3d).unwrap();
+    fall(&mut app.scene3d, 1.0);
+    let hips_at = app.scene3d.scene.world_matrix(hips).unwrap().transform_point3(Vec3::ZERO);
+    assert!(hips_at.is_finite());
+    stop(&mut app.scene3d, false);
+    // Unpinning the spine lets it swing from the hips; revert puts it back.
+    let rest = app.scene3d.scene.node(spine).unwrap().transform.clone();
+    app.scene3d.scene.node_mut(spine).unwrap().pinned = false;
+    play(&mut app.scene3d).unwrap();
+    fall(&mut app.scene3d, 2.0);
+    assert!(app.scene3d.status.is_empty());
+    let hips_after = app.scene3d.scene.world_matrix(hips).unwrap().transform_point3(Vec3::ZERO);
+    assert!((hips_after - hips_at).length() < 1e-4, "the hips, pinned, stayed");
+    stop(&mut app.scene3d, false);
+    assert_eq!(app.scene3d.scene.node(spine).unwrap().transform, rest);
+}
