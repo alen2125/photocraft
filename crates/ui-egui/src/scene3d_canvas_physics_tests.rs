@@ -163,3 +163,22 @@ fn a_model_with_hair_can_be_played_and_an_unpinned_bone_hangs_from_the_one_above
     stop(&mut app.scene3d, false);
     assert_eq!(app.scene3d.scene.node(spine).unwrap().transform, rest);
 }
+
+#[test]
+fn while_the_physics_runs_only_a_node_that_is_on_has_a_gizmo_and_it_sits_at_the_target() {
+    use photocraft_model3d::testgen::skinned_triangle_glb;
+    let mut app = app();
+    let ctx = egui::Context::default();
+    crate::menus::invoke(&mut app, &ctx, "ui.scene3d.open", json!({})).unwrap();
+    app.scene3d.import_model("hero.vrm", &skinned_triangle_glb(true, 2)).unwrap();
+    let hips = app.scene3d.scene.nodes.iter().find(|x| x.name == "hips").unwrap().id;
+    app.scene3d.selected = Some(hips);
+    assert!(gizmo_for(&app.scene3d).is_some(), "stopped: any node has a gizmo");
+    play(&mut app.scene3d).unwrap();
+    assert!(gizmo_for(&app.scene3d).is_none(), "running: an Off node has none");
+    app.scene3d.scene.set_hold(hips, true).unwrap();
+    let target = Vec3::new(0.3, 0.7, 0.1);
+    app.scene3d.scene.node_mut(hips).unwrap().hold = Some(target.to_array());
+    let g = gizmo_for(&app.scene3d).expect("an On node has one while it runs");
+    assert!(g.origin.distance(target) < 1e-5, "at its target, not at the body: {:?}", g.origin);
+}

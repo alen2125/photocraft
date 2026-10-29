@@ -44,9 +44,18 @@ const JOINT_LIMIT: f32 = 1.6;
 
 /// VaM's physics settings, used when a model does not carry its own.
 const SOLVER_ITERATIONS: u32 = 15;
+/// Each fixed step runs as this many smaller ones, with the joint limits enforced between them:
+/// a limit gets the several passes at the weight of the body that PhysX's solver gives it.
+const SUBSTEPS: usize = 4;
+/// Passes over the joint limits before each substep.
+const LIMIT_PASSES: usize = 3;
 const FRICTION: f32 = 0.6;
 const BOUNCINESS: f32 = 0.0;
 const MAX_VELOCITY: f32 = 10.0;
+/// Default strength of the trunk, neck and leg muscles against VaM's numbers: PhysX counts drive
+/// strength differently from rapier, and at full strength a figure with everything Off stays
+/// stiff where in the game it gives at the knees and hips.
+pub const DEFAULT_MUSCLE: f32 = 0.25;
 const HOLD: DriveData = DriveData { spring: 1000.0, damper: 50.0, max_force: 10000.0 };
 
 /// A body part: one rigid body for a hand control, and what drives it.
@@ -56,11 +65,6 @@ pub(crate) struct Part {
     handle: RigidBodyHandle,
     /// The part above it in `World::parts` (it hangs from it), if any.
     parent: Option<usize>,
-    /// This part and every part that hangs from it (indices into `World::parts`): what a joint
-    /// limit turns as one piece.
-    subtree: Vec<usize>,
-    /// Centre of mass in the body's own axes.
-    com: Vec3,
     start_pos: Vec3,
     start_rot: Quat,
     /// This part's turn relative to the one above it in the pose the world was built from.
@@ -68,6 +72,11 @@ pub(crate) struct Part {
     limit: Option<JointLimit>,
     lin_drag: f32,
     ang_drag: f32,
+    /// The muscle's joint and VaM's full-strength numbers for it, when it has one that follows the
+    /// strength slider (an arm's muscle only damps).
+    muscle: Option<(ImpulseJointHandle, DriveData)>,
+    /// The joint to the world while its controller is On, and whether it holds position and orientation.
+    anchor: Option<(ImpulseJointHandle, bool, bool)>,
 }
 
 /// Pairs of colliders that must not touch.
@@ -113,6 +122,8 @@ pub struct World {
     gravity: f32,
     /// Multiplies how quickly limbs lose speed (1 = the default).
     damping: f32,
+    /// How much of VaM's muscle strength the trunk, neck and legs get (1 = the game's numbers).
+    muscle: f32,
     friction: f32,
     bounciness: f32,
     max_velocity: f32,
@@ -154,7 +165,7 @@ impl World {
         let iterations = own.and_then(|p| p.iterations).unwrap_or(SOLVER_ITERATIONS);
         let mut w = World {
             pipeline: PhysicsPipeline::new(),
-            params: IntegrationParameters { dt: STEP, num_solver_iterations: std::num::NonZeroUsize::new(iterations as usize).unwrap_or(std::num::NonZeroUsize::MIN), ..IntegrationParameters::default() },
+            params: IntegrationParameters { dt: STEP / SUBSTEPS as f32, num_solver_iterations: std::num::NonZeroUsize::new((iterations as usize / SUBSTEPS).max(4)).unwrap_or(std::num::NonZeroUsize::MIN), ..IntegrationParameters::default() },
             islands: IslandManager::new(),
             broad: DefaultBroadPhase::new(),
             narrow: NarrowPhase::new(),
@@ -170,6 +181,7 @@ impl World {
             solid_count: 0,
             gravity: 1.0,
             damping: 1.0,
+            muscle: DEFAULT_MUSCLE,
             friction: own.and_then(|p| p.friction).unwrap_or(FRICTION),
             bounciness: own.and_then(|p| p.bounciness).unwrap_or(BOUNCINESS),
             max_velocity: own.and_then(|p| p.max_velocity).unwrap_or(MAX_VELOCITY),
@@ -232,23 +244,27 @@ impl World {
 
     /// Advances rapier one fixed step (bodies only; see [`World::step_scene`]).
     pub fn step(&mut self) {
-        self.drive();
-        self.pipeline.step(
-            &vector![0.0, -9.81 * self.gravity, 0.0],
-            &self.params,
-            &mut self.islands,
-            &mut self.broad,
-            &mut self.narrow,
-            &mut self.bodies,
-            &mut self.colliders,
-            &mut self.joints,
-            &mut self.multibody,
-            &mut self.ccd,
-            None,
-            &self.ignore,
-            &(),
-        );
-        self.guard();
+        for _ in 0..SUBSTEPS {
+            for _ in 0..LIMIT_PASSES {
+                self.drive();
+            }
+            self.pipeline.step(
+                &vector![0.0, -9.81 * self.gravity, 0.0],
+                &self.params,
+                &mut self.islands,
+                &mut self.broad,
+                &mut self.narrow,
+                &mut self.bodies,
+                &mut self.colliders,
+                &mut self.joints,
+                &mut self.multibody,
+                &mut self.ccd,
+                None,
+                &self.ignore,
+                &(),
+            );
+            self.guard();
+        }
     }
 
     /// Sets gravity (a multiplier of Earth's, 0 to 5) and how quickly limbs lose speed (a
@@ -264,9 +280,23 @@ impl World {
         }
     }
 
+    /// Sets the strength of the trunk, neck and leg muscles (a multiplier of VaM's numbers, 0 to
+    /// 2). Takes effect at once, also in a running world.
+    pub fn set_muscle(&mut self, strength: f32) {
+        self.muscle = if strength.is_finite() { strength.clamp(0.0, 2.0) } else { DEFAULT_MUSCLE };
+        for p in &self.parts {
+            let Some((h, m)) = p.muscle else { continue };
+            let Some(j) = self.joints.get_mut(h) else { continue };
+            for axis in [JointAxis::AngX, JointAxis::AngY, JointAxis::AngZ] {
+                j.data.set_motor_position(axis, 0.0, m.spring * self.muscle, m.damper * self.muscle.max(0.2));
+            }
+        }
+    }
+
     /// One fixed step of everything, written into the scene: bodies fall and collide, limbs
     /// turn, and the hair swings.
     pub fn step_scene(&mut self, scene: &mut Scene) {
+        self.sync_targets(scene);
         self.step();
         self.apply(scene);
         self.springs.step(scene, STEP);

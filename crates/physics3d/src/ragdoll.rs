@@ -52,12 +52,86 @@ fn collider_for(c: &Capsule, friction: f32, bounciness: f32) -> Collider {
     builder.density(0.0).friction(friction).restitution(bounciness).active_hooks(ActiveHooks::FILTER_CONTACT_PAIRS).build()
 }
 
-/// Strength of an arm's muscles against VaM's numbers. PhysX counts drive strength differently from
-/// rapier; at full strength a let-go arm hardly sags here, while in the game it swings down. The
-/// trunk and legs keep the full numbers: they carry the body.
-const ARM_MUSCLE: f32 = 0.0;
+/// An arm's muscles only slow it down (VaM's damper, no spring): rapier and PhysX count drive
+/// strength differently, and with VaM's spring a let-go arm hardly sagged here while in the game it
+/// swings down. The trunk and legs keep the full numbers: they carry the body.
+const ARM_MAX_TORQUE: f32 = 1.0e6;
+
+/// The turn from `host` (a bone above `id`) to `id` in the neutral pose the model was imported
+/// in, from each bone's rest rotation (its current one when it has none). `None` when `host` is
+/// not above `id`.
+fn neutral_turn(scene: &Scene, id: NodeId, host: NodeId) -> Option<Quat> {
+    let mut q = Quat::IDENTITY;
+    let mut cur = id;
+    for _ in 0..photocraft_scene3d::MAX_DEPTH {
+        let n = scene.node(cur)?;
+        let t = n.rest.as_ref().unwrap_or(&n.transform);
+        let (_, r, _) = t.matrix().to_scale_rotation_translation();
+        q = (r * q).normalize();
+        cur = n.parent?;
+        if cur == host {
+            return q.is_finite().then_some(q);
+        }
+    }
+    None
+}
+
+/// Where a controller that is On wants its body: the position and orientation it holds, falling
+/// back to where the body is.
+pub(crate) fn hold_targets(node: &photocraft_scene3d::Node, pos: Vec3, rot: Quat) -> (Vec3, Quat) {
+    let target_pos = node.hold.map(Vec3::from).filter(|p| p.is_finite()).unwrap_or(pos);
+    let target_rot = node.hold_rot.map(|q| Quat::from_xyzw(q[0], q[1], q[2], q[3])).filter(|q| q.is_finite() && q.length_squared() > 1e-9).map_or(rot, Quat::normalize);
+    (target_pos, target_rot)
+}
 
 impl World {
+    /// A joint from the fixed anchor body to `body`: free except for a spring-damper motor on each
+    /// axis that is held (VaM's controller drive).
+    pub(crate) fn insert_anchor(&mut self, anchor: RigidBodyHandle, body: RigidBodyHandle, pos_on: bool, rot_on: bool, target_pos: Vec3, target_rot: Quat) -> ImpulseJointHandle {
+        let mut joint = GenericJointBuilder::new(JointAxesMask::empty()).contacts_enabled(false).local_frame1(iso(target_pos, target_rot)).local_frame2(rapier3d::na::Isometry3::identity());
+        let (hp, hr) = (self.hold_position, self.hold_rotation);
+        if pos_on {
+            for axis in [JointAxis::LinX, JointAxis::LinY, JointAxis::LinZ] {
+                joint = joint.motor_model(axis, MotorModel::ForceBased).motor_position(axis, 0.0, hp.spring, hp.damper).motor_max_force(axis, hp.max_force);
+            }
+        }
+        if rot_on {
+            for axis in [JointAxis::AngX, JointAxis::AngY, JointAxis::AngZ] {
+                joint = joint.motor_model(axis, MotorModel::ForceBased).motor_position(axis, 0.0, hr.spring, hr.damper).motor_max_force(axis, hr.max_force);
+            }
+        }
+        self.joints.insert(anchor, body, joint.build(), true)
+    }
+
+    /// Brings the controllers in the world up to date with the scene: a node switched On or Off
+    /// gains or loses its joint to the world, and one that was dragged has its target moved. This
+    /// is how a node can be pulled about while the physics runs.
+    pub(crate) fn sync_targets(&mut self, scene: &Scene) {
+        let Some(anchor_body) = self.anchor else { return };
+        for i in 0..self.parts.len() {
+            let Some(node) = scene.node(self.parts[i].id) else { continue };
+            let (pos_on, rot_on) = (node.hold.is_some(), node.hold_rot.is_some());
+            let handle = self.parts[i].handle;
+            let Some(body) = self.bodies.get(handle) else { continue };
+            let t = body.position();
+            let (here, there) = (Vec3::new(t.translation.x, t.translation.y, t.translation.z), Quat::from_xyzw(t.rotation.i, t.rotation.j, t.rotation.k, t.rotation.w));
+            let (target_pos, target_rot) = hold_targets(node, here, there);
+            match self.parts[i].anchor {
+                Some((j, p, r)) if p == pos_on && r == rot_on => {
+                    if let Some(joint) = self.joints.get_mut(j) {
+                        joint.data.set_local_frame1(iso(target_pos, target_rot));
+                    }
+                }
+                old => {
+                    if let Some((j, _, _)) = old {
+                        self.joints.remove(j, true);
+                    }
+                    self.parts[i].anchor = (pos_on || rot_on).then(|| (self.insert_anchor(anchor_body, handle, pos_on, rot_on, target_pos, target_rot), pos_on, rot_on));
+                }
+            }
+        }
+    }
+
     pub(crate) fn add_ragdoll(&mut self, scene: &Scene, world: &HashMap<NodeId, Mat4>) {
         // Humanoid bones, parents first, and each one's nearest humanoid ancestor.
         let humanoid: Vec<NodeId> = scene.nodes.iter().filter(|n| matches!(n.kind, NodeKind::Bone) && n.humanoid.as_deref().and_then(region).is_some() && scene.is_visible(n.id)).map(|n| n.id).collect();
@@ -183,7 +257,12 @@ impl World {
                 collider_parts.push((idx, ch));
             }
             let limit = node.joint.clone().filter(|j| j.enabled && host.is_some());
-            let rest_rel = host_pose.map_or(Quat::IDENTITY, |(_, hr)| (hr.inverse() * rot).normalize());
+            // The turn from the body above to this one in the model's neutral pose: what the
+            // muscle pulls toward and what the limits are measured from, whatever pose the figure
+            // is in when the world starts (as VaM's muscle target comes from its prefab).
+            let current_rel = host_pose.map_or(Quat::IDENTITY, |(_, hr)| (hr.inverse() * rot).normalize());
+            let rest_rel = host.map_or(current_rel, |h| neutral_turn(scene, id, self.parts[h].id).unwrap_or(current_rel));
+            let mut muscle_joint = None;
             if let (Some(h), Some((hp, hr))) = (host, host_pose) {
                 let anchor = hr.inverse() * (p0 - hp);
                 // A ball joint at the part's origin, its frame turned to the pose at rest, so that
@@ -197,50 +276,21 @@ impl World {
                     }
                 }
                 if let Some(m) = muscle {
-                    let scale = if arm { ARM_MUSCLE } else { 1.0 };
+                    let scale = if arm { 0.0 } else { self.muscle };
                     for axis in [JointAxis::AngX, JointAxis::AngY, JointAxis::AngZ] {
-                        joint = joint.motor_model(axis, MotorModel::ForceBased).motor_position(axis, 0.0, m.spring * scale, m.damper * scale).motor_max_force(axis, m.max_force * scale);
+                        joint = joint.motor_model(axis, MotorModel::ForceBased).motor_position(axis, 0.0, m.spring * scale, m.damper * if arm { 1.0 } else { scale.max(0.2) }).motor_max_force(axis, if arm { ARM_MAX_TORQUE } else { m.max_force });
                     }
                 }
-                self.joints.insert(self.parts[h].handle, handle, joint.build(), true);
+                muscle_joint = Some(self.joints.insert(self.parts[h].handle, handle, joint.build(), true));
             }
             // A controller that is On: a joint to the world, free except for a spring-damper
             // motor on each axis it holds (position, orientation), as VaM's controllers do.
-            if pos_on || rot_on {
-                let target_pos = node.hold.map(Vec3::from).filter(|p| p.is_finite()).unwrap_or(p0);
-                let target_rot = node.hold_rot.map(|q| Quat::from_xyzw(q[0], q[1], q[2], q[3])).filter(|q| q.is_finite() && q.length_squared() > 1e-9).map_or(rot, Quat::normalize);
-                let mut joint = GenericJointBuilder::new(JointAxesMask::empty()).contacts_enabled(false).local_frame1(iso(target_pos, target_rot)).local_frame2(rapier3d::na::Isometry3::identity());
-                let (hp, hr) = (self.hold_position, self.hold_rotation);
-                if pos_on {
-                    for axis in [JointAxis::LinX, JointAxis::LinY, JointAxis::LinZ] {
-                        joint = joint.motor_model(axis, MotorModel::ForceBased).motor_position(axis, 0.0, hp.spring, hp.damper).motor_max_force(axis, hp.max_force);
-                    }
-                }
-                if rot_on {
-                    for axis in [JointAxis::AngX, JointAxis::AngY, JointAxis::AngZ] {
-                        joint = joint.motor_model(axis, MotorModel::ForceBased).motor_position(axis, 0.0, hr.spring, hr.damper).motor_max_force(axis, hr.max_force);
-                    }
-                }
-                self.joints.insert(anchor_body, handle, joint.build(), true);
-            }
-            self.parts.push(crate::Part { id, handle, parent: host, subtree: vec![idx], com, start_pos: p0, start_rot: rot, rest_rel, limit, lin_drag: drag, ang_drag: angular_drag });
+            let (target_pos, target_rot) = hold_targets(node, p0, rot);
+            let anchor = (pos_on || rot_on).then(|| (self.insert_anchor(anchor_body, handle, pos_on, rot_on, target_pos, target_rot), pos_on, rot_on));
+            self.parts.push(crate::Part { id, handle, parent: host, start_pos: p0, start_rot: rot, rest_rel, limit, lin_drag: drag, ang_drag: angular_drag, muscle: muscle_joint.zip(muscle).filter(|_| !arm), anchor });
             placed.insert(id, idx);
         }
-        self.collect_subtrees();
         self.ignore_rest_overlaps(&collider_parts);
-    }
-
-    /// For each part, itself and every part that hangs from it.
-    fn collect_subtrees(&mut self) {
-        for j in 0..self.parts.len() {
-            // Walk up from j: every part above it gets j in its subtree.
-            let mut cur = self.parts[j].parent;
-            for _ in 0..photocraft_scene3d::MAX_DEPTH {
-                let Some(c) = cur else { break };
-                self.parts[c].subtree.push(j);
-                cur = self.parts[c].parent;
-            }
-        }
     }
 
     /// Parts whose capsules overlap (or all but touch) in the pose the world is built from never

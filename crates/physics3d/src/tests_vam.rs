@@ -227,3 +227,146 @@ fn without_a_skin_to_measure_the_stock_width_is_kept_and_garbage_is_harmless() {
     assert!(crate::fit::fit_radius(&s, &node, Vec3::new(f32::NAN, 0.0, 0.0), 0.07).is_finite());
     let _ = crate::fit::fit_radius(&s, &node, Vec3::Y, f32::NAN); // no panic
 }
+
+/// How far each named bone travelled in a second of simulation.
+fn travel(s: &mut Scene, w: &mut World, names: &[&str]) -> Vec<f32> {
+    let mut last: Vec<Vec3> = names.iter().map(|n| pos(s, bone(s, n))).collect();
+    let mut path = vec![0.0f32; names.len()];
+    for _ in 0..90 {
+        w.step_scene(s);
+        for (i, n) in names.iter().enumerate() {
+            let p = pos(s, bone(s, n));
+            path[i] += p.distance(last[i]);
+            last[i] = p;
+        }
+    }
+    path
+}
+
+#[test]
+fn a_body_that_falls_comes_to_rest_without_bouncing_about_or_sliding_off() {
+    for who in ["female", "male"] {
+        let Some(mut s) = load_free(who) else { return };
+        let start = pos(&s, bone(&s, "hip"));
+        let mut w = World::new(&s);
+        steps(&mut s, &mut w, 450);
+        let path = travel(&mut s, &mut w, &["head", "lFoot", "lHand", "rHand", "hip"]);
+        assert!(path.iter().all(|p| *p < 0.3), "{who}: everything is nearly still after 5 s: {path:?}");
+        let hip = pos(&s, bone(&s, "hip"));
+        assert!(Vec3::new(hip.x - start.x, 0.0, hip.z - start.z).length() < 1.2, "{who}: it did not slide away: {start:?} -> {hip:?}");
+        assert_eq!(w.resets(), 0);
+    }
+}
+
+#[test]
+fn a_figure_held_by_head_and_feet_has_calm_arms() {
+    for who in ["female", "male"] {
+        let Some(mut s) = load_free(who) else { return };
+        s.set_all_holds(Some(&["head", "leftFoot", "rightFoot"]));
+        let mut w = World::new(&s);
+        steps(&mut s, &mut w, 270);
+        let path = travel(&mut s, &mut w, &["head", "lFoot", "lHand", "rHand", "hip"]);
+        assert!(path.iter().all(|p| *p < 0.3), "{who}: still after 3 s: {path:?}");
+    }
+}
+
+/// How far past its limits each limited joint went at worst in 5 s, in degrees, by joint name.
+fn worst_violations(s: &mut Scene, w: &mut World) -> Vec<(String, f32)> {
+    use photocraft_scene3d::glam::{EulerRot, Quat};
+    let q = |e: [f32; 3]| Quat::from_euler(EulerRot::XYZ, e[0].to_radians(), e[1].to_radians(), e[2].to_radians());
+    let mut worst: std::collections::BTreeMap<String, f32> = Default::default();
+    for i in 0..450 {
+        w.step_scene(s);
+        if i < 5 {
+            continue;
+        }
+        for n in s.nodes.iter().filter(|n| n.joint.is_some()) {
+            let rest = q(n.rest.as_ref().map_or([0.0; 3], |r| r.rotation));
+            let local = q(n.transform.rotation);
+            let Some(j) = n.joint.as_ref() else { continue };
+            let v = j.clamp(rest, local).angle_between(local).to_degrees();
+            let e = worst.entry(n.name.clone()).or_insert(0.0);
+            *e = e.max(v);
+        }
+    }
+    worst.into_iter().collect()
+}
+
+#[test]
+fn no_joint_goes_past_its_limits_in_a_fall_a_hang_or_a_held_arm() {
+    for who in ["female", "male"] {
+        for mode in 0..3 {
+            let Some(mut s) = load_free(who) else { return };
+            match mode {
+                1 => s.set_all_holds(Some(&["head", "leftFoot", "rightFoot"])),
+                2 => {
+                    for n in ["lShldr", "lForeArm"] {
+                        let id = bone(&s, n);
+                        s.set_hold(id, true).unwrap();
+                    }
+                }
+                _ => {}
+            }
+            let mut w = World::new(&s);
+            for (name, deg) in worst_violations(&mut s, &mut w) {
+                // The collar bones are squeezed between the arms and the chest and may give a few
+                // degrees; everything else, knees and elbows above all, keeps to its range.
+                let allowed = if name.contains("Collar") { 14.0 } else { 4.0 };
+                assert!(deg < allowed, "{who} mode {mode}: {name} went {deg:.0} degrees past its limit");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_posed_figure_sags_toward_its_neutral_pose_instead_of_holding_the_pose() {
+    use photocraft_scene3d::glam::{EulerRot, Quat};
+    let q = |e: [f32; 3]| Quat::from_euler(EulerRot::XYZ, e[0].to_radians(), e[1].to_radians(), e[2].to_radians());
+    for who in ["female", "male"] {
+        let Some(mut s) = load_free(who) else { return };
+        let neck = bone(&s, "neck");
+        // Throw the head well back before the world starts.
+        let rest = s.node(neck).unwrap().rest.as_ref().map_or([0.0; 3], |r| r.rotation);
+        s.node_mut(neck).unwrap().transform.rotation = [rest[0] - 40.0, rest[1], rest[2]];
+        let off = |s: &Scene| {
+            let n = s.node(neck).unwrap();
+            q(n.transform.rotation).angle_between(q(n.rest.as_ref().map_or([0.0; 3], |r| r.rotation))).to_degrees()
+        };
+        let before = off(&s);
+        let mut w = World::new(&s);
+        steps(&mut s, &mut w, 360);
+        let after = off(&s);
+        assert!(before > 20.0, "{who}: the neck was thrown back: {before}");
+        assert!(after < before * 0.6, "{who}: the muscle pulled it back toward neutral instead of freezing the pose: {before} -> {after}");
+    }
+}
+
+#[test]
+fn a_controller_dragged_while_the_world_runs_pulls_its_body_along() {
+    for who in ["female", "male"] {
+        let Some(mut s) = load_free(who) else { return };
+        s.set_all_holds(Some(&["head", "leftFoot", "rightFoot"]));
+        let head = bone(&s, "head");
+        let mut w = World::new(&s);
+        steps(&mut s, &mut w, 90);
+        let from = pos(&s, head);
+        // The user drags the head's node 25 cm sideways.
+        let mut target = s.node(head).unwrap().hold.unwrap();
+        target[0] += 0.25;
+        s.node_mut(head).unwrap().hold = Some(target);
+        steps(&mut s, &mut w, 180);
+        let to = pos(&s, head);
+        assert!(to.x - from.x > 0.18, "{who}: the head followed its node: {from:?} -> {to:?}");
+        // And an Off node switched On while it runs is held where it is from then on.
+        let hand = bone(&s, "lHand");
+        s.set_hold(hand, true).unwrap();
+        steps(&mut s, &mut w, 45);
+        let held = pos(&s, hand);
+        steps(&mut s, &mut w, 180);
+        assert!(pos(&s, hand).distance(held) < 0.15, "{who}: the hand stays where it was switched On");
+        // Switched Off again it lets go.
+        s.set_hold(hand, false).unwrap();
+        steps(&mut s, &mut w, 90);
+        assert!(w.resets() == 0);
+    }
+}

@@ -94,6 +94,8 @@ pub struct Scene3dEditor {
     /// Physics feel: gravity as a multiple of Earth's, and how quickly limbs lose speed.
     pub(crate) gravity_scale: f32,
     pub(crate) damping_scale: f32,
+    /// Strength of the trunk, neck and leg muscles, a multiplier of VaM's numbers.
+    pub(crate) muscle_scale: f32,
     /// What the gizmo does (W/E/R) and whether its axes are the node's own.
     pub(crate) gizmo_mode: GizmoMode,
     pub(crate) gizmo_local: bool,
@@ -161,6 +163,7 @@ impl Default for Scene3dEditor {
             control_filter: String::new(),
             gravity_scale: 1.0,
             damping_scale: 1.0,
+            muscle_scale: photocraft_physics3d::DEFAULT_MUSCLE,
             gizmo_mode: GizmoMode::Both,
             gizmo_local: false,
             history: Vec::new(),
@@ -705,10 +708,12 @@ fn side_panels(ui: &mut egui::Ui, ed: &mut Scene3dEditor) {
     ui.horizontal(|ui| {
         let g = ui.add(egui::Slider::new(&mut ed.gravity_scale, 0.0..=3.0).text(tl!("Gravity")).max_decimals(2));
         let d = ui.add(egui::Slider::new(&mut ed.damping_scale, 0.1..=3.0).logarithmic(true).text(tl!("Damping")).max_decimals(2));
-        if (g.changed() || d.changed())
+        let m = ui.add(egui::Slider::new(&mut ed.muscle_scale, 0.0..=2.0).text(tl!("Muscles")).max_decimals(2));
+        if (g.changed() || d.changed() || m.changed())
             && let Some(world) = ed.physics.as_mut()
         {
             world.set_tuning(ed.gravity_scale, ed.damping_scale);
+            world.set_muscle(ed.muscle_scale);
         }
     });
     ui.separator();

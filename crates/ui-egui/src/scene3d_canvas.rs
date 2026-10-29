@@ -134,6 +134,7 @@ pub(crate) fn play(ed: &mut Scene3dEditor) -> Result<(), String> {
         return Err(tl!("Nothing to move: switch a bone or an object Off, or use a model with hair.").to_string());
     }
     world.set_tuning(ed.gravity_scale, ed.damping_scale);
+    world.set_muscle(ed.muscle_scale);
     remember_edit(ed);
     ed.play_base = Some(ed.scene.clone());
     ed.play_acc = 0.0;
@@ -229,10 +230,20 @@ pub(crate) fn gizmo_for(ed: &Scene3dEditor) -> Option<Gizmo> {
     if matches!(node.kind, NodeKind::Bone) && ed.gizmo_mode == GizmoMode::Scale {
         return None;
     }
+    let on = node.hold.is_some() || node.hold_rot.is_some();
+    // While the physics runs only a node that is On has a gizmo: it moves that node's target.
+    if ed.physics.is_some() && (!on || ed.gizmo_mode == GizmoMode::Scale) {
+        return None;
+    }
     let world = ed.scene.world_matrix(id)?;
-    let origin = world.transform_point3(Vec3::ZERO);
+    // A node that is On sits at its target (that is where its cube is drawn).
+    let origin = node.hold.map(Vec3::from).filter(|t| t.is_finite()).unwrap_or_else(|| world.transform_point3(Vec3::ZERO));
     let axes = if ed.gizmo_local {
-        [Vec3::X, Vec3::Y, Vec3::Z].map(|a| world.transform_vector3(a).normalize_or_zero())
+        let m = match node.hold_rot.map(photocraft_scene3d::glam::Quat::from_array).filter(|q| q.is_finite() && q.length_squared() > 1e-9) {
+            Some(q) => photocraft_scene3d::glam::Mat4::from_quat(q.normalize()),
+            None => world,
+        };
+        [Vec3::X, Vec3::Y, Vec3::Z].map(|a| m.transform_vector3(a).normalize_or_zero())
     } else {
         [Vec3::X, Vec3::Y, Vec3::Z]
     };
@@ -258,12 +269,13 @@ pub(crate) fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifi
             let p = to_view(x, y);
             let camera = if mods.shift { PointerKind::Pan } else if mods.command { PointerKind::Dolly } else { PointerKind::Orbit };
             let mut state = PointerState { kind: camera, start: p, last: p, moved: false, pending_click: true };
-            // While the physics runs the pointer only moves the camera and selects.
-            if !mods.alt && ed.physics.is_none() {
+            // While the physics runs only a node that is On can be pulled about (its target moves,
+            // the body follows); anything else moves the camera or selects.
+            if !mods.alt {
                 if let Some(g) = begin_gizmo(ed, view, p) {
                     state.kind = PointerKind::Gizmo(Box::new(g));
                     state.pending_click = false;
-                } else if ed.show_bones {
+                } else if ed.show_bones && ed.physics.is_none() {
                     let bones = bone_screen(&ed.scene, view);
                     if let Some(id) = nearest_bone(&bones, p.0, p.1, grab) {
                         ed.selected = Some(id);
@@ -365,6 +377,20 @@ fn begin_gizmo(ed: &Scene3dEditor, view: (u32, u32), p: (f32, f32)) -> Option<Gi
 /// One step of a gizmo drag: the nodes go back to the press, then take the drag's whole effect.
 fn apply_gizmo(ed: &mut Scene3dEditor, g: &GizmoDrag, ray: Ray) {
     let Some(delta) = g.drag.update(ray) else { return };
+    if ed.physics.is_some() {
+        // The physics is writing the poses: only the node's target moves.
+        let base = g.base.iter().find(|n| n.id == g.id).map(|n| (n.hold, n.hold_rot));
+        if let (Some((hold, hold_rot)), Some(n)) = (base, ed.scene.node_mut(g.id)) {
+            match delta {
+                Delta::Translate(v) => n.hold = hold.map(|h| (Vec3::from(h) + v).to_array()).or(n.hold),
+                Delta::Rotate(q) => n.hold_rot = hold_rot.map(|r| (q * photocraft_scene3d::glam::Quat::from_array(r)).normalize().to_array()).or(n.hold_rot),
+                Delta::Scale(_) => {}
+            }
+        }
+        ed.touch();
+        ed.pending_change = true;
+        return;
+    }
     ed.scene.nodes = g.base.clone();
     let linked = ed.scene.node(g.id).is_some_and(|n| n.link.is_some() && !matches!(n.kind, NodeKind::Bone));
     let result = match delta {
@@ -495,6 +521,10 @@ pub(crate) fn draw_content(app: &PhotocraftApp, painter: &egui::Painter, xf: &Vi
 const AXIS_COLORS: [Color32; 3] = [Color32::from_rgb(230, 70, 70), Color32::from_rgb(90, 200, 90), Color32::from_rgb(80, 130, 240)];
 const HOT: Color32 = Color32::from_rgb(255, 220, 60);
 
+fn bone_tint(node: &photocraft_scene3d::Node) -> Color32 {
+    crate::scene3d_cubes::bone_color(node).gamma_multiply(0.8)
+}
+
 /// The skeleton, the gizmo and the selection marker over the picture.
 pub(crate) fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform) {
     let ed = &app.scene3d;
@@ -515,7 +545,22 @@ pub(crate) fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &Vi
     cubes.sort_by(|a, b| b.0.total_cmp(&a.0));
     for (_, id) in cubes {
         let (Some(node), Some(m)) = (ed.scene.node(id), world.get(&id)) else { continue };
-        let (_, rot, centre) = m.to_scale_rotation_translation();
+        let (_, mut rot, mut centre) = m.to_scale_rotation_translation();
+        // A controller that is On sits at its target: while the body is pulled toward it (Play) the
+        // cube stays put and a line runs from it to the bone, as in VaM.
+        let body = centre;
+        if let Some(t) = node.hold.map(Vec3::from).filter(|t| t.is_finite()) {
+            centre = t;
+        }
+        if let Some(q) = node.hold_rot.map(photocraft_scene3d::glam::Quat::from_array).filter(|q| q.is_finite() && q.length_squared() > 1e-9) {
+            rot = q.normalize();
+        }
+        if centre.distance(body) > 0.01 {
+            let pts = photocraft_render3d::project_points(&ed.scene, view.0, view.1, &[body, centre]);
+            if let [Some(a), Some(b)] = pts[..] {
+                painter.line_segment([to_screen(a.0, a.1), to_screen(b.0, b.1)], Stroke::new(1.5, bone_tint(node)));
+            }
+        }
         let selected = ed.selected == Some(id);
         if selected {
             crate::scene3d_cubes::draw_cube(painter, &to_screen, &ed.scene, view, centre, rot, crate::scene3d_cubes::HALF_PX * 2.4, Color32::from_rgb(90, 120, 255), 90, Color32::from_rgba_unmultiplied(160, 190, 255, 200));

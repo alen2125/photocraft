@@ -8,10 +8,8 @@
 use photocraft_scene3d::glam::{Quat, Vec3};
 use rapier3d::prelude::*;
 
-use crate::{Part, World, STEP};
+use crate::{Part, World};
 
-/// How much of a limit's overshoot is taken out per step.
-const LIMIT_BETA: f32 = 0.3;
 /// The most a limit changes a joint's turning speed in one step (rad/s).
 const MAX_CORRECTION: f32 = 20.0;
 
@@ -23,6 +21,13 @@ fn quat(b: &RigidBody) -> Quat {
     let q = b.rotation().quaternion();
     let r = Quat::from_xyzw(q.i, q.j, q.k, q.w);
     if r.is_finite() { r.normalize() } else { Quat::IDENTITY }
+}
+
+/// How easily the body turns about the world axis `n`: n·I⁻¹·n (zero for a body that cannot move).
+fn inv_inertia(b: &RigidBody, n: Vec3) -> f32 {
+    let v = b.mass_properties().effective_world_inv_inertia_sqrt * na(n);
+    let r = v.dot(&v);
+    if r.is_finite() { r.max(0.0) } else { 0.0 }
 }
 
 fn na(v: Vec3) -> Vector<f32> {
@@ -37,50 +42,46 @@ fn turn(from: Quat, to: Quat) -> Vec3 {
 }
 
 impl World {
-    /// One step's worth of joint limits, as turning impulses on the bodies.
+    /// One pass of the joint limits, as turning impulses on the bodies. Each joint looks ahead: it
+    /// works out where the relative turn will be at the end of the step at its present speed, and
+    /// if that is outside the limits it asks for exactly the speed that lands on the edge (so a
+    /// limit holds like a wall, adds no energy, and does not wait for the joint to go through it).
     pub(crate) fn drive(&mut self) {
-        let dt = STEP;
+        let dt = self.params.dt;
         for i in 0..self.parts.len() {
             let part = self.parts[i].clone();
             let (Some(p), Some(limit)) = (part.parent, &part.limit) else { continue };
             let (Some(parent), Some(child)) = (self.bodies.get(self.parts[p].handle), self.bodies.get(part.handle)) else { continue };
             let (pq, cq) = (quat(parent), quat(child));
             let rel = (pq.inverse() * cq).normalize();
-            let allowed = limit.clamp(part.rest_rel, rel);
-            if !allowed.is_finite() || allowed.angle_between(rel) <= 1e-4 {
+            // Where the joint will be at the end of the step if nothing changes its speed.
+            let w_rel = pq.inverse() * (vec3(child.angvel()) - vec3(parent.angvel()));
+            let ahead = (Quat::from_scaled_axis(w_rel * dt) * rel).normalize();
+            let allowed = limit.clamp(part.rest_rel, ahead);
+            if !allowed.is_finite() || allowed.angle_between(ahead) <= 1e-4 {
                 continue;
             }
-            // The turn that would bring the joint back inside, in the world, and how fast the
-            // child already turns about it relative to the part above.
-            let e = pq * turn(rel, allowed);
+            // The turn that brings it back to the edge, in the world, as a change of speed.
+            let e = pq * turn(ahead, allowed);
             let (theta, n) = (e.length(), e.normalize_or_zero());
             if n == Vec3::ZERO {
                 continue;
             }
-            let s = (vec3(child.angvel()) - vec3(parent.angvel())).dot(n);
-            let want = LIMIT_BETA * theta / dt;
-            if s < want {
-                // Everything below the joint changes its turning speed by the same amount about
-                // the joint, and its linear speed with it, so nothing is stretched.
-                let dw = n * (want - s).min(MAX_CORRECTION);
-                let pivot = vec3(child.translation());
-                let shifts: Vec<(RigidBodyHandle, Vec3, Vec3)> = part
-                    .subtree
-                    .iter()
-                    .filter_map(|&k| {
-                        let q = &self.parts[k];
-                        let b = self.bodies.get(q.handle)?;
-                        let com = vec3(b.translation()) + quat(b) * q.com;
-                        Some((q.handle, dw, dw.cross(com - pivot)))
-                    })
-                    .collect();
-                for (h, dw, dv) in shifts {
-                    if let Some(b) = self.bodies.get_mut(h)
-                        && dw.is_finite()
-                        && dv.is_finite()
-                    {
-                        b.set_angvel(na(vec3(b.angvel()) + dw), true);
-                        b.set_linvel(na(vec3(b.linvel()) + dv), true);
+            let want = (theta / dt).min(MAX_CORRECTION);
+            // A two-body impulse about the axis: the child is turned toward the allowed side
+            // and the parent turned back by what the child's push costs it, so nothing is
+            // added to the pair's total spin and a part resting on the floor is not thrown.
+            let (ic, ip) = (inv_inertia(child, n), inv_inertia(parent, n));
+            let total = ic + ip;
+            if total > 1e-9 {
+                let l = want / total;
+                let (hc, hp) = (part.handle, self.parts[p].handle);
+                if l.is_finite() {
+                    if let Some(b) = self.bodies.get_mut(hc) {
+                        b.apply_torque_impulse(na(n * l), true);
+                    }
+                    if let Some(b) = self.bodies.get_mut(hp) {
+                        b.apply_torque_impulse(na(-n * l), true);
                     }
                 }
             }
