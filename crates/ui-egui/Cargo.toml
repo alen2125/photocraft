@@ -21,6 +21,7 @@ photocraft-gpu = { workspace = true }
 photocraft-scene3d = { workspace = true }
 photocraft-render3d = { workspace = true }
 photocraft-physics3d = { workspace = true }
+photocraft-vam = { workspace = true }
 photocraft-engine = { workspace = true }
 photocraft-io = { workspace = true }
 photocraft-plugins = { workspace = true }

@@ -79,6 +79,7 @@ pub mod color_panel_memory;
 pub mod custom_shape_ui;
 mod scene3d_canvas;
 mod scene3d_cubes;
+mod scene3d_vam;
 mod scene3d_zoom;
 pub mod scene3d_ui;
 mod scene3d_worker;

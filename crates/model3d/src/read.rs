@@ -144,6 +144,8 @@ pub fn load(name: &str, bytes: &[u8]) -> Result<ModelData, ModelError> {
         control_bones: Vec::new(),
         pose_controls: Vec::new(),
         physics: Default::default(),
+        vertex_base: Vec::new(),
+        graft_start: None,
     };
     crate::vrm::read(&doc, &mut data);
     Ok(data)

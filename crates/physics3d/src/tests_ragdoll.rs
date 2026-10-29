@@ -69,6 +69,8 @@ fn humanoid_model(hair_collider: bool) -> Arc<ModelData> {
         control_bones: vec![],
         pose_controls: vec![],
         physics: Default::default(),
+        vertex_base: Vec::new(),
+        graft_start: None,
     })
 }
 

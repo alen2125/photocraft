@@ -24,6 +24,12 @@ pub(crate) fn read(doc: &gltf::Document, data: &mut ModelData) {
     if let Some(v) = doc.extension_value("PC_physics") {
         read_physics(v, data);
     }
+    if let Some(v) = doc.extension_value("PC_morph") {
+        // One entry per vertex, each below the vertex count (an index past it is ignored).
+        let cap = crate::MAX_VERTICES;
+        data.graft_start = v.get("graftStart").and_then(Value::as_u64).and_then(|i| u32::try_from(i).ok());
+        data.vertex_base = v.get("vertexBase").and_then(Value::as_array).into_iter().flatten().take(cap).map(|n| n.as_u64().and_then(|i| u32::try_from(i).ok()).unwrap_or(u32::MAX)).collect();
+    }
     if let Some(v) = doc.extension_value("PC_pose_controls") {
         read_pose_controls(v, data);
     }

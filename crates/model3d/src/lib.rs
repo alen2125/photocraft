@@ -8,6 +8,7 @@
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+pub mod morph;
 mod read;
 #[cfg(any(test, feature = "testgen"))]
 pub mod testgen;
@@ -241,6 +242,13 @@ pub struct ModelData {
     pub control_bones: Vec<ControlBoneData>,
     pub pose_controls: Vec<PoseControlData>,
     pub physics: PhysicsData,
+    /// For each vertex of the meshes (they share one vertex list), the base vertex of the figure it
+    /// copies: a morph's offsets are given per base vertex, and a seam copy takes its twin's. Empty
+    /// when the model has no morph data (the file's `PC_morph` extension).
+    pub vertex_base: Vec<u32>,
+    /// The base vertex where the genital graft starts: the genital morphs number their vertices
+    /// from 0 within the graft, so a morph's index plus this is the figure's base vertex.
+    pub graft_start: Option<u32>,
 }
 
 impl ModelData {

@@ -583,8 +583,8 @@ physics = {"step": 1.0 / 90.0, "iterations": 15, "friction": 0.6, "bounciness": 
 
 gltf = {
     "asset": {"version": "2.0", "generator": "vam-base-export"},
-    "extensionsUsed": ["VRM", "PC_controls", "PC_limits", "PC_pose_controls", "PC_physics"],
-    "extensions": {"PC_controls": {"nodes": controls}, "PC_limits": {"joints": limits}, "PC_pose_controls": {"bones": pc_bones, "controls": pc_controls}, "PC_physics": physics, "VRM": {"exporterVersion": "vam-base-export", "specVersion": "0.0", "meta": {"title": "VaM base " + who, "version": "1"}, "humanoid": {"humanBones": human}}},
+    "extensionsUsed": ["VRM", "PC_controls", "PC_limits", "PC_pose_controls", "PC_physics", "PC_morph"],
+    "extensions": {"PC_controls": {"nodes": controls}, "PC_limits": {"joints": limits}, "PC_pose_controls": {"bones": pc_bones, "controls": pc_controls}, "PC_physics": physics, "PC_morph": {"vertexBase": [base_of(j) for j in range(nv)], "graftStart": mesh["startGraftVertIndex"]}, "VRM": {"exporterVersion": "vam-base-export", "specVersion": "0.0", "meta": {"title": "VaM base " + who, "version": "1"}, "humanoid": {"humanBones": human}}},
     "scene": 0, "scenes": [{"nodes": [0, mesh_node]}],
     "nodes": nodes, "meshes": [{"name": who, "primitives": prims}],
     "skins": [{"joints": [bone_node[b] for b in need], "inverseBindMatrices": a_ibm, "skeleton": 0}],

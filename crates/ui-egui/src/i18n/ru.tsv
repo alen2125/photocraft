@@ -4683,3 +4683,15 @@ shape	Appearance	Оформление
 	Muscles	Мышцы
 	Live physics	Живая физика
 	The physics runs all the time, as in VaM: pull a node and the body follows. Untick to pose with IK and use Play.	Физика идёт всё время, как в VaM: потяните узел, и тело следует за ним. Снимите галочку, чтобы позировать через IK и пользоваться Пуском.
+	Morphs	Морфы
+	VaM folder	Папка VaM
+	Read	Прочитать
+	Import a VaM figure (vam_base_female / vam_base_male) to use morphs.	Импортируйте фигуру VaM (vam_base_female / vam_base_male), чтобы пользоваться морфами.
+	Search morphs…	Поиск морфов…
+	Reset morphs	Сбросить морфы
+	More matches: type more of the name.	Есть ещё совпадения: введите больше букв названия.
+	Type two letters of a morph's name to list matches.	Введите две буквы названия морфа, чтобы увидеть совпадения.
+	Scene	Сцена
+	No morphs are on. Move one in the All tab and it appears here.	Нет включённых морфов. Подвиньте любой во вкладке «Все», и он появится здесь.
+	Active morphs	Активные
+	All morphs	Все

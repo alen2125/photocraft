@@ -87,3 +87,16 @@ fn a_real_vrm_loads_with_skeleton_textures_and_springs() {
         }
     }
 }
+
+#[test]
+fn the_vam_figures_say_which_base_vertex_each_vertex_copies() {
+    for who in ["female", "male"] {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../../samples/vam_base_{who}.vrm"));
+        let Ok(bytes) = std::fs::read(path) else { return };
+        let m = crate::load("vam.vrm", &bytes).unwrap();
+        let n = m.meshes.first().map_or(0, |mesh| mesh.positions.len());
+        assert!(n > 20_000 && m.vertex_base.len() == n, "{who}: one base index per vertex: {} vs {n}", m.vertex_base.len());
+        assert!(m.vertex_base.iter().all(|b| (*b as usize) < n));
+        assert!(m.meshes.iter().all(|mesh| mesh.positions.len() == n), "every primitive shares the vertex list");
+    }
+}

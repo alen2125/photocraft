@@ -91,6 +91,8 @@ fn limited_arm(limit: bool) -> (Scene, NodeId, NodeId) {
         control_bones: vec![],
         pose_controls: vec![],
         physics: Default::default(),
+        vertex_base: Vec::new(),
+        graft_start: None,
     };
     let mut s = Scene::default();
     s.add_model(Arc::new(m), None).unwrap();

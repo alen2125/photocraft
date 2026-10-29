@@ -5318,6 +5318,7 @@ dependencies = [
  "photocraft-scene3d",
  "photocraft-testkit",
  "photocraft-text",
+ "photocraft-vam",
  "photocraft-vector",
  "rayon",
  "serde",
@@ -5327,6 +5328,15 @@ dependencies = [
  "toml",
  "unicode-bidi",
  "winsafe",
+]
+
+[[package]]
+name = "photocraft-vam"
+version = "0.15.1"
+dependencies = [
+ "flate2",
+ "photocraft-model3d",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

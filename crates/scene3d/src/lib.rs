@@ -15,6 +15,7 @@ mod link;
 mod mesh;
 mod pose_control;
 mod model;
+pub mod morph;
 mod scene;
 
 pub use glam;
@@ -57,3 +58,6 @@ mod tests_hold;
 
 #[cfg(test)]
 mod tests_controls;
+
+#[cfg(test)]
+mod tests_morph;

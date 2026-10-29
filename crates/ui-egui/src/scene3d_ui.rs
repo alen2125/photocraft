@@ -91,6 +91,8 @@ pub struct Scene3dEditor {
     pub(crate) pending_change: bool,
     /// Text typed in the pose-slider filter box.
     pub(crate) control_filter: String,
+    /// The Virt-A-Mate folder and the morphs read from it.
+    pub(crate) vam: crate::scene3d_vam::VamState,
     /// Physics feel: gravity as a multiple of Earth's, and how quickly limbs lose speed.
     pub(crate) gravity_scale: f32,
     pub(crate) damping_scale: f32,
@@ -178,6 +180,7 @@ impl Default for Scene3dEditor {
             damping_scale: 1.0,
             muscle_scale: photocraft_physics3d::DEFAULT_MUSCLE,
             link_filter: String::new(),
+            vam: Default::default(),
             live: true,
             sim_rev: 0,
             world_rev: None,
@@ -714,6 +717,10 @@ pub(crate) fn drag_bone(ed: &mut Scene3dEditor, drag: BoneDrag, size: (u32, u32)
 }
 
 fn side_panels(ui: &mut egui::Ui, ed: &mut Scene3dEditor) {
+    // A scene with a VaM figure has a second page, for its morphs.
+    if crate::scene3d_vam::page_switch(ui, ed) {
+        return;
+    }
     ui.label(egui::RichText::new(tl!("Add")).strong());
     ui.horizontal_wrapped(|ui| {
         for p in [Primitive::cube(), Primitive::sphere(), Primitive::cylinder(), Primitive::cone(), Primitive::plane()] {
@@ -791,6 +798,7 @@ fn side_panels(ui: &mut egui::Ui, ed: &mut Scene3dEditor) {
                 egui::CollapsingHeader::new(tl!("Pose sliders")).default_open(false).show(ui, |ui| controls_panel(ui, ed));
                 ui.separator();
             }
+
         }
         match ed.selected {
         Some(id) if ed.scene.node(id).is_some() => node_inspector(ui, ed, id),
@@ -1020,6 +1028,7 @@ pub(crate) fn run_action(app: &mut PhotocraftApp, ctx: &egui::Context, action: A
                 let problems = load_missing_assets(&mut scene);
                 app.scene3d.load(scene, Some(name.clone()));
                 app.scene3d.status = problems.join("; ");
+                crate::scene3d_vam::restore_morphs(&mut app.scene3d);
                 Ok(json!({"opened": name}))
             });
             if let Err(e) = asked {

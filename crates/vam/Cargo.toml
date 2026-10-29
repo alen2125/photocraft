@@ -1,0 +1,15 @@
+[package]
+name = "photocraft-vam"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+# Reads a Virt-A-Mate install (the user's own copy, named by them): loose files under its Custom
+# folder and the zip packages in AddonPackages. Nothing from it is ever copied into the repository.
+[dependencies]
+photocraft-model3d = { workspace = true }
+flate2 = { workspace = true }
+thiserror = { workspace = true }
