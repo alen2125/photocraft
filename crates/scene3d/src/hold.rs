@@ -37,10 +37,16 @@ impl Scene {
     /// `None` puts every one On (position and orientation); `Some(names)` puts On only those whose
     /// humanoid name or node name is in the list, and every other one Off.
     pub fn set_all_holds(&mut self, only: Option<&[&str]>) {
+        self.set_holds_below(None, only);
+    }
+
+    /// Like [`Scene::set_all_holds`], but only for the bones below `root` (all of them when `None`).
+    pub fn set_holds_below(&mut self, root: Option<NodeId>, only: Option<&[&str]>) {
         let ids: Vec<(NodeId, bool)> = self
             .nodes
             .iter()
             .filter(|n| matches!(n.kind, NodeKind::Bone) && !n.minor)
+            .filter(|n| root.is_none_or(|r| self.is_above(r, n.id)))
             .map(|n| (n.id, only.is_none_or(|names| names.iter().any(|w| n.humanoid.as_deref() == Some(*w) || n.name == *w))))
             .collect();
         for (id, on) in ids {

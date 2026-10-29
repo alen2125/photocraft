@@ -230,7 +230,7 @@ impl World {
                 (None, Some(f)) => (f.mass, f.drag, f.angular_drag),
                 _ => (1.0, 0.5, 5.0),
             };
-            let arm = hn.contains("Arm") || hn.contains("Hand") || hn.contains("Shoulder");
+            let arm = hn.contains("Arm") || hn.contains("Hand");
             let muscle = data.and_then(|d| d.muscle).or(fallback.map(|f| f.muscle)).filter(|_| host.is_some());
             let caps: Vec<Capsule> = match model {
                 Some((m, i)) if m.physics.colliders.iter().any(|c| c.node == i) => m.physics.colliders.iter().filter(|c| c.node == i).map(|c| (Vec3::from(c.a), Vec3::from(c.b), c.radius)).collect(),

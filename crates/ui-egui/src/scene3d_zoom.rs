@@ -53,7 +53,7 @@ pub(crate) fn zoom_toward(ed: &mut Scene3dEditor, view: (u32, u32), p: (f32, f32
     ed.scene.camera.near = (new * 0.1).clamp(0.005, 0.05);
     ed.scene.camera.far = (new * 4.0).max(200.0);
     ed.orbit.apply(&mut ed.scene.camera);
-    ed.touch();
+    ed.touch_keep_world();
     ed.pending_change = true;
 }
 

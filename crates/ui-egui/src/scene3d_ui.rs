@@ -96,6 +96,19 @@ pub struct Scene3dEditor {
     pub(crate) damping_scale: f32,
     /// Strength of the trunk, neck and leg muscles, a multiplier of VaM's numbers.
     pub(crate) muscle_scale: f32,
+    /// The search text of the Link-to list.
+    pub(crate) link_filter: String,
+    /// The physics runs all the time (as in VaM) until this is switched off.
+    pub(crate) live: bool,
+    /// Bumped by every step of the physics and every target dragged while it runs: the picture
+    /// changes, but the scene was not edited (no undo step, no new world).
+    pub(crate) sim_rev: u64,
+    /// The scene revision the running world was built from (`None`: none was built).
+    pub(crate) world_rev: Option<u64>,
+    /// A node that is On only while it is held with the pointer.
+    pub(crate) temp_hold: Option<NodeId>,
+    /// Frames since anything moved: the physics stops drawing when it has been quiet a while.
+    pub(crate) quiet_frames: u32,
     /// What the gizmo does (W/E/R) and whether its axes are the node's own.
     pub(crate) gizmo_mode: GizmoMode,
     pub(crate) gizmo_local: bool,
@@ -164,6 +177,12 @@ impl Default for Scene3dEditor {
             gravity_scale: 1.0,
             damping_scale: 1.0,
             muscle_scale: photocraft_physics3d::DEFAULT_MUSCLE,
+            link_filter: String::new(),
+            live: true,
+            sim_rev: 0,
+            world_rev: None,
+            temp_hold: None,
+            quiet_frames: 0,
             gizmo_mode: GizmoMode::Both,
             gizmo_local: false,
             history: Vec::new(),
@@ -191,6 +210,21 @@ impl Scene3dEditor {
         self.rev += 1;
     }
 
+    /// An edit that does not change what the physics world was built from (the camera, a node's
+    /// target, a node switched On or Off): an undo step and a new picture, but the world goes on.
+    pub(crate) fn touch_keep_world(&mut self) {
+        let in_sync = self.world_rev == Some(self.rev);
+        self.rev += 1;
+        if in_sync {
+            self.world_rev = Some(self.rev);
+        }
+    }
+
+    /// What the preview is of: the scene revision and the physics' progress.
+    pub(crate) fn preview_rev(&self) -> u64 {
+        self.rev.wrapping_mul(1 << 24).wrapping_add(self.sim_rev)
+    }
+
     /// Adds a model from file bytes (`name` is the path on the desktop) and frames its skeleton.
     pub(crate) fn import_model(&mut self, name: &str, bytes: &[u8]) -> Result<(), String> {
         let model = photocraft_scene3d::model3d::load(name, bytes).map_err(|e| format!("{name}: {e}"))?;
@@ -198,6 +232,10 @@ impl Scene3dEditor {
         let path = std::path::Path::new(name).is_absolute().then(|| name.to_string());
         let root = self.scene.add_model(Arc::new(model), path).map_err(|e| e.to_string())?;
         self.selected = Some(root);
+        // With the physics always running a fresh figure stands on its feet: feet and hips On.
+        if self.live {
+            self.scene.set_holds_below(Some(root), Some(&["hips", "leftFoot", "rightFoot"]));
+        }
         self.frame_bones();
         self.touch();
         Ok(())
@@ -308,7 +346,7 @@ pub(crate) fn refresh_preview(ctx: &egui::Context, ed: &mut Scene3dEditor, size:
         }
     }
     // Ask for the newest state once the renderer is free (it asks for a repaint when it ends).
-    let want = (ed.rev, size.0, size.1, ssaa);
+    let want = (ed.preview_rev(), size.0, size.1, ssaa);
     if ed.preview.as_ref().is_none_or(|p| p.key != want) && !ed.worker.busy() && !ed.worker.is_last(want) {
         let opts = photocraft_render3d::RenderOptions { width: size.0, height: size.1, ssaa, transparent: ed.out_transparent };
         ed.worker.submit(ctx, want, ed.scene.clone(), opts);
@@ -362,12 +400,6 @@ fn node_inspector(ui: &mut egui::Ui, ed: &mut Scene3dEditor, id: NodeId) {
     let mut changed = false;
     let others: Vec<(NodeId, String)> = ed.scene.nodes.iter().filter(|n| n.id != id).map(|n| (n.id, n.name.clone())).collect();
     let mut reparent: Option<Option<NodeId>> = None;
-    // Some(None) = unlink, Some(Some(t)) = link to `t`; applied once the node borrow ends.
-    let mut link_action: Option<Option<NodeId>> = None;
-    // Some(true) = freeze the bone where it is, Some(false) = release it.
-    let mut hold_action: Option<bool> = None;
-    // The same for the bone's orientation.
-    let mut rot_action: Option<bool> = None;
     let Some(node) = ed.scene.node_mut(id) else { return };
     changed |= ui.text_edit_singleline(&mut node.name).changed();
     changed |= ui.checkbox(&mut node.visible, tl!("Visible")).changed();
@@ -383,7 +415,6 @@ fn node_inspector(ui: &mut egui::Ui, ed: &mut Scene3dEditor, id: NodeId) {
         }
     });
     ui.separator();
-    link_section(ui, node, &others, &mut link_action, &mut changed);
     egui::CollapsingHeader::new(tl!("Exact values")).default_open(false).show(ui, |ui| {
         changed |= vec3_row(ui, tl!("Position"), &mut node.transform.translation, 0.02);
         changed |= vec3_row(ui, tl!("Rotation"), &mut node.transform.rotation, 0.5);
@@ -392,33 +423,6 @@ fn node_inspector(ui: &mut egui::Ui, ed: &mut Scene3dEditor, id: NodeId) {
     ui.separator();
     if matches!(node.kind, NodeKind::Primitive { .. }) {
         changed |= ui.checkbox(&mut node.pinned, tl!("On (stays put)")).on_hover_text(tl!("Off: it falls when you press Play.")).changed();
-    }
-    if matches!(node.kind, NodeKind::Bone) {
-        // Position and orientation each On or Off, as in VaM. On: frozen in space; the limb turns
-        // to keep it there while you move the bones above it, and it stays put when you press
-        // Play. Off: it follows the bones above it, and hangs and swings in Play.
-        let pos_before = node.hold.is_some();
-        let mut pos_on = pos_before;
-        ui.horizontal(|ui| {
-            ui.add_sized([80.0, 18.0], egui::Label::new(tl!("Position")));
-            ui.radio_value(&mut pos_on, true, tl!("On")).on_hover_text(tl!("The bone stays at this point in space while you move the bones above it, and does not fall in Play."));
-            ui.radio_value(&mut pos_on, false, tl!("Off")).on_hover_text(tl!("The bone follows the bones above it, and hangs from them in Play."));
-        });
-        if pos_on != pos_before {
-            hold_action = Some(pos_on);
-            changed = true;
-        }
-        let rot_before = node.hold_rot.is_some();
-        let mut rot_on = rot_before;
-        ui.horizontal(|ui| {
-            ui.add_sized([80.0, 18.0], egui::Label::new(tl!("Orientation")));
-            ui.radio_value(&mut rot_on, true, tl!("On")).on_hover_text(tl!("The bone keeps the way it faces while the bones above it move or turn, and does not spin in Play."));
-            ui.radio_value(&mut rot_on, false, tl!("Off")).on_hover_text(tl!("The bone turns with the bones above it, and swings freely in Play."));
-        });
-        if rot_on != rot_before {
-            rot_action = Some(rot_on);
-            changed = true;
-        }
     }
     match &mut node.kind {
         NodeKind::Empty => {}
@@ -472,22 +476,63 @@ fn node_inspector(ui: &mut egui::Ui, ed: &mut Scene3dEditor, id: NodeId) {
             }
         }
     }
-    if let Some(hold) = hold_action
-        && let Err(e) = ed.scene.set_hold(id, hold)
-    {
-        ed.status = e.to_string();
-    }
-    if let Some(hold) = rot_action
-        && let Err(e) = ed.scene.set_hold_rotation(id, hold)
-    {
-        ed.status = e.to_string();
-    }
     if let Some(p) = reparent {
         match ed.scene.set_parent(id, p) {
             Ok(()) => changed = true,
             Err(e) => ed.status = e.to_string(),
         }
     }
+    if changed {
+        ed.touch();
+    }
+}
+
+/// What the selected node is tied to and how it is held, kept above the pose panels so it is
+/// always in reach: Position and Orientation On or Off (bones), then the link to another node.
+fn node_controls(ui: &mut egui::Ui, ed: &mut Scene3dEditor) {
+    let Some(id) = ed.selected else { return };
+    let Some(name) = ed.scene.node(id).map(|n| n.name.clone()) else { return };
+    let mut changed = false;
+    // A node switched On or Off: the running world takes it up by itself.
+    let mut held = false;
+    ui.label(egui::RichText::new(name).strong());
+    if ed.scene.node(id).is_some_and(|n| matches!(n.kind, NodeKind::Bone)) {
+        // Position and orientation each On or Off, as in VaM. On: held in space; the limb turns to
+        // keep it there while you move the bones above it, and it stays put in Play. Off: it follows
+        // the bones above it, and hangs and swings in Play.
+        let (pos_before, rot_before) = ed.scene.node(id).map_or((false, false), |n| (n.hold.is_some(), n.hold_rot.is_some()));
+        let (mut pos_on, mut rot_on) = (pos_before, rot_before);
+        ui.horizontal(|ui| {
+            ui.add_sized([80.0, 18.0], egui::Label::new(tl!("Position")));
+            ui.radio_value(&mut pos_on, true, tl!("On")).on_hover_text(tl!("The bone stays at this point in space while you move the bones above it, and does not fall in Play."));
+            ui.radio_value(&mut pos_on, false, tl!("Off")).on_hover_text(tl!("The bone follows the bones above it, and hangs from them in Play."));
+        });
+        ui.horizontal(|ui| {
+            ui.add_sized([80.0, 18.0], egui::Label::new(tl!("Orientation")));
+            ui.radio_value(&mut rot_on, true, tl!("On")).on_hover_text(tl!("The bone keeps the way it faces while the bones above it move or turn, and does not spin in Play."));
+            ui.radio_value(&mut rot_on, false, tl!("Off")).on_hover_text(tl!("The bone turns with the bones above it, and swings freely in Play."));
+        });
+        if pos_on != pos_before {
+            match ed.scene.set_hold(id, pos_on) {
+                Ok(()) => held = true,
+                Err(e) => ed.status = e.to_string(),
+            }
+        }
+        if rot_on != rot_before {
+            match ed.scene.set_hold_rotation(id, rot_on) {
+                Ok(()) => held = true,
+                Err(e) => ed.status = e.to_string(),
+            }
+        }
+    }
+    // Some(None) = unlink, Some(Some(t)) = link to `t`; applied once the node borrow ends.
+    let mut link_action: Option<Option<NodeId>> = None;
+    let others: Vec<(NodeId, String)> = ed.scene.nodes.iter().filter(|n| n.id != id).map(|n| (n.id, n.name.clone())).collect();
+    let mut filter = std::mem::take(&mut ed.link_filter);
+    if let Some(node) = ed.scene.node_mut(id) {
+        link_section(ui, node, &others, &mut filter, &mut link_action, &mut changed);
+    }
+    ed.link_filter = filter;
     if let Some(action) = link_action {
         let done = match action {
             Some(target) => ed.scene.link_to(id, target),
@@ -500,18 +545,23 @@ fn node_inspector(ui: &mut egui::Ui, ed: &mut Scene3dEditor, id: NodeId) {
     }
     if changed {
         ed.touch();
+    } else if held {
+        ed.touch_keep_world();
     }
+    ui.separator();
 }
 
 /// Ties the node to another at a distance and angle (a sun on a face, orbiting it), and edits
 /// that relation. Picking a target keeps the node where it is; the numbers then take over.
-fn link_section(ui: &mut egui::Ui, node: &mut Node, others: &[(NodeId, String)], action: &mut Option<Option<NodeId>>, changed: &mut bool) {
+fn link_section(ui: &mut egui::Ui, node: &mut Node, others: &[(NodeId, String)], filter: &mut String, action: &mut Option<Option<NodeId>>, changed: &mut bool) {
     let current = node.link.as_ref().and_then(|l| others.iter().find(|o| o.0 == l.target)).map_or_else(|| tl!("(none)").to_string(), |o| o.1.clone());
     egui::ComboBox::from_label(tl!("Link to")).selected_text(current).show_ui(ui, |ui| {
+        ui.add(egui::TextEdit::singleline(filter).hint_text(tl!("Search…")).desired_width(160.0));
         if ui.selectable_label(node.link.is_none(), tl!("(none)")).clicked() {
             *action = Some(None);
         }
-        for (oid, name) in others {
+        let wanted = filter.trim().to_lowercase();
+        for (oid, name) in others.iter().filter(|(_, n)| wanted.is_empty() || n.to_lowercase().contains(&wanted)) {
             if ui.selectable_label(node.link.as_ref().is_some_and(|l| l.target == *oid), name).clicked() {
                 *action = Some(Some(*oid));
             }
@@ -570,7 +620,8 @@ fn node_list(ui: &mut egui::Ui, ed: &mut Scene3dEditor) {
     let mut clicked = None;
     for id in tree_order(&ed.scene) {
         let Some(n) = ed.scene.node(id) else { continue };
-        if n.minor && ed.selected != Some(id) {
+        // Small joints and the model's meshes (one per material slot) stay out of the list unless picked.
+        if (n.minor || matches!(n.kind, NodeKind::Mesh(_))) && ed.selected != Some(id) {
             continue;
         }
         let icon = match n.kind {
@@ -596,6 +647,15 @@ fn node_list(ui: &mut egui::Ui, ed: &mut Scene3dEditor) {
 pub(crate) fn bone_screen(scene: &Scene, size: (u32, u32)) -> Vec<(NodeId, Option<NodeId>, (f32, f32))> {
     let list = scene.bone_positions();
     let pts: Vec<Vec3> = list.iter().map(|b| b.2).collect();
+    let screen = photocraft_render3d::project_points(scene, size.0, size.1, &pts);
+    list.iter().zip(screen).filter_map(|(b, s)| s.map(|s| (b.0, b.1, s))).collect()
+}
+
+/// Where each bone's cube is drawn, in preview pixels: a bone whose Position is On shows its cube
+/// at its target (which may be far from the body), so that is where it is picked.
+pub(crate) fn cube_screen(scene: &Scene, size: (u32, u32)) -> Vec<(NodeId, Option<NodeId>, (f32, f32))> {
+    let list = scene.bone_positions();
+    let pts: Vec<Vec3> = list.iter().map(|b| scene.node(b.0).and_then(|n| n.hold).map(Vec3::from).filter(|t| t.is_finite()).unwrap_or(b.2)).collect();
     let screen = photocraft_render3d::project_points(scene, size.0, size.1, &pts);
     list.iter().zip(screen).filter_map(|(b, s)| s.map(|s| (b.0, b.1, s))).collect()
 }
@@ -688,8 +748,11 @@ fn side_panels(ui: &mut egui::Ui, ed: &mut Scene3dEditor) {
             ed.delete_selected();
         }
     });
+    ui.checkbox(&mut ed.live, tl!("Live physics")).on_hover_text(tl!("The physics runs all the time, as in VaM: pull a node and the body follows. Untick to pose with IK and use Play."));
     ui.horizontal(|ui| {
-        if ed.physics.is_none() {
+        if ed.live && ed.play_base.is_none() {
+            // The physics is running by itself: nothing to start or stop.
+        } else if ed.physics.is_none() {
             if ui.button(tl!("▶ Play")).on_hover_text(tl!("Everything that is Off falls and collides; what is On stays put; hair swings.")).clicked()
                 && let Err(e) = crate::scene3d_canvas::play(ed)
             {
@@ -720,6 +783,7 @@ fn side_panels(ui: &mut egui::Ui, ed: &mut Scene3dEditor) {
     egui::ScrollArea::vertical().id_salt("scene3d-nodes").max_height(200.0).show(ui, |ui| node_list(ui, ed));
     ui.separator();
     egui::ScrollArea::vertical().id_salt("scene3d-inspector").max_height(380.0).show(ui, |ui| {
+        node_controls(ui, ed);
         if ed.scene.nodes.iter().any(|n| matches!(n.kind, NodeKind::Bone)) {
             egui::CollapsingHeader::new(tl!("Pose")).default_open(true).show(ui, |ui| pose_panel(ui, ed));
             ui.separator();

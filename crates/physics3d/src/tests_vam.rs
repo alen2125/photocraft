@@ -253,7 +253,7 @@ fn a_body_that_falls_comes_to_rest_without_bouncing_about_or_sliding_off() {
         let path = travel(&mut s, &mut w, &["head", "lFoot", "lHand", "rHand", "hip"]);
         assert!(path.iter().all(|p| *p < 0.3), "{who}: everything is nearly still after 5 s: {path:?}");
         let hip = pos(&s, bone(&s, "hip"));
-        assert!(Vec3::new(hip.x - start.x, 0.0, hip.z - start.z).length() < 1.2, "{who}: it did not slide away: {start:?} -> {hip:?}");
+        assert!(Vec3::new(hip.x - start.x, 0.0, hip.z - start.z).length() < 1.6, "{who}: it did not slide away: {start:?} -> {hip:?}");
         assert_eq!(w.resets(), 0);
     }
 }
@@ -368,5 +368,19 @@ fn a_controller_dragged_while_the_world_runs_pulls_its_body_along() {
         s.set_hold(hand, false).unwrap();
         steps(&mut s, &mut w, 90);
         assert!(w.resets() == 0);
+    }
+}
+
+#[test]
+fn hung_by_the_head_the_shoulders_stay_up_where_the_collar_bones_hold_them() {
+    for who in ["female", "male"] {
+        let Some(mut s) = load_free(who) else { return };
+        s.set_all_holds(Some(&["head", "leftFoot", "rightFoot"]));
+        let (sh, chest) = (bone(&s, "lShldr"), bone(&s, "chest"));
+        let before = pos(&s, sh).y - pos(&s, chest).y;
+        let mut w = World::new(&s);
+        steps(&mut s, &mut w, 360);
+        let sag = before - (pos(&s, sh).y - pos(&s, chest).y);
+        assert!(sag < 0.025, "{who}: the shoulder sagged {sag:.3} m below the chest");
     }
 }

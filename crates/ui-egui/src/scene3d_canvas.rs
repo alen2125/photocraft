@@ -15,7 +15,7 @@ use serde_json::json;
 
 use crate::PhotocraftApp;
 use crate::canvas::{ToolEvent, ViewXform};
-use crate::scene3d_ui::{BoneDrag, Scene3dEditor, bone_screen, camera_axes, drag_bone, nearest_bone};
+use crate::scene3d_ui::{BoneDrag, Scene3dEditor, bone_screen, camera_axes, cube_screen, drag_bone, nearest_bone};
 
 /// Longest edge of the live preview, in pixels.
 const PREVIEW_EDGE: f32 = 960.0;
@@ -26,6 +26,8 @@ const CLICK_SLOP: f32 = 3.0;
 /// Scene edits kept for undo.
 const HISTORY: usize = 64;
 /// The gizmo's size as a fraction of its distance from the camera (so it keeps its size on screen).
+/// Frames without any movement after which the live physics stops drawing (until something is touched).
+const QUIET_FRAMES: u32 = 45;
 const GIZMO_SCALE: f32 = 0.07;
 /// Screen pixels within which a press grabs a bone dot.
 const BONE_GRAB: f32 = 16.0;
@@ -48,6 +50,8 @@ pub(crate) enum PointerKind {
     Pan,
     Dolly,
     Bone(BoneDrag),
+    /// With the physics running: the node's target follows the pointer and the body follows it.
+    Pull(BoneDrag),
     Gizmo(Box<GizmoDrag>),
 }
 
@@ -71,6 +75,8 @@ pub(crate) fn view_size(doc: [u32; 2]) -> (u32, u32) {
 /// Ends the mode. The scene stays in the editor, so opening it again finds it as it was.
 pub(crate) fn close(ed: &mut Scene3dEditor) {
     ed.physics = None;
+    ed.world_rev = None;
+    ed.temp_hold = None;
     ed.play_base = None;
     ed.open = false;
     ed.owner = None;
@@ -103,10 +109,17 @@ pub(crate) fn frame(app: &mut PhotocraftApp, ctx: &egui::Context) {
         ed.doc_size = size;
         ed.touch();
     }
+    live_world(ed);
     if ed.physics.is_some() {
         tick(ed, ctx.input(|i| i.stable_dt));
-        ctx.request_repaint();
-    } else if ed.pointer.is_none() {
+        // Keep going while anything moves or is being dragged, and a moment after; then rest.
+        let moving = ed.pointer.is_some() || ed.physics.as_ref().is_some_and(|w| !w.settled());
+        ed.quiet_frames = if moving { 0 } else { ed.quiet_frames.saturating_add(1) };
+        if ed.play_base.is_some() || ed.quiet_frames < QUIET_FRAMES {
+            ctx.request_repaint();
+        }
+    }
+    if ed.pointer.is_none() && ed.play_base.is_none() {
         remember_edit(ed);
     }
     let now = ctx.input(|i| i.time);
@@ -119,7 +132,9 @@ pub(crate) fn frame(app: &mut PhotocraftApp, ctx: &egui::Context) {
     }
     let view = view_size(ed.doc_size);
     // A quarter of the pixels and no smoothing while things move; full quality once they rest.
-    let (render, ssaa) = if settled { (view, ed.out_ssaa.clamp(1, 2)) } else { (((view.0 / 2).max(8), (view.1 / 2).max(8)), 1) };
+    // With the physics running the picture is always full size (a frame costs about the same at
+    // any size: most of it is skinning), just without smoothing while things move.
+    let (render, ssaa) = if settled { (view, ed.out_ssaa.clamp(1, 2)) } else if ed.physics.is_some() { (view, 1) } else { (((view.0 / 2).max(8), (view.1 / 2).max(8)), 1) };
     crate::scene3d_ui::refresh_preview(ctx, ed, render, ssaa);
 }
 
@@ -167,6 +182,34 @@ pub(crate) fn stop(ed: &mut Scene3dEditor, keep: bool) {
 
 /// Runs `dt` seconds of physics in fixed steps (at most a few per frame, so a slow frame cannot
 /// snowball) and writes the bodies' places into the scene.
+/// Keeps the world that runs all the time up to date with the scene: built when the scene was
+/// edited since, dropped when the live physics is switched off.
+fn live_world(ed: &mut Scene3dEditor) {
+    if ed.play_base.is_some() {
+        return;
+    }
+    if !ed.live {
+        if ed.physics.take().is_some() {
+            ed.world_rev = None;
+        }
+        return;
+    }
+    if ed.world_rev == Some(ed.rev) {
+        return;
+    }
+    ed.world_rev = Some(ed.rev);
+    let mut world = photocraft_physics3d::World::new(&ed.scene);
+    if world.is_inert() {
+        ed.physics = None;
+        return;
+    }
+    world.set_tuning(ed.gravity_scale, ed.damping_scale);
+    world.set_muscle(ed.muscle_scale);
+    ed.physics = Some(world);
+    ed.play_acc = 0.0;
+    ed.quiet_frames = 0;
+}
+
 pub(crate) fn tick(ed: &mut Scene3dEditor, dt: f32) {
     let Some(mut world) = ed.physics.take() else { return };
     ed.play_acc += if dt.is_finite() { dt.clamp(0.0, 0.1) } else { 0.0 };
@@ -178,8 +221,11 @@ pub(crate) fn tick(ed: &mut Scene3dEditor, dt: f32) {
         steps += 1;
     }
     if steps > 0 {
-        ed.touch();
-        ed.pending_change = true;
+        ed.sim_rev += 1;
+        // Quality comes back once everything has come to rest.
+        if !world.settled() {
+            ed.pending_change = true;
+        }
     }
     ed.physics = Some(world);
 }
@@ -269,18 +315,28 @@ pub(crate) fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifi
             let p = to_view(x, y);
             let camera = if mods.shift { PointerKind::Pan } else if mods.command { PointerKind::Dolly } else { PointerKind::Orbit };
             let mut state = PointerState { kind: camera, start: p, last: p, moved: false, pending_click: true };
-            // While the physics runs only a node that is On can be pulled about (its target moves,
-            // the body follows); anything else moves the camera or selects.
+            // While a Play runs only a node that is On can be pulled about (its target moves, the
+            // body follows); with the live physics any node can: it is On while it is held.
+            let live = ed.live && ed.play_base.is_none() && ed.physics.is_some();
             if !mods.alt {
                 if let Some(g) = begin_gizmo(ed, view, p) {
                     state.kind = PointerKind::Gizmo(Box::new(g));
                     state.pending_click = false;
-                } else if ed.show_bones && ed.physics.is_none() {
-                    let bones = bone_screen(&ed.scene, view);
+                } else if ed.show_bones && (ed.physics.is_none() || live) {
+                    let bones = cube_screen(&ed.scene, view);
                     if let Some(id) = nearest_bone(&bones, p.0, p.1, grab) {
                         ed.selected = Some(id);
                         if let Some(b) = ed.scene.bone_positions().iter().find(|b| b.0 == id) {
-                            state.kind = PointerKind::Bone(BoneDrag { id, plane_point: b.2 });
+                            let shown = ed.scene.node(id).and_then(|n| n.hold).map(Vec3::from).filter(|t| t.is_finite()).unwrap_or(b.2);
+                            let drag = BoneDrag { id, plane_point: shown };
+                            if live {
+                                if ed.scene.node(id).is_some_and(|n| n.hold.is_none()) && ed.scene.set_hold(id, true).is_ok() {
+                                    ed.temp_hold = Some(id);
+                                }
+                                state.kind = PointerKind::Pull(drag);
+                            } else {
+                                state.kind = PointerKind::Bone(drag);
+                            }
                             state.pending_click = false;
                         }
                     }
@@ -320,6 +376,7 @@ pub(crate) fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifi
                         ed.touch();
                         ed.pending_change = true;
                     }
+                    PointerKind::Pull(drag) => pull_node(ed, *drag, view, p),
                     PointerKind::Gizmo(g) => {
                         if let Some(ray) = ray_at(ed, view, p) {
                             apply_gizmo(ed, g, ray);
@@ -331,8 +388,16 @@ pub(crate) fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifi
         }
         ToolEvent::Up { .. } => {
             let Some(s) = ed.pointer.take() else { return };
+            // A node that was On only while held lets go; what was dragged while the physics ran
+            // is one undo step, and the running world goes on.
+            if let Some(id) = ed.temp_hold.take() {
+                let _ = ed.scene.set_hold(id, false);
+            }
+            if ed.physics.is_some() && matches!(s.kind, PointerKind::Pull(_) | PointerKind::Gizmo(_)) {
+                ed.touch_keep_world();
+            }
             if s.pending_click && !s.moved {
-                let bones = if ed.show_bones { bone_screen(&ed.scene, view) } else { Vec::new() };
+                let bones = if ed.show_bones { cube_screen(&ed.scene, view) } else { Vec::new() };
                 ed.selected = nearest_bone(&bones, s.start.0, s.start.1, grab).or_else(|| photocraft_render3d::pick(&ed.scene, view.0, view.1, s.start.0, s.start.1));
             }
             ed.pending_change = true;
@@ -387,7 +452,7 @@ fn apply_gizmo(ed: &mut Scene3dEditor, g: &GizmoDrag, ray: Ray) {
                 Delta::Scale(_) => {}
             }
         }
-        ed.touch();
+        ed.sim_rev += 1;
         ed.pending_change = true;
         return;
     }
@@ -430,9 +495,33 @@ fn farthest_from_one(f: Vec3) -> f32 {
     [f.x, f.y, f.z].into_iter().max_by(|a, b| a.ln().abs().total_cmp(&b.ln().abs())).unwrap_or(1.0)
 }
 
+/// One pointer step of a pull with the physics running: the node's target goes to where the
+/// pointer is, in the plane facing the camera through the node, and the body is pulled to it.
+fn pull_node(ed: &mut Scene3dEditor, drag: BoneDrag, view: (u32, u32), p: (f32, f32)) {
+    let (_, _, forward) = camera_axes(&ed.scene.camera);
+    let Some((origin, dir)) = photocraft_render3d::pixel_ray(&ed.scene, view.0, view.1, p.0, p.1) else { return };
+    let denom = dir.dot(forward);
+    if denom.abs() < 1e-4 {
+        return;
+    }
+    let t = (drag.plane_point - origin).dot(forward) / denom;
+    if t <= 0.0 {
+        return;
+    }
+    let target = origin + dir * t;
+    if !target.is_finite() {
+        return;
+    }
+    if let Some(n) = ed.scene.node_mut(drag.id) {
+        n.hold = Some(target.to_array());
+    }
+    ed.sim_rev += 1;
+    ed.pending_change = true;
+}
+
 fn apply_camera(ed: &mut Scene3dEditor) {
     ed.orbit.apply(&mut ed.scene.camera);
-    ed.touch();
+    ed.touch_keep_world();
     ed.pending_change = true;
 }
 

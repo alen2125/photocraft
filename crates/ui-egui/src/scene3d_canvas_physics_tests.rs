@@ -7,6 +7,8 @@ use super::*;
 fn app() -> PhotocraftApp {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
     app.run("file.new", json!({"width": 400, "height": 300, "background": "white"})).unwrap();
+    // These tests drive Play by hand; the live physics has its own tests.
+    app.scene3d.live = false;
     app
 }
 
@@ -181,4 +183,26 @@ fn while_the_physics_runs_only_a_node_that_is_on_has_a_gizmo_and_it_sits_at_the_
     app.scene3d.scene.node_mut(hips).unwrap().hold = Some(target.to_array());
     let g = gizmo_for(&app.scene3d).expect("an On node has one while it runs");
     assert!(g.origin.distance(target) < 1e-5, "at its target, not at the body: {:?}", g.origin);
+}
+
+#[test]
+fn a_far_off_cube_is_picked_where_it_is_drawn_not_where_the_body_is() {
+    use photocraft_model3d::testgen::skinned_triangle_glb;
+    let mut app = app();
+    let ctx = egui::Context::default();
+    crate::menus::invoke(&mut app, &ctx, "ui.scene3d.open", json!({})).unwrap();
+    app.scene3d.import_model("hero.vrm", &skinned_triangle_glb(true, 2)).unwrap();
+    let hips = app.scene3d.scene.nodes.iter().find(|x| x.name == "hips").unwrap().id;
+    let view = view_size(app.scene3d.doc_size);
+    let body = app.scene3d.scene.world_position(hips).unwrap();
+    app.scene3d.scene.set_hold(hips, true).unwrap();
+    app.scene3d.scene.node_mut(hips).unwrap().hold = Some((body + Vec3::new(0.6, 0.0, 0.0)).to_array());
+    let cubes = crate::scene3d_ui::cube_screen(&app.scene3d.scene, view);
+    let bodies = crate::scene3d_ui::bone_screen(&app.scene3d.scene, view);
+    let at = |v: &[(NodeId, Option<NodeId>, (f32, f32))]| v.iter().find(|b| b.0 == hips).map(|b| b.2);
+    let (c, b) = (at(&cubes), at(&bodies));
+    if let (Some(c), Some(b)) = (c, b) {
+        assert!((c.0 - b.0).abs() > 5.0, "the cube is drawn away from the body: {c:?} vs {b:?}");
+        assert_eq!(crate::scene3d_ui::nearest_bone(&cubes, c.0, c.1, 6.0), Some(hips));
+    }
 }
