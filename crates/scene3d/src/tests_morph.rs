@@ -225,3 +225,27 @@ fn a_look_puts_pictures_and_tints_on_materials_by_name_and_they_survive_the_file
     assert_eq!(s.model(1).unwrap().materials[0].base_color_texture, None);
     assert!(s.set_material_override(9, "Torso", None, Some([1.0; 3])).is_err());
 }
+
+#[test]
+fn clothing_is_bound_to_the_body_follows_its_morphs_and_comes_off() {
+    use crate::cloth::ClothInput;
+    let (mut s, a) = scene_with_figure();
+    // A small triangle of cloth a tenth in front of the body triangle (game axes: z is mirrored).
+    let input = ClothInput { name: "Tee".into(), positions: vec![[0.2, 0.2, -0.1], [0.3, 0.2, -0.1], [0.2, 0.3, -0.1]], uvs: vec![[0.0; 2]; 3], uv_base: vec![0, 1, 2], pieces: vec![("Cloth".into(), vec![0, 1, 2])], ..ClothInput::default() };
+    s.add_cloth(a, "Pkg.1:/Tee.vam", input).unwrap();
+    let m = s.model(a).unwrap().clone();
+    assert_eq!(m.meshes.len(), 3, "the figure's two meshes and one piece");
+    assert!((m.meshes[2].positions[0][2] - 0.1).abs() < 1e-4 && (m.meshes[2].positions[0][0] - 0.2).abs() < 1e-4, "{:?}", m.meshes[2].positions[0]);
+    assert_eq!(m.meshes[2].joints.len(), 3, "it takes the body's skin");
+    assert_eq!(s.nodes.iter().filter(|n| matches!(&n.kind, NodeKind::Mesh(mm) if mm.asset == a && mm.mesh == 2)).count(), 1, "one node draws it");
+    assert!(s.cloth_loaded(a, "Pkg.1:/Tee.vam") && s.worn(a).len() == 1);
+    // The body widens: the cloth goes with it.
+    s.add_morph_data(a, morph("Wide", &[(0, [0.0, 0.0, 0.5]), (1, [0.0, 0.0, 0.5]), (2, [0.0, 0.0, 0.5])], vec![])).unwrap();
+    s.set_morph(a, "Wide", 1.0).unwrap();
+    let z = s.model(a).unwrap().meshes[2].positions[0][2];
+    assert!((z - (0.1 - 0.5)).abs() < 1e-3, "body moved by -0.5 in z (mirrored), the cloth too: {z}");
+    // Off: the mesh and its node are gone, and the scene remembers nothing.
+    s.remove_cloth(a, "Pkg.1:/Tee.vam").unwrap();
+    assert_eq!(s.model(a).unwrap().meshes.len(), 2);
+    assert!(s.nodes.iter().all(|n| !matches!(&n.kind, NodeKind::Mesh(mm) if mm.mesh >= 2)) && s.worn(a).is_empty());
+}

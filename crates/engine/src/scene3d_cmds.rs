@@ -27,15 +27,17 @@ fn has_doc(s: &Session) -> std::result::Result<(), String> {
     s.active().map(|_| ()).ok_or_else(|| "no document open".into())
 }
 
-/// A scene the editor handed over in memory, with its models as they are now (morphed, with the
-/// skin pictures of a look): a scene sent as JSON carries only the morph values, and the models
-/// would be loaded again from their files without them. Taken by the next `renderToLayer` that
-/// asks for it with `"prepared": true`.
-static PREPARED: Mutex<Option<Scene>> = Mutex::new(None);
+// A scene the editor handed over in memory, with its models as they are now (morphed, with the
+// skin pictures of a look): a scene sent as JSON carries only the morph values, and the models
+// would be loaded again from their files without them. Taken by the next `renderToLayer` that
+// asks for it with `"prepared": true`, on the same thread (commands run where the editor calls them).
+thread_local! {
+    static PREPARED: std::cell::RefCell<Option<Scene>> = const { std::cell::RefCell::new(None) };
+}
 
 /// Leaves a scene for the next `scene3d.renderToLayer` call with `"prepared": true`.
 pub fn prepare_scene(scene: Scene) {
-    *PREPARED.lock().unwrap_or_else(PoisonError::into_inner) = Some(scene);
+    PREPARED.with(|p| *p.borrow_mut() = Some(scene));
 }
 
 /// The scene from `scene` (inline JSON) or `path` (a `.pcscene` file).
@@ -108,7 +110,7 @@ fn surface_from_rgba(img: &photocraft_render3d::Image) -> Result<Surface> {
 
 fn run_render(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "scene3d.renderToLayer";
-    let prepared = if p.get("prepared").and_then(Value::as_bool) == Some(true) { PREPARED.lock().unwrap_or_else(PoisonError::into_inner).take() } else { None };
+    let prepared = if p.get("prepared").and_then(Value::as_bool) == Some(true) { PREPARED.with(|p| p.borrow_mut().take()) } else { None };
     let mut scene = match prepared {
         Some(scene) => scene,
         None => scene_param(CMD, p)?,

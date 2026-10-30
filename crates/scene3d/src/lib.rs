@@ -15,6 +15,7 @@ mod link;
 mod mesh;
 mod pose_control;
 mod model;
+pub mod cloth;
 pub mod morph;
 mod scene;
 

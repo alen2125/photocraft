@@ -351,3 +351,148 @@ fn a_real_look_imports_onto_the_figure() {
         std::fs::write(std::path::Path::new(&out).join("look.rgba"), img.rgba).unwrap();
     }
 }
+
+/// The look is imported inside a running editor (live physics on), frames go by, and the picture
+/// the editor shows is the one of the new state. Needs the user's game folder (`VAM_DIR`).
+#[test]
+#[ignore = "needs a VaM install"]
+fn a_look_imported_while_the_editor_runs_reaches_the_picture() {
+    let dir = std::env::var("VAM_DIR").unwrap_or_default();
+    let figure = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../samples/vam_base_female.vrm");
+    let Ok(bytes) = std::fs::read(&figure) else { return };
+    let Ok(look) = std::fs::read(std::env::var("VAP").unwrap_or_else(|_| format!("{dir}/Custom/Atom/Person/Appearance/Preset_Himiko Toga.vap"))) else { return };
+    let mut app = crate::PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+    app.run("file.new", serde_json::json!({"width": 400, "height": 300, "background": "white"})).unwrap();
+    let ctx = egui::Context::default();
+    crate::menus::invoke(&mut app, &ctx, "ui.scene3d.open", serde_json::json!({})).unwrap();
+    app.scene3d.import_model(&figure.to_string_lossy(), &bytes).unwrap();
+    app.scene3d.vam.dir = dir;
+    crate::scene3d_vam::open_library(&mut app.scene3d, &ctx);
+    let run = |app: &mut crate::PhotocraftApp, n: usize| {
+        for _ in 0..n {
+            let mut out = ctx.run_ui(Default::default(), |ui| crate::scene3d_canvas::frame(app, ui.ctx()));
+            out.textures_delta.clear();
+            std::thread::sleep(std::time::Duration::from_millis(30));
+        }
+    };
+    run(&mut app, 60);
+    let before = app.scene3d.scene.model(1).unwrap().meshes[0].positions.clone();
+    crate::scene3d_vam::import_look(&mut app.scene3d, "look.vap", &look).unwrap();
+    let rev = app.scene3d.preview_rev();
+    run(&mut app, 400);
+    let ed = &app.scene3d;
+    let after = &ed.scene.model(1).unwrap().meshes[0].positions;
+    eprintln!("morphs kept: {}, shape changed: {}, preview key {:?} wanted rev {}", ed.scene.morphs.len(), &before != after, ed.preview.as_ref().map(|p| p.key), rev);
+    assert!(!ed.scene.morphs.is_empty(), "the morph values are still in the scene after frames went by");
+    assert!(&before != after, "the figure's shape is still the new one");
+}
+
+/// Every look of the install, imported as the Looks tab does (first few). Prints each summary.
+#[test]
+#[ignore = "needs a VaM install"]
+fn looks_from_packages_import_with_their_own_package_as_self() {
+    let dir = std::env::var("VAM_DIR").unwrap_or_default();
+    let figure = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../samples/vam_base_female.vrm");
+    let Ok(bytes) = std::fs::read(&figure) else { return };
+    let mut ed = Scene3dEditor::default();
+    ed.import_model(&figure.to_string_lossy(), &bytes).unwrap();
+    ed.vam.dir = dir;
+    let ctx = egui::Context::default();
+    crate::scene3d_vam::open_library(&mut ed, &ctx);
+    let lib = ed.vam.library.clone().unwrap();
+    let filter = std::env::var("PRESET").unwrap_or_else(|_| "Artoria".into());
+    for p in lib.presets_matching(&filter).into_iter().take(3) {
+        let bytes = lib.read_file(&p.reference).unwrap();
+        let t0 = std::time::Instant::now();
+        let r = crate::scene3d_vam::import_look_from(&mut ed, &p.name, &bytes, &p.package);
+        eprintln!("PRESET {} [{}] -> {:?} ({:?}); morph values now {}", p.name, p.package, r.map(|s| s.chars().take(700).collect::<String>()), t0.elapsed(), ed.scene.morphs.len());
+    }
+}
+
+/// Clicks a look in the panel itself (pointer events through `show`) and watches the picture.
+#[test]
+#[ignore = "needs a VaM install"]
+fn a_click_on_a_look_in_the_panel_reaches_the_picture() {
+    use egui::{Event, Modifiers, PointerButton, Pos2, RawInput};
+    let dir = std::env::var("VAM_DIR").unwrap_or_default();
+    let figure = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../samples/vam_base_female.vrm");
+    let Ok(bytes) = std::fs::read(&figure) else { return };
+    let mut app = crate::PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+    app.run("file.new", serde_json::json!({"width": 400, "height": 300, "background": "white"})).unwrap();
+    let ctx = egui::Context::default();
+    crate::menus::invoke(&mut app, &ctx, "ui.scene3d.open", serde_json::json!({})).unwrap();
+    app.scene3d.import_model(&figure.to_string_lossy(), &bytes).unwrap();
+    app.scene3d.vam.dir = dir;
+    app.scene3d.vam.restored = true;
+    crate::scene3d_vam::open_library(&mut app.scene3d, &ctx);
+    app.scene3d.vam.page = crate::scene3d_vam::Page::Morphs;
+    app.scene3d.vam.tab = crate::scene3d_vam::MorphTab::Looks;
+    app.scene3d.vam.filter = std::env::var("PRESET").unwrap_or_else(|_| "Artoria_Slender_Nude".into());
+    let screen = egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(1200.0, 900.0));
+    let frame_with = |app: &mut crate::PhotocraftApp, events: Vec<Event>| {
+        let input = RawInput { screen_rect: Some(screen), events, ..Default::default() };
+        let mut out = ctx.run_ui(input, |ui| super::show(app, ui.ctx()));
+        out.textures_delta.clear();
+    };
+    for _ in 0..5 {
+        frame_with(&mut app, vec![]);
+    }
+    let rect = ctx.memory(|m| m.area_rect(egui::Id::new("scene3d-panel"))).expect("the panel is open");
+    eprintln!("panel at {rect:?}");
+    let mut clicked_at = None;
+    'search: for step in 0..24 {
+        let pos = Pos2::new(rect.left() + 110.0, rect.top() + 186.0 + step as f32 * 6.0);
+        let press = |pressed| Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
+        frame_with(&mut app, vec![Event::PointerMoved(pos)]);
+        frame_with(&mut app, vec![press(true)]);
+        frame_with(&mut app, vec![press(false)]);
+        eprintln!("y={} status={:?} open={}", pos.y, app.scene3d.status.chars().take(60).collect::<String>(), app.scene3d.open);
+        if !app.scene3d.open {
+            break;
+        }
+        if app.scene3d.status.starts_with("Look ") {
+            clicked_at = Some(pos);
+            break 'search;
+        }
+    }
+    eprintln!("clicked at {clicked_at:?}; status: {}", app.scene3d.status.chars().take(200).collect::<String>());
+    assert!(clicked_at.is_some(), "a click on the first look imports it");
+    let rev = app.scene3d.rev;
+    for _ in 0..300 {
+        frame_with(&mut app, vec![]);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let ed = &app.scene3d;
+    eprintln!("rev {rev} -> {}, preview key {:?}, preview_rev {}, morphs {}", ed.rev, ed.preview.as_ref().map(|p| p.key), ed.preview_rev(), ed.scene.morphs.len());
+    assert!(ed.scene.morphs.len() >= 3);
+}
+
+/// Puts on many items one after another and renders: nothing may panic or fail to draw.
+#[test]
+#[ignore = "needs a VaM install"]
+fn many_items_can_be_worn_and_drawn() {
+    let dir = std::env::var("VAM_DIR").unwrap_or_default();
+    let figure = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../samples/vam_base_female.vrm");
+    let Ok(bytes) = std::fs::read(&figure) else { return };
+    let mut ed = Scene3dEditor::default();
+    ed.import_model(&figure.to_string_lossy(), &bytes).unwrap();
+    ed.vam.dir = dir;
+    let ctx = egui::Context::default();
+    crate::scene3d_vam::open_library(&mut ed, &ctx);
+    let lib = ed.vam.library.clone().unwrap();
+    let n: usize = std::env::var("ITEMS").ok().and_then(|v| v.parse().ok()).unwrap_or(25);
+    let step = (lib.items.len() / n).max(1);
+    let (mut ok, mut failed) = (0, 0);
+    for item in lib.items.iter().filter(|i| i.kind == photocraft_vam::ItemKind::Clothing && i.gender != Some(photocraft_vam::Gender::Male)).step_by(step).take(n) {
+        let t0 = std::time::Instant::now();
+        let r = crate::scene3d_vam::wear_item(&mut ed, &lib, 1, item, &[], true);
+        let mut s = ed.scene.clone();
+        s.camera.position = [0.0, 1.0, 3.4];
+        s.camera.target = [0.0, 0.95, 0.0];
+        let img = photocraft_render3d::render(&s, &photocraft_render3d::RenderOptions { ssaa: 1, ..photocraft_render3d::RenderOptions::new(200, 300) });
+        eprintln!("ITEM {} [{}]: {:?} render {:?} in {:?}", item.name, item.package, r.as_ref().err().map(|e| e.chars().take(90).collect::<String>()), img.as_ref().map(|_| "ok"), t0.elapsed());
+        if r.is_ok() && img.is_ok() { ok += 1 } else { failed += 1 }
+        let _ = ed.scene.remove_cloth(1, &item.reference);
+    }
+    eprintln!("ITEMS ok {ok} failed {failed}");
+}

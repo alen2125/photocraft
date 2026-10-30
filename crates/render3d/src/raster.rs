@@ -126,7 +126,7 @@ fn sample(t: Option<&TexRef>, lut: &[f32; 256], uv: [f32; 2]) -> Option<(Vec3, f
 }
 
 /// The pixel's colour, or `None` when its alpha falls under the material's cutoff.
-fn shade(d: &Draw, prep: &Prepared, pos: Vec3, mut n: Vec3, uv: [f32; 2], tangents: Option<(Vec3, Vec3)>) -> Option<Vec3> {
+fn shade(d: &Draw, prep: &Prepared, pos: Vec3, mut n: Vec3, uv: [f32; 2], tangents: Option<(Vec3, Vec3)>) -> Option<(Vec3, f32)> {
     let (tex_rgb, tex_a) = sample(d.texture.as_ref(), &prep.lut, uv).unwrap_or((Vec3::ONE, 1.0));
     if let Some(cut) = d.cutoff
         && d.alpha * tex_a < cut
@@ -134,8 +134,9 @@ fn shade(d: &Draw, prep: &Prepared, pos: Vec3, mut n: Vec3, uv: [f32; 2], tangen
         return None;
     }
     let albedo = d.albedo * tex_rgb;
+    let opacity = if d.blend { (d.alpha * tex_a).clamp(0.0, 1.0) } else { 1.0 };
     if d.unlit {
-        return Some(albedo + d.emissive);
+        return Some((albedo + d.emissive, opacity));
     }
     n = n.normalize_or_zero();
     // A normal map bends the smooth normal in the surface's own frame (tangent, bitangent, normal).
@@ -168,7 +169,7 @@ fn shade(d: &Draw, prep: &Prepared, pos: Vec3, mut n: Vec3, uv: [f32; 2], tangen
         let h = (to_light + v).normalize_or_zero();
         spec += l.radiance * (n.dot(h).max(0.0).powf(d.shininess) * d.specular * spec_scale * atten);
     }
-    Some(albedo * diffuse + spec + d.emissive)
+    Some((albedo * diffuse + spec + d.emissive, opacity))
 }
 
 /// Unit vector from the surface to the light, and the light's strength there (0–1).
@@ -261,7 +262,16 @@ fn draw_triangle(band: &mut Band, d: &Draw, prep: &Prepared, t: &SetupTri) {
             let nrm = tri[0].nrm * p0 + tri[1].nrm * p1 + tri[2].nrm * p2;
             let uv = [tri[0].uv[0] * p0 + tri[1].uv[0] * p1 + tri[2].uv[0] * p2, tri[0].uv[1] * p0 + tri[1].uv[1] * p1 + tri[2].uv[1] * p2];
             // A dropped (transparent) texel leaves the depth buffer alone.
-            let Some(col) = shade(d, prep, pos, nrm, uv, tangents) else { continue };
+            let Some((col, opacity)) = shade(d, prep, pos, nrm, uv, tangents) else { continue };
+            if d.blend {
+                // Mixed over what is there, and the depth is left alone, so what is behind still draws.
+                if opacity > 0.004
+                    && let Some(dc) = band.color.get_mut(i)
+                {
+                    *dc = (Vec3::from(*dc) * (1.0 - opacity) + col * opacity).to_array();
+                }
+                continue;
+            }
             if let (Some(dz), Some(dc)) = (band.depth.get_mut(i), band.color.get_mut(i)) {
                 *dz = z as f32;
                 *dc = col.to_array();
@@ -334,12 +344,15 @@ pub(crate) fn render(prep: &Prepared, opts: &RenderOptions, ss: u32, samples: u6
         .map(|(i, (d, c))| Band { y0: i * BAND_ROWS, rows: d.len() / sw, sw, depth: d, color: c })
         .collect();
     run_bands(bands, |band| {
-        for t in &tris {
-            if t.y1 < band.y0 || t.y0 >= band.y0 + band.rows {
-                continue;
-            }
-            if let Some(d) = prep.draws.get(t.draw) {
-                draw_triangle(band, d, prep, t);
+        // Opaque things first, then what blends over them, each in draw order.
+        for blend in [false, true] {
+            for t in &tris {
+                if t.y1 < band.y0 || t.y0 >= band.y0 + band.rows {
+                    continue;
+                }
+                if let Some(d) = prep.draws.get(t.draw).filter(|d| d.blend == blend) {
+                    draw_triangle(band, d, prep, t);
+                }
             }
         }
     });

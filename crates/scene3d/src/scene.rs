@@ -374,6 +374,9 @@ pub struct Scene {
     /// Pictures and tints put on a model's materials (a look's skin), by material name.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub material_overrides: Vec<crate::morph::MaterialOverride>,
+    /// Clothing and hair items worn by the figures (their files are named, not stored).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub clothing: Vec<crate::cloth::ClothRef>,
     next_id: NodeId,
     #[serde(skip)]
     pub(crate) models: ModelCache,
@@ -383,7 +386,7 @@ pub struct Scene {
 
 impl Default for Scene {
     fn default() -> Self {
-        Self { version: FORMAT_VERSION, nodes: Vec::new(), camera: Camera::default(), background: [0.18, 0.19, 0.22], ambient: [0.18, 0.18, 0.2], assets: Vec::new(), poses: Vec::new(), controls: Vec::new(), morphs: Vec::new(), material_overrides: Vec::new(), next_id: 1, models: ModelCache::default(), morph_cache: Default::default() }
+        Self { version: FORMAT_VERSION, nodes: Vec::new(), camera: Camera::default(), background: [0.18, 0.19, 0.22], ambient: [0.18, 0.18, 0.2], assets: Vec::new(), poses: Vec::new(), controls: Vec::new(), morphs: Vec::new(), material_overrides: Vec::new(), clothing: Vec::new(), next_id: 1, models: ModelCache::default(), morph_cache: Default::default() }
     }
 }
 

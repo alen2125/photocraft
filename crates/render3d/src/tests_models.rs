@@ -205,3 +205,17 @@ fn a_specular_map_scales_the_highlight() {
     assert!(full[0] > 60 && none[0] < 5, "{full:?} {none:?}");
     assert!(half[0] > none[0] && half[0] < full[0], "{half:?}");
 }
+
+#[test]
+fn a_blending_material_mixes_over_what_is_behind_it_and_leaves_the_depth_alone() {
+    let mut behind = (*quad_model(false, AlphaMode::Opaque)).clone();
+    behind.textures[0] = Some(TextureData { width: 1, height: 1, rgba: Arc::new(vec![0, 0, 255, 255]) });
+    let mut glass = (*quad_model(false, AlphaMode::Blend)).clone();
+    glass.textures[0] = Some(TextureData { width: 1, height: 1, rgba: Arc::new(vec![255, 0, 0, 128]) });
+    let mut s = bright_scene(Arc::new(behind));
+    // The glass is drawn first in the node list's order of models but sits in front.
+    let front = s.add_model(Arc::new(glass), None).unwrap();
+    s.node_mut(front).unwrap().transform.translation = [0.0, 0.0, 0.5];
+    let c = px(&render(&s, &opts()).unwrap(), 32, 32);
+    assert!(c[0] > 60 && c[2] > 60 && c[1] < 20, "half red over blue is a mix of both: {c:?}");
+}

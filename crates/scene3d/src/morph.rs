@@ -58,13 +58,18 @@ pub struct MaterialOverride {
     pub specular: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shininess: Option<f32>,
+    /// The picture's alpha is a cut-out (clothing with holes).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub alpha_mask: bool,
 }
 
 /// Morph data and the unmorphed models, by asset. Not part of the scene file, never compared.
 #[derive(Clone, Default)]
 pub struct MorphCache {
     /// The model as it was loaded, kept once the first morph is applied.
-    base: HashMap<u32, Arc<ModelData>>,
+    pub(crate) base: HashMap<u32, Arc<ModelData>>,
+    /// Per asset, the worn items with their meshes (not saved: items are loaded again from files).
+    pub(crate) cloths: HashMap<u32, Vec<Arc<crate::cloth::Cloth>>>,
     data: HashMap<(u32, String), Arc<Morph>>,
     /// Decoded pictures by the reference that names them.
     textures: HashMap<String, Arc<photocraft_model3d::TextureData>>,
@@ -357,6 +362,7 @@ impl Scene {
             }
         }
         self.morph_cache.offsets.insert(asset, bone_world);
+        self.append_cloth(asset, &base, &positions, &mut model);
         self.apply_material_overrides(asset, &mut model);
         self.models.0.insert(asset, Arc::new(model));
         Ok(())
@@ -394,6 +400,9 @@ impl Scene {
                 }
                 m.specular = o.specular.filter(|v| v.is_finite()).map(|v| v.clamp(0.0, 1.0)).or(m.specular);
                 m.shininess = o.shininess.filter(|v| v.is_finite()).map(|v| v.clamp(1.0, 512.0)).or(m.shininess);
+                if o.alpha_mask {
+                    m.alpha_mode = photocraft_model3d::AlphaMode::Blend;
+                }
                 if let Some(t) = o.tint {
                     m.base_color = [t[0], t[1], t[2], m.base_color[3]];
                 }

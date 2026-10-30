@@ -5,6 +5,7 @@
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+mod dazmesh;
 mod vap;
 mod zipfile;
 
@@ -12,7 +13,8 @@ use std::path::{Path, PathBuf};
 
 use photocraft_model3d::morph::{parse_morph, parse_vmi, Morph, MorphInfo};
 
-pub use vap::{hsv_to_rgb, parse_storables, parse_vap, Appearance, VapMorph};
+pub use dazmesh::{parse_dazmesh, DazMesh, Poly, WrapVert};
+pub use vap::{hsv_to_rgb, item_reference, localize, parse_item_materials, parse_wrap_params, parse_storables, parse_vap, part_materials, Appearance, PartLook, VapMorph, PART_IDS};
 pub use zipfile::{ZipEntry, ZipFile};
 
 /// Largest single file read from the install (a morph, a texture).
@@ -24,6 +26,11 @@ pub const MAX_PACKAGES: usize = 20_000;
 
 const MORPH_DIR: &str = "Custom/Atom/Person/Morphs";
 const LOOK_DIR: &str = "Custom/Atom/Person/Appearance";
+const TEXTURE_DIR: &str = "Custom/Atom/Person/Textures";
+const CLOTHING_DIR: &str = "Custom/Clothing";
+const HAIR_DIR: &str = "Custom/Hair";
+/// Most clothing and hair items indexed in all.
+pub const MAX_ITEMS: usize = 100_000;
 /// Most appearance presets indexed in all.
 pub const MAX_PRESETS: usize = 100_000;
 
@@ -81,6 +88,59 @@ pub struct Preset {
     pub thumbnail: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ItemKind {
+    Clothing,
+    Hair,
+}
+
+/// A clothing or hair item (`.vam`, with its mesh `.vab` and settings `.vaj` beside it).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Item {
+    pub name: String,
+    pub kind: ItemKind,
+    /// Which figure it is for; `None` for items made for both.
+    pub gender: Option<Gender>,
+    /// The folders it is in under the gender folder.
+    pub folder: String,
+    /// The package's name or empty for a loose file.
+    pub package: String,
+    /// The `.vam` file, as [`GameLibrary::read_file`] takes it (the `.vab` and `.vaj` swap the extension).
+    pub reference: String,
+    pub thumbnail: Option<String>,
+}
+
+/// Whether a texture file is an eye picture to pick from: a colour picture with "eye" in its path.
+fn is_eye_picture(path: &str) -> bool {
+    let p = path.to_ascii_lowercase();
+    let picture = p.ends_with(".png") || p.ends_with(".jpg") || p.ends_with(".jpeg");
+    let name = p.rsplit('/').next().unwrap_or(&p);
+    picture && p.contains("eye") && !["normal", "spec", "gloss", "bump", "alpha", "mask", "_n.", "_s.", "_g.", "_a.", "_nrm", "_bump", "sclera", "lash"].iter().any(|k| name.contains(k))
+}
+
+/// A reference with another extension.
+pub fn with_extension(reference: &str, ext: &str) -> String {
+    match reference.rsplit_once('.') {
+        Some((stem, _)) => format!("{stem}.{ext}"),
+        None => format!("{reference}.{ext}"),
+    }
+}
+
+/// `Female/Maker/Style/Name.vam` (under `Custom/Clothing`) into gender and folder.
+fn split_item_path(rel: &str) -> Option<(Option<Gender>, String)> {
+    let rel = rel.replace('\\', "/");
+    let mut parts: Vec<&str> = rel.split('/').filter(|p| !p.is_empty()).collect();
+    parts.pop()?;
+    let first = parts.first().map(|p| p.to_ascii_lowercase());
+    let (gender, rest) = match first.as_deref() {
+        Some("female") => (Some(Gender::Female), &parts[1..]),
+        Some("male") => (Some(Gender::Male), &parts[1..]),
+        Some("neutral") => (None, &parts[1..]),
+        _ => (None, &parts[..]),
+    };
+    Some((gender, rest.join("/")))
+}
+
 #[derive(Debug)]
 pub struct GameLibrary {
     root: PathBuf,
@@ -88,6 +148,10 @@ pub struct GameLibrary {
     pub morphs: Vec<MorphFile>,
     /// Appearance presets, loose ones first, then those in packages.
     pub presets: Vec<Preset>,
+    /// Clothing and hair items, loose ones first, then those in packages.
+    pub items: Vec<Item>,
+    /// Eye pictures (iris textures), as presets: the picture is its own thumbnail.
+    pub eyes: Vec<Preset>,
     /// Packages that could not be read, with the reason.
     pub skipped: Vec<(PathBuf, String)>,
     /// Morph files found outside the female/male (and genitalia) folders: listed, never applied.
@@ -153,7 +217,7 @@ impl GameLibrary {
         if !root.join("Custom").is_dir() && !root.join("AddonPackages").is_dir() {
             return Err(VamError::NotAnInstall(root.display().to_string()));
         }
-        let mut lib = GameLibrary { root: root.to_path_buf(), packages: Vec::new(), morphs: Vec::new(), presets: Vec::new(), skipped: Vec::new(), other_morphs: 0 };
+        let mut lib = GameLibrary { root: root.to_path_buf(), packages: Vec::new(), morphs: Vec::new(), presets: Vec::new(), items: Vec::new(), eyes: Vec::new(), skipped: Vec::new(), other_morphs: 0 };
         // Loose morphs.
         let base = root.join(MORPH_DIR);
         let mut files = Vec::new();
@@ -183,6 +247,32 @@ impl GameLibrary {
             let thumbnail = ["jpg", "jpeg", "png"].iter().map(|e| p.with_extension(e)).find(|t| t.is_file()).and_then(|t| t.strip_prefix(root).ok().map(|r| r.to_string_lossy().replace('\\', "/")));
             lib.presets.push(Preset { name: name.to_string(), package: String::new(), reference: rel.to_string_lossy().replace('\\', "/"), thumbnail });
         }
+        // Loose eye pictures.
+        let mut textures = Vec::new();
+        walk(&root.join(TEXTURE_DIR), 0, &mut textures, MAX_ITEMS * 4);
+        for p in textures.iter().filter(|p| p.strip_prefix(root).is_ok_and(|r| is_eye_picture(&r.to_string_lossy().replace('\\', "/")))) {
+            if lib.eyes.len() >= MAX_ITEMS {
+                break;
+            }
+            let (Some(name), Ok(rel)) = (p.file_stem().and_then(|s| s.to_str()), p.strip_prefix(root)) else { continue };
+            let reference = rel.to_string_lossy().replace('\\', "/");
+            lib.eyes.push(Preset { name: name.to_string(), package: String::new(), reference: reference.clone(), thumbnail: Some(reference) });
+        }
+        // Loose clothing and hair.
+        for (dir, kind) in [(CLOTHING_DIR, ItemKind::Clothing), (HAIR_DIR, ItemKind::Hair)] {
+            let mut files = Vec::new();
+            walk(&root.join(dir), 0, &mut files, MAX_ITEMS * 4);
+            let base = root.join(dir);
+            for p in files.iter().filter(|p| is_ext(p, "vam") && p.with_extension("vab").is_file()) {
+                if lib.items.len() >= MAX_ITEMS {
+                    break;
+                }
+                let (Some(name), Ok(rel), Ok(from_root)) = (p.file_stem().and_then(|s| s.to_str()), p.strip_prefix(&base), p.strip_prefix(root)) else { continue };
+                let Some((gender, folder)) = split_item_path(&rel.to_string_lossy()) else { continue };
+                let thumbnail = ["jpg", "jpeg", "png"].iter().map(|e| p.with_extension(e)).find(|t| t.is_file()).and_then(|t| t.strip_prefix(root).ok().map(|r| r.to_string_lossy().replace('\\', "/")));
+                lib.items.push(Item { name: name.to_string(), kind, gender, folder, package: String::new(), reference: from_root.to_string_lossy().replace('\\', "/"), thumbnail });
+            }
+        }
         // Packages.
         let mut pkgs = Vec::new();
         walk(&root.join("AddonPackages"), 0, &mut pkgs, MAX_PACKAGES);
@@ -193,6 +283,27 @@ impl GameLibrary {
                     let index = lib.packages.len();
                     let prefix = format!("{MORPH_DIR}/");
                     let look_prefix = format!("{LOOK_DIR}/");
+                    for e in z.entries.iter().filter(|e| e.name.starts_with(&format!("{TEXTURE_DIR}/")) && is_eye_picture(&e.name)) {
+                        if lib.eyes.len() >= MAX_ITEMS {
+                            break;
+                        }
+                        let Some(stem) = Path::new(&e.name).file_stem().and_then(|s| s.to_str()) else { continue };
+                        let reference = format!("{name}:/{}", e.name);
+                        lib.eyes.push(Preset { name: stem.to_string(), package: name.clone(), reference: reference.clone(), thumbnail: Some(reference) });
+                    }
+                    for (dir, kind) in [(CLOTHING_DIR, ItemKind::Clothing), (HAIR_DIR, ItemKind::Hair)] {
+                        let item_prefix = format!("{dir}/");
+                        for e in z.entries.iter().filter(|e| e.name.starts_with(&item_prefix) && is_ext(Path::new(&e.name), "vam")) {
+                            let base = e.name.get(..e.name.len() - 4).unwrap_or_default();
+                            if lib.items.len() >= MAX_ITEMS || !z.entries.iter().any(|x| x.name == format!("{base}.vab")) {
+                                continue;
+                            }
+                            let (Some(name), Some(rel)) = (Path::new(&e.name).file_stem().and_then(|s| s.to_str()), e.name.strip_prefix(&item_prefix)) else { continue };
+                            let Some((gender, folder)) = split_item_path(rel) else { continue };
+                            let thumbnail = ["jpg", "jpeg", "png"].iter().map(|x| format!("{base}.{x}")).find(|t| z.entries.iter().any(|y| y.name == *t)).map(|t| format!("{name_pkg}:/{t}", name_pkg = p.file_stem().and_then(|s| s.to_str()).unwrap_or_default()));
+                            lib.items.push(Item { name: name.to_string(), kind, gender, folder, package: p.file_stem().and_then(|s| s.to_str()).unwrap_or_default().to_string(), reference: format!("{}:/{}", p.file_stem().and_then(|s| s.to_str()).unwrap_or_default(), e.name), thumbnail });
+                        }
+                    }
                     let names: std::collections::HashSet<&str> = z.entries.iter().map(|e| e.name.as_str()).collect();
                     for e in z.entries.iter().filter(|e| e.name.starts_with(&look_prefix) && is_ext(Path::new(&e.name), "vap")) {
                         if lib.presets.len() >= MAX_PRESETS {
@@ -229,6 +340,25 @@ impl GameLibrary {
         let mut v: Vec<&Preset> = self.presets.iter().filter(|p| f.is_empty() || p.name.to_lowercase().contains(&f) || p.package.to_lowercase().contains(&f)).collect();
         v.sort_by_key(|p| (p.name.to_lowercase(), p.package.clone()));
         v
+    }
+
+    /// The items of one kind (for a gender or for both), matching `filter` (any case), by name.
+    pub fn items_matching(&self, kind: ItemKind, gender: Gender, filter: &str) -> Vec<&Item> {
+        let f = filter.to_lowercase();
+        let mut v: Vec<&Item> = self
+            .items
+            .iter()
+            .filter(|i| i.kind == kind && i.gender.is_none_or(|g| g == gender) && (f.is_empty() || i.name.to_lowercase().contains(&f) || i.package.to_lowercase().contains(&f) || i.folder.to_lowercase().contains(&f)))
+            .collect();
+        v.sort_by_key(|i| (i.name.to_lowercase(), i.package.clone()));
+        v
+    }
+
+    /// The item a preset names by its `.vam` reference (`Package.N:/Custom/...vam`, `.latest` too).
+    pub fn find_item(&self, reference: &str) -> Option<&Item> {
+        let (package, path) = reference.split_once(":/")?;
+        let name = self.package_named(package).unwrap_or_default();
+        self.items.iter().find(|i| i.package == name && i.reference.split_once(":/").map_or(i.reference.as_str(), |(_, p)| p) == path)
     }
 
     pub fn root(&self) -> &Path {
@@ -379,7 +509,12 @@ mod tests {
         std::fs::create_dir_all(&looks).unwrap();
         std::fs::write(looks.join("Mine.vap"), b"{}").unwrap();
         std::fs::write(looks.join("Mine.jpg"), b"jpg").unwrap();
-        let zip = make_zip(&[("Custom/Atom/Person/Appearance/Preset_Alma.vap", b"{}", true), ("Custom/Atom/Person/Appearance/Preset_Alma.jpg", b"jpgbytes", true), ("Custom/Atom/Person/Appearance/Other.vap", b"{}", true)]);
+        let zip = make_zip(&[("Custom/Atom/Person/Appearance/Preset_Alma.vap", b"{}", true), ("Custom/Atom/Person/Appearance/Preset_Alma.jpg", b"jpgbytes", true), ("Custom/Atom/Person/Appearance/Other.vap", b"{}", true), ("Custom/Hair/Female/Maker/Bob/Bob.vam", b"{}", true), ("Custom/Hair/Female/Maker/Bob/Bob.vab", b"mesh", true), ("Custom/Hair/Female/Maker/Bob/Bob.jpg", b"pic", true), ("Custom/Clothing/Neutral/Maker/Hat.vam", b"{}", true), ("Custom/Clothing/Neutral/Maker/Hat.vab", b"mesh", true), ("Custom/Clothing/Male/Maker/Tie.vam", b"{}", true), ("Custom/Clothing/Male/Maker/Tie.vab", b"mesh", true), ("Custom/Clothing/Female/Maker/Lonely.vam", b"{}", true), ("Custom/Atom/Person/Textures/Eyes/Blue_Eye.png", b"png", true), ("Custom/Atom/Person/Textures/Eyes/Blue_Eye_Normal.png", b"png", true)]);
+        let clothes = root.join("Custom/Clothing/Female/Maker/Dress");
+        std::fs::create_dir_all(&clothes).unwrap();
+        for f in ["Dress.vam", "Dress.vab", "Dress.jpg"] {
+            std::fs::write(clothes.join(f), b"x").unwrap();
+        }
         std::fs::write(root.join("AddonPackages/Maker.Presets.1.var"), zip).unwrap();
         root
     }
@@ -449,6 +584,32 @@ mod tests {
         }
         eprintln!("VAMLIB packaged morphs loaded {ok}, failed {bad}");
         assert!(bad * 20 <= ok + bad, "{bad} of {} failed", ok + bad);
+    }
+
+    #[test]
+    fn clothing_and_hair_are_indexed_from_the_folder_and_packages_for_the_figures_gender() {
+        let lib = GameLibrary::open(&install()).unwrap();
+        let names = |kind, gender| lib.items_matching(kind, gender, "").iter().map(|i| i.name.clone()).collect::<Vec<_>>();
+        assert_eq!(names(ItemKind::Clothing, Gender::Female), ["Dress", "Hat"], "an item with no mesh is left out; neutral items fit both");
+        assert_eq!(names(ItemKind::Clothing, Gender::Male), ["Hat", "Tie"]);
+        assert_eq!(names(ItemKind::Hair, Gender::Female), ["Bob"]);
+        let dress = lib.items_matching(ItemKind::Clothing, Gender::Female, "dress")[0];
+        assert_eq!((dress.package.as_str(), dress.folder.as_str(), dress.reference.as_str(), dress.thumbnail.as_deref()), ("", "Maker/Dress", "Custom/Clothing/Female/Maker/Dress/Dress.vam", Some("Custom/Clothing/Female/Maker/Dress/Dress.jpg")));
+        let bob = lib.find_item("Maker.Presets.1:/Custom/Hair/Female/Maker/Bob/Bob.vam").unwrap();
+        assert_eq!(bob.thumbnail.as_deref(), Some("Maker.Presets.1:/Custom/Hair/Female/Maker/Bob/Bob.jpg"));
+        assert_eq!(with_extension(&bob.reference, "vab"), "Maker.Presets.1:/Custom/Hair/Female/Maker/Bob/Bob.vab");
+        assert_eq!(lib.read_file(&with_extension(&bob.reference, "vab")).unwrap(), b"mesh");
+        assert!(lib.find_item("Maker.Presets.1:/Custom/Hair/Female/Maker/Nobody.vam").is_none());
+        assert_eq!(lib.eyes.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["Blue_Eye"], "normal maps are not eye pictures");
+    }
+
+    #[test]
+    fn eye_pictures_are_found_by_name_and_maps_are_left_out() {
+        assert!(is_eye_picture("Custom/Atom/Person/Textures/Eyes/Green_Eye_01.png"));
+        assert!(is_eye_picture("Custom/Atom/Person/Textures/Maker/eyes/iris.JPG"));
+        assert!(!is_eye_picture("Custom/Atom/Person/Textures/Maker/eyes/iris_Normal.png"));
+        assert!(!is_eye_picture("Custom/Atom/Person/Textures/Maker/skin.png"));
+        assert!(!is_eye_picture("Custom/Atom/Person/Textures/Eyes/readme.txt"));
     }
 
     #[test]

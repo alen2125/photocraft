@@ -98,6 +98,8 @@ pub(crate) struct Draw {
     pub normal_scale: f32,
     /// A map whose red channel scales the highlight.
     pub spec_map: Option<TexRef>,
+    /// Drawn after the opaque things, mixed over them by its alpha (no depth write).
+    pub blend: bool,
 }
 
 pub(crate) struct LightW {
@@ -152,6 +154,7 @@ fn primitive_draw(node: NodeId, mesh: &photocraft_scene3d::Mesh, world: Mat4, m:
         normal_map: None,
         normal_scale: 1.0,
         spec_map: None,
+        blend: false,
     })
 }
 
@@ -212,7 +215,7 @@ fn model_draw(scene: &Scene, world: &std::collections::HashMap<NodeId, Mat4>, no
             match m.alpha_mode {
                 AlphaMode::Opaque => None,
                 AlphaMode::Mask => Some(m.alpha_cutoff),
-                AlphaMode::Blend => Some(0.5),
+                AlphaMode::Blend => None,
             },
             // Exporters write emissive = 1 on the unlit materials they emit; unlit means no glow.
             if m.unlit { Vec3::ZERO } else { lin3(m.emissive) },
@@ -244,6 +247,7 @@ fn model_draw(scene: &Scene, world: &std::collections::HashMap<NodeId, Mat4>, no
         normal_map,
         normal_scale: if normal_scale.is_finite() { normal_scale } else { 1.0 },
         spec_map,
+        blend: mat.is_some_and(|m| m.alpha_mode == AlphaMode::Blend),
     })
 }
 
