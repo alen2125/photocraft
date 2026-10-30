@@ -93,6 +93,11 @@ pub(crate) struct Draw {
     pub shininess: f32,
     pub specular: f32,
     pub unlit: bool,
+    /// A tangent-space normal map (needs texture coordinates) and how strongly it bends the normal.
+    pub normal_map: Option<TexRef>,
+    pub normal_scale: f32,
+    /// A map whose red channel scales the highlight.
+    pub spec_map: Option<TexRef>,
 }
 
 pub(crate) struct LightW {
@@ -114,6 +119,8 @@ pub(crate) struct Prepared {
     pub view_proj: Mat4,
     /// sRGB byte → linear.
     pub lut: [f32; 256],
+    /// Byte → 0–1 as it is (for maps that hold data, not colours).
+    pub raw: [f32; 256],
 }
 
 fn finite_mat(m: &Mat4) -> bool {
@@ -142,6 +149,9 @@ fn primitive_draw(node: NodeId, mesh: &photocraft_scene3d::Mesh, world: Mat4, m:
         shininess: if m.shininess.is_finite() { m.shininess.clamp(1.0, 512.0) } else { 32.0 },
         specular: if m.specular.is_finite() { m.specular.clamp(0.0, 1.0) } else { 0.0 },
         unlit: m.unlit,
+        normal_map: None,
+        normal_scale: 1.0,
+        spec_map: None,
     })
 }
 
@@ -209,12 +219,18 @@ fn model_draw(scene: &Scene, world: &std::collections::HashMap<NodeId, Mat4>, no
         ),
         None => ([0.8, 0.8, 0.8, 1.0], None, None, Vec3::ZERO),
     };
-    let tex = if mesh.uvs.len() == n { tex } else { None };
+    let has_uv = mesh.uvs.len() == n;
+    let tex = if has_uv { tex } else { None };
+    let map = |t: Option<usize>| t.filter(|&t| has_uv && model.textures.get(t).is_some_and(Option::is_some)).map(|index| TexRef { model: model.clone(), index });
+    let (normal_map, spec_map) = (mat.and_then(|m| map(m.normal_texture)), mat.and_then(|m| map(m.specular_texture)));
+    let normal_scale = mat.map_or(1.0, |m| m.normal_scale);
+    let uses_uv = tex.is_some() || normal_map.is_some() || spec_map.is_some();
+    let (specular, shininess) = (mat.and_then(|m| m.specular).unwrap_or(0.08), mat.and_then(|m| m.shininess).unwrap_or(24.0));
     Some(Draw {
         node,
         positions,
         normals,
-        uvs: if tex.is_some() { mesh.uvs.clone() } else { Vec::new() },
+        uvs: if uses_uv { mesh.uvs.clone() } else { Vec::new() },
         indices: mesh.indices.clone(),
         albedo: lin3([base[0], base[1], base[2]]),
         alpha: base[3].clamp(0.0, 1.0),
@@ -222,9 +238,12 @@ fn model_draw(scene: &Scene, world: &std::collections::HashMap<NodeId, Mat4>, no
         cutoff,
         emissive,
         // Characters read better lit than as the flat unlit materials VRM exporters write.
-        shininess: 24.0,
-        specular: 0.08,
+        shininess,
+        specular,
         unlit: false,
+        normal_map,
+        normal_scale: if normal_scale.is_finite() { normal_scale } else { 1.0 },
+        spec_map,
     })
 }
 
@@ -298,7 +317,11 @@ pub(crate) fn prepare(scene: &Scene, aspect: f32) -> Prepared {
     for (i, v) in lut.iter_mut().enumerate() {
         *v = to_linear(i as f32 / 255.0);
     }
-    Prepared { draws, lights, ambient: lin3(scene.ambient), background: lin3(scene.background), eye, view_proj, lut }
+    let mut raw = [0.0f32; 256];
+    for (i, v) in raw.iter_mut().enumerate() {
+        *v = i as f32 / 255.0;
+    }
+    Prepared { raw, draws, lights, ambient: lin3(scene.ambient), background: lin3(scene.background), eye, view_proj, lut }
 }
 
 fn check(opts: &RenderOptions) -> Result<(u32, u64), RenderError> {

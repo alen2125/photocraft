@@ -5,12 +5,14 @@
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+mod vap;
 mod zipfile;
 
 use std::path::{Path, PathBuf};
 
 use photocraft_model3d::morph::{parse_morph, parse_vmi, Morph, MorphInfo};
 
+pub use vap::{hsv_to_rgb, parse_storables, parse_vap, Appearance, VapMorph};
 pub use zipfile::{ZipEntry, ZipFile};
 
 /// Largest single file read from the install (a morph, a texture).
@@ -21,6 +23,9 @@ pub const MAX_MORPH_FILES: usize = 200_000;
 pub const MAX_PACKAGES: usize = 20_000;
 
 const MORPH_DIR: &str = "Custom/Atom/Person/Morphs";
+const LOOK_DIR: &str = "Custom/Atom/Person/Appearance";
+/// Most appearance presets indexed in all.
+pub const MAX_PRESETS: usize = 100_000;
 
 #[derive(Debug, thiserror::Error, PartialEq)]
 pub enum VamError {
@@ -63,15 +68,43 @@ pub struct MorphFile {
     pub source: MorphSource,
 }
 
+/// An appearance preset (`.vap`) in the install or in a package.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Preset {
+    /// The file name without its extension.
+    pub name: String,
+    /// The package's name or empty for a loose file.
+    pub package: String,
+    /// What [`GameLibrary::read_file`] takes: a path under the game folder or `Package.N:/path`.
+    pub reference: String,
+    /// The picture beside it (same name, `.jpg` or `.png`), by the same kind of reference.
+    pub thumbnail: Option<String>,
+}
+
 #[derive(Debug)]
 pub struct GameLibrary {
     root: PathBuf,
     pub packages: Vec<(String, ZipFile)>,
     pub morphs: Vec<MorphFile>,
+    /// Appearance presets, loose ones first, then those in packages.
+    pub presets: Vec<Preset>,
     /// Packages that could not be read, with the reason.
     pub skipped: Vec<(PathBuf, String)>,
     /// Morph files found outside the female/male (and genitalia) folders: listed, never applied.
     pub other_morphs: usize,
+}
+
+/// The materials of a VaM figure that each skin texture region (`face`, `torso`, `limbs`,
+/// `genitals`) covers, by material name (from the game's own character texture control).
+pub fn skin_region_materials(gender: Gender, region: &str) -> &'static [&'static str] {
+    match (region, gender) {
+        ("face", _) => &["Nostrils", "Lips", "Face"],
+        ("torso", _) => &["Head", "Ears", "Neck", "Hips", "Torso", "Nipples", "Hidden"],
+        ("limbs", _) => &["Legs", "Toenails", "Fingernails", "Hands", "Shoulders", "Forearms", "Feet"],
+        ("genitals", Gender::Female) => &["defaultMat"],
+        ("genitals", Gender::Male) => &["Genitalia"],
+        _ => &[],
+    }
 }
 
 fn walk(dir: &Path, depth: usize, out: &mut Vec<PathBuf>, cap: usize) {
@@ -120,7 +153,7 @@ impl GameLibrary {
         if !root.join("Custom").is_dir() && !root.join("AddonPackages").is_dir() {
             return Err(VamError::NotAnInstall(root.display().to_string()));
         }
-        let mut lib = GameLibrary { root: root.to_path_buf(), packages: Vec::new(), morphs: Vec::new(), skipped: Vec::new(), other_morphs: 0 };
+        let mut lib = GameLibrary { root: root.to_path_buf(), packages: Vec::new(), morphs: Vec::new(), presets: Vec::new(), skipped: Vec::new(), other_morphs: 0 };
         // Loose morphs.
         let base = root.join(MORPH_DIR);
         let mut files = Vec::new();
@@ -138,6 +171,18 @@ impl GameLibrary {
                 lib.morphs.push(MorphFile { stem, gender, folder, genital, package: String::new(), source: MorphSource::Loose(p.clone()) });
             }
         }
+        // Loose presets.
+        let mut looks = Vec::new();
+        walk(&root.join(LOOK_DIR), 0, &mut looks, MAX_PRESETS * 3);
+        for p in looks.iter().filter(|p| is_ext(p, "vap")) {
+            if lib.presets.len() >= MAX_PRESETS {
+                break;
+            }
+            let Some(name) = p.file_stem().and_then(|s| s.to_str()) else { continue };
+            let Ok(rel) = p.strip_prefix(root) else { continue };
+            let thumbnail = ["jpg", "jpeg", "png"].iter().map(|e| p.with_extension(e)).find(|t| t.is_file()).and_then(|t| t.strip_prefix(root).ok().map(|r| r.to_string_lossy().replace('\\', "/")));
+            lib.presets.push(Preset { name: name.to_string(), package: String::new(), reference: rel.to_string_lossy().replace('\\', "/"), thumbnail });
+        }
         // Packages.
         let mut pkgs = Vec::new();
         walk(&root.join("AddonPackages"), 0, &mut pkgs, MAX_PACKAGES);
@@ -147,6 +192,17 @@ impl GameLibrary {
                     let name = p.file_stem().and_then(|s| s.to_str()).unwrap_or_default().to_string();
                     let index = lib.packages.len();
                     let prefix = format!("{MORPH_DIR}/");
+                    let look_prefix = format!("{LOOK_DIR}/");
+                    let names: std::collections::HashSet<&str> = z.entries.iter().map(|e| e.name.as_str()).collect();
+                    for e in z.entries.iter().filter(|e| e.name.starts_with(&look_prefix) && is_ext(Path::new(&e.name), "vap")) {
+                        if lib.presets.len() >= MAX_PRESETS {
+                            break;
+                        }
+                        let Some(stem) = Path::new(&e.name).file_stem().and_then(|s| s.to_str()) else { continue };
+                        let base = e.name.get(..e.name.len() - 4).unwrap_or_default();
+                        let thumbnail = ["jpg", "jpeg", "png"].iter().map(|x| format!("{base}.{x}")).find(|t| names.contains(t.as_str())).map(|t| format!("{name}:/{t}"));
+                        lib.presets.push(Preset { name: stem.to_string(), package: name.clone(), reference: format!("{name}:/{}", e.name), thumbnail });
+                    }
                     for (i, e) in z.entries.iter().enumerate() {
                         let Some(rel) = e.name.strip_prefix(&prefix).filter(|_| is_ext(Path::new(&e.name), "vmi")) else { continue };
                         let Some((gender, genital, folder, stem)) = split_morph_path(rel) else {
@@ -165,6 +221,14 @@ impl GameLibrary {
             }
         }
         Ok(lib)
+    }
+
+    /// The presets whose name or package holds `filter` (any case), by name.
+    pub fn presets_matching(&self, filter: &str) -> Vec<&Preset> {
+        let f = filter.to_lowercase();
+        let mut v: Vec<&Preset> = self.presets.iter().filter(|p| f.is_empty() || p.name.to_lowercase().contains(&f) || p.package.to_lowercase().contains(&f)).collect();
+        v.sort_by_key(|p| (p.name.to_lowercase(), p.package.clone()));
+        v
     }
 
     pub fn root(&self) -> &Path {
@@ -311,6 +375,12 @@ mod tests {
             std::fs::write(root.join("AddonPackages").join(name), zip).unwrap();
         }
         std::fs::write(root.join("AddonPackages/Broken.var"), b"not a zip").unwrap();
+        let looks = root.join("Custom/Atom/Person/Appearance");
+        std::fs::create_dir_all(&looks).unwrap();
+        std::fs::write(looks.join("Mine.vap"), b"{}").unwrap();
+        std::fs::write(looks.join("Mine.jpg"), b"jpg").unwrap();
+        let zip = make_zip(&[("Custom/Atom/Person/Appearance/Preset_Alma.vap", b"{}", true), ("Custom/Atom/Person/Appearance/Preset_Alma.jpg", b"jpgbytes", true), ("Custom/Atom/Person/Appearance/Other.vap", b"{}", true)]);
+        std::fs::write(root.join("AddonPackages/Maker.Presets.1.var"), zip).unwrap();
         root
     }
 
@@ -379,5 +449,22 @@ mod tests {
         }
         eprintln!("VAMLIB packaged morphs loaded {ok}, failed {bad}");
         assert!(bad * 20 <= ok + bad, "{bad} of {} failed", ok + bad);
+    }
+
+    #[test]
+    fn presets_are_listed_from_the_folder_and_from_packages_with_their_pictures() {
+        let root = install();
+        let lib = GameLibrary::open(&root).unwrap();
+        let all = lib.presets_matching("");
+        assert_eq!(all.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["Mine", "Other", "Preset_Alma"]);
+        let mine = all[0];
+        assert_eq!((mine.package.as_str(), mine.reference.as_str(), mine.thumbnail.as_deref()), ("", "Custom/Atom/Person/Appearance/Mine.vap", Some("Custom/Atom/Person/Appearance/Mine.jpg")));
+        let alma = all[2];
+        assert_eq!(alma.reference, "Maker.Presets.1:/Custom/Atom/Person/Appearance/Preset_Alma.vap");
+        assert_eq!(lib.read_file(alma.thumbnail.as_deref().unwrap()).unwrap(), b"jpgbytes");
+        assert_eq!(lib.read_file(&alma.reference).unwrap(), b"{}");
+        assert_eq!(all[1].thumbnail, None);
+        assert_eq!(lib.presets_matching("ALMA").len(), 1);
+        assert_eq!(lib.presets_matching("maker.pres").len(), 2);
     }
 }

@@ -20,6 +20,8 @@ pub enum MorphError {
     BadSize(usize),
     #[error("morph has {0} vertex offsets, over the limit of {MAX_MORPH_DELTAS}")]
     TooManyDeltas(usize),
+    #[error("not a readable morph pack: {0}")]
+    Pack(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -100,6 +102,10 @@ pub struct MorphInfo {
     pub min: f32,
     pub max: f32,
     pub num_deltas: usize,
+    /// A pose-control morph (driven by a joint angle, not set by hand).
+    pub pose_control: bool,
+    /// A genital morph: its vertices are numbered from 0 within the figure's genital graft.
+    pub genital: bool,
     pub formulas: Vec<MorphFormula>,
 }
 
@@ -164,6 +170,16 @@ pub fn parse_vmi(bytes: &[u8]) -> Result<MorphInfo, MorphError> {
         min: number(value.get("min")).unwrap_or(-1.0),
         max: number(value.get("max")).unwrap_or(1.0),
         num_deltas: number(value.get("numDeltas")).map_or(0, |n| n.max(0.0) as usize),
+        pose_control: match value.get("isPoseControl") {
+            Some(Value::Bool(b)) => *b,
+            Some(Value::String(s)) => s.eq_ignore_ascii_case("true"),
+            _ => false,
+        },
+        genital: match value.get("genital") {
+            Some(Value::Bool(b)) => *b,
+            Some(Value::String(s)) => s.eq_ignore_ascii_case("true"),
+            _ => false,
+        },
         formulas,
         id,
     })
@@ -190,6 +206,78 @@ pub fn parse_vmb(bytes: &[u8]) -> Result<Vec<MorphDelta>, MorphError> {
             delta.iter().all(|c| c.is_finite()).then_some(MorphDelta { vertex, delta })
         })
         .collect())
+}
+
+/// The morphs built into a base figure, in one file next to it: a count, then per morph a JSON
+/// header (as in a `.vmi`) and its offsets deflated (`export_morphs.py` writes it). Headers are read
+/// up front; offsets are inflated when a morph is asked for.
+#[derive(Clone, Debug)]
+pub struct MorphPack {
+    bytes: std::sync::Arc<Vec<u8>>,
+    pub entries: Vec<PackEntry>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PackEntry {
+    pub info: MorphInfo,
+    count: usize,
+    start: usize,
+    len: usize,
+}
+
+const PACK_MAGIC: &[u8; 5] = b"PCMP1";
+/// Most morphs one pack may hold.
+pub const MAX_PACK_MORPHS: usize = 100_000;
+
+impl MorphPack {
+    pub fn parse(bytes: Vec<u8>) -> Result<Self, MorphError> {
+        let bad = |what: &str| MorphError::Pack(what.to_string());
+        if bytes.get(..5) != Some(&PACK_MAGIC[..]) {
+            return Err(bad("wrong signature"));
+        }
+        let u32_at = |o: usize| bytes.get(o..o.checked_add(4)?).map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]));
+        let count = u32_at(5).ok_or_else(|| bad("truncated"))? as usize;
+        if count > MAX_PACK_MORPHS {
+            return Err(bad("too many morphs"));
+        }
+        let mut entries = Vec::with_capacity(count.min(4096));
+        let mut p = 9usize;
+        for _ in 0..count {
+            let hl = u32_at(p).ok_or_else(|| bad("truncated header"))? as usize;
+            let head = bytes.get(p + 4..p.checked_add(4 + hl).ok_or_else(|| bad("bad length"))?).ok_or_else(|| bad("truncated header"))?;
+            let info = parse_vmi(head).map_err(|e| bad(&e.to_string()))?;
+            let q = p + 4 + hl;
+            let n = u32_at(q).ok_or_else(|| bad("truncated"))? as usize;
+            let len = u32_at(q + 4).ok_or_else(|| bad("truncated"))? as usize;
+            let start = q + 8;
+            if n > MAX_MORPH_DELTAS || start.checked_add(len).is_none_or(|end| end > bytes.len()) {
+                return Err(bad("offsets out of range"));
+            }
+            entries.push(PackEntry { info, count: n, start, len });
+            p = start + len;
+        }
+        Ok(Self { bytes: std::sync::Arc::new(bytes), entries })
+    }
+
+    /// The index of the morph with this id, or whose display name it is (case does not matter).
+    pub fn find(&self, name: &str) -> Option<usize> {
+        self.entries.iter().position(|e| e.info.id == name).or_else(|| self.entries.iter().position(|e| e.info.id.eq_ignore_ascii_case(name) || e.info.display_name.eq_ignore_ascii_case(name)))
+    }
+
+    /// A morph with its offsets.
+    pub fn load(&self, index: usize) -> Result<Morph, MorphError> {
+        use std::io::Read;
+        let e = self.entries.get(index).ok_or_else(|| MorphError::Pack("no such morph".into()))?;
+        let raw = self.bytes.get(e.start..e.start + e.len).ok_or_else(|| MorphError::Pack("offsets out of range".into()))?;
+        let mut data = Vec::with_capacity(e.count * 16);
+        flate2::read::DeflateDecoder::new(raw).take(e.count as u64 * 16 + 1).read_to_end(&mut data).map_err(|err| MorphError::Pack(err.to_string()))?;
+        if data.len() != e.count * 16 {
+            return Err(MorphError::Pack(format!("{}: offsets are damaged", e.info.id)));
+        }
+        let mut with_count = (e.count as i32).to_le_bytes().to_vec();
+        with_count.extend(data);
+        Ok(Morph { info: e.info.clone(), deltas: parse_vmb(&with_count)? })
+    }
 }
 
 /// A whole morph from its two files.
@@ -254,6 +342,66 @@ mod tests {
         assert!(parse_vmb(&[]).is_err());
         assert!(parse_vmb(&(-1i32).to_le_bytes()).is_err());
         assert_eq!(parse_vmb(&0i32.to_le_bytes()).unwrap(), vec![]);
+    }
+
+    type Offsets<'a> = &'a [(i32, [f32; 3])];
+
+    fn pack_of(morphs: &[(&str, Offsets)]) -> Vec<u8> {
+        use std::io::Write;
+        let mut out = b"PCMP1".to_vec();
+        out.extend((morphs.len() as u32).to_le_bytes());
+        for (id, deltas) in morphs {
+            let head = format!(r#"{{"id":"{id}","displayName":"{id} Display","region":"Hidden","min":-1,"max":1,"isPoseControl":true,"numDeltas":{},"formulas":[]}}"#, deltas.len());
+            out.extend((head.len() as u32).to_le_bytes());
+            out.extend(head.as_bytes());
+            let mut raw = Vec::new();
+            for (v, d) in *deltas {
+                raw.extend(v.to_le_bytes());
+                for c in d {
+                    raw.extend(c.to_le_bytes());
+                }
+            }
+            let mut e = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+            e.write_all(&raw).unwrap();
+            let packed = e.finish().unwrap();
+            out.extend((deltas.len() as u32).to_le_bytes());
+            out.extend((packed.len() as u32).to_le_bytes());
+            out.extend(packed);
+        }
+        out
+    }
+
+    #[test]
+    fn a_pack_holds_morphs_found_by_id_or_display_name_and_inflated_on_demand() {
+        let pack = MorphPack::parse(pack_of(&[("Hip Size", &[(3, [0.1, 0.2, 0.3]), (9, [1.0, 0.0, 0.0])]), ("Empty", &[])])).unwrap();
+        assert_eq!(pack.entries.len(), 2);
+        assert_eq!(pack.find("Hip Size"), Some(0));
+        assert_eq!(pack.find("hip size display"), Some(0), "display names match without case");
+        assert_eq!(pack.find("Nope"), None);
+        assert!(pack.entries[0].info.pose_control);
+        let m = pack.load(0).unwrap();
+        assert_eq!(m.deltas, vec![MorphDelta { vertex: 3, delta: [0.1, 0.2, 0.3] }, MorphDelta { vertex: 9, delta: [1.0, 0.0, 0.0] }]);
+        assert_eq!(pack.load(1).unwrap().deltas.len(), 0);
+        assert!(pack.load(5).is_err());
+    }
+
+    #[test]
+    fn damaged_packs_are_errors_not_panics() {
+        let good = pack_of(&[("A", &[(1, [1.0; 3])])]);
+        assert!(MorphPack::parse(vec![]).is_err());
+        assert!(MorphPack::parse(b"PCMP2xxxx".to_vec()).is_err());
+        for cut in [6, 12, 40, good.len() - 3] {
+            assert!(MorphPack::parse(good[..cut].to_vec()).is_err(), "cut at {cut}");
+        }
+        let mut bent = good.clone();
+        let n = bent.len();
+        bent[n - 4] ^= 0xFF; // inside the deflated offsets
+        if let Ok(p) = MorphPack::parse(bent) {
+            let _ = p.load(0); // an error or odd data, never a panic
+        }
+        let mut huge = good;
+        huge[5..9].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(MorphPack::parse(huge).is_err());
     }
 
     #[test]

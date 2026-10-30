@@ -232,3 +232,122 @@ fn a_pose_slider_changes_the_picture_of_the_real_figure_fresh_from_import_and_fr
     old.set_control(asset, "CTRLlHandFist", 1.0).unwrap();
     assert_eq!(shot(&old), fist, "the reopened scene poses the same way");
 }
+
+/// A real preset from a VaM install lands on the figure (run with `VAM_DIR`, and `PIC_DIR` for a picture).
+#[test]
+#[ignore]
+fn a_real_look_imports_onto_the_figure() {
+    let dir = std::env::var("VAM_DIR").unwrap_or_default();
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../samples/vam_base_female.vrm");
+    let Ok(bytes) = std::fs::read(path) else { return };
+    let look_path = std::env::var("VAP").unwrap_or_else(|_| format!("{dir}/Custom/Atom/Person/Appearance/Preset_Anime naked.vap"));
+    let Ok(look) = std::fs::read(&look_path) else { return };
+    let mut ed = Scene3dEditor::default();
+    let ctx = egui::Context::default();
+    let figure_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../samples/vam_base_female.vrm");
+    ed.import_model(&figure_path.to_string_lossy(), &bytes).unwrap();
+    ed.vam.dir = dir;
+    crate::scene3d_vam::open_library(&mut ed, &ctx);
+    if let Ok(first) = std::env::var("VAP0") {
+        let first = std::fs::read(first).unwrap();
+        crate::scene3d_vam::import_look(&mut ed, "first.vap", &first).unwrap();
+        crate::scene3d_vam::import_look(&mut ed, "look.vap", &look).unwrap();
+    }
+    let t0 = std::time::Instant::now();
+    let summary = crate::scene3d_vam::import_look(&mut ed, "look.vap", &look).unwrap();
+    eprintln!("LOOK {summary}");
+    eprintln!("LOOK took {:?}", t0.elapsed());
+    assert!(ed.scene.morphs.len() > 5, "morph values were set");
+    // Isolate what breaks: MODE=morphs keeps only the shape, MODE=skin keeps only the pictures.
+    match std::env::var("MODE").as_deref() {
+        Ok("morphs") => {
+            ed.scene.material_overrides.clear();
+            ed.scene.apply_morphs(1).unwrap();
+        }
+        Ok("skin") => {
+            ed.scene.reset_morphs(1).unwrap();
+        }
+        Ok("bare") => {
+            ed.scene.material_overrides.clear();
+            ed.scene.reset_morphs(1).unwrap();
+        }
+        _ => {}
+    }
+    if std::env::var("PHYS").is_ok() {
+        crate::scene3d_canvas::play(&mut ed).unwrap();
+        for _ in 0..180 {
+            crate::scene3d_canvas::tick(&mut ed, 1.0 / 60.0);
+        }
+    }
+    if std::env::var("DIAG").is_ok() {
+        let m = ed.scene.model(1).unwrap().clone();
+        let base = ed.scene.morph_cache_base(1).unwrap();
+        let (now, rest) = (&m.meshes[0].positions, &base.meshes[0].positions);
+        let mut spread = std::collections::HashMap::<u32, (f32, usize)>::new();
+        let mut first = std::collections::HashMap::<u32, usize>::new();
+        for (j, &b) in m.vertex_base.iter().enumerate() {
+            let f = *first.entry(b).or_insert(j);
+            let d = (0..3).map(|c| (now[j][c] - now[f][c]).powi(2)).sum::<f32>().sqrt();
+            let e = spread.entry(b).or_insert((0.0, j));
+            if d > e.0 { *e = (d, j); }
+        }
+        let mut worst: Vec<_> = spread.iter().filter(|(_, (d, _))| *d > 1e-4).collect();
+        worst.sort_by(|a, b| b.1.0.total_cmp(&a.1.0));
+        eprintln!("DIAG seam copies apart: {} of {}", worst.len(), spread.len());
+        for (b, (d, j)) in worst.iter().take(12) { eprintln!("  base {b} apart {d:.4} at y={:.3} z={:.3} x={:.3}", now[*j][1], now[*j][2], now[*j][0]); }
+        {
+            let me = &m.meshes[0];
+            let mut firstw = std::collections::HashMap::<u32, usize>::new();
+            let mut differ = 0;
+            for (j, &b) in m.vertex_base.iter().enumerate() {
+                let f = *firstw.entry(b).or_insert(j);
+                if f != j && (me.joints[j] != me.joints[f] || me.weights[j].iter().zip(&me.weights[f]).any(|(x, y)| (x - y).abs() > 1e-4)) {
+                    differ += 1;
+                    if differ < 6 { eprintln!("  weights differ base {b}: {:?}{:?} vs {:?}{:?} at y={:.3}", me.joints[j], me.weights[j], me.joints[f], me.weights[f], now[j][1]); }
+                }
+            }
+            eprintln!("DIAG copies with other skin weights: {differ}");
+        }
+        let mut edges: Vec<(f32, [f32; 3], usize, usize)> = Vec::new();
+        for t in m.meshes.iter().flat_map(|me| me.indices.chunks(3)) {
+            for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+                let (a, b) = (a as usize, b as usize);
+                let len = |p: &Vec<[f32; 3]>| (0..3).map(|c| (p[a][c] - p[b][c]).powi(2)).sum::<f32>().sqrt();
+                let (l0, l1) = (len(rest), len(now));
+                if l0 > 1e-5 && l1 > 0.004 { edges.push((l1 / l0, now[a], a, b)); }
+            }
+        }
+        edges.sort_by(|a, b| b.0.total_cmp(&a.0));
+        for (r, p, a, b) in edges.iter().take(15) { eprintln!("  stretch x{r:.1} at x={:.3} y={:.3} z={:.3} verts {a},{b} base {},{}", p[0], p[1], p[2], m.vertex_base[*a], m.vertex_base[*b]); }
+    }
+    if let Ok(out) = std::env::var("PIC_DIR") {
+        let mut s = ed.scene.clone();
+        s.camera.position = [0.0, 1.0, 3.4];
+        s.camera.target = [0.0, 0.95, 0.0];
+        s.camera.fov = 35.0;
+        if std::env::var("POSE").is_ok() {
+            for n in &mut s.nodes {
+                match n.humanoid.as_deref() {
+                    Some("head") => n.transform.rotation = [25.0, 0.0, 30.0],
+                    Some("neck") => n.transform.rotation = [10.0, 0.0, 12.0],
+                    _ => {}
+                }
+            }
+        }
+        let mut size = (520, 800);
+        if std::env::var("CAM").as_deref() == Ok("face") {
+            s.camera.position = [0.0, 1.66, 0.75];
+            s.camera.target = [0.0, 1.645, 0.0];
+            s.camera.fov = 30.0;
+            size = (800, 800);
+        }
+        if std::env::var("CAM").as_deref() == Ok("body") {
+            s.camera.position = [0.0, 1.15, 1.7];
+            s.camera.target = [0.0, 1.1, 0.0];
+            s.camera.fov = 30.0;
+            size = (800, 800);
+        }
+        let img = photocraft_render3d::render(&s, &photocraft_render3d::RenderOptions { ssaa: std::env::var("SSAA").ok().and_then(|v| v.parse().ok()).unwrap_or(2), ..photocraft_render3d::RenderOptions::new(size.0, size.1) }).unwrap();
+        std::fs::write(std::path::Path::new(&out).join("look.rgba"), img.rgba).unwrap();
+    }
+}

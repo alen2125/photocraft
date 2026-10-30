@@ -48,7 +48,7 @@ fn figure() -> Arc<ModelData> {
 
 fn morph(id: &str, deltas: &[(u32, [f32; 3])], formulas: Vec<MorphFormula>) -> Arc<Morph> {
     Arc::new(Morph {
-        info: MorphInfo { id: id.into(), display_name: id.into(), group: "G".into(), region: "R".into(), min: -1.0, max: 1.0, num_deltas: deltas.len(), formulas },
+        info: MorphInfo { id: id.into(), display_name: id.into(), group: "G".into(), region: "R".into(), min: -1.0, max: 1.0, num_deltas: deltas.len(), pose_control: false, genital: false, formulas },
         deltas: deltas.iter().map(|&(vertex, delta)| MorphDelta { vertex, delta }).collect(),
     })
 }
@@ -186,4 +186,42 @@ fn a_real_genital_morph_lands_on_the_graft_vertices_only() {
     let moved: Vec<usize> = (0..before.len()).filter(|&j| Vec3::from(before[j]).distance(Vec3::from(after[j])) > 1e-5).collect();
     assert!(!moved.is_empty(), "the genital morph reshaped something");
     assert!(moved.iter().all(|&j| base_of[j] >= start), "only graft vertices moved");
+}
+
+fn skinned_figure() -> Arc<ModelData> {
+    use photocraft_model3d::{AlphaMode, MaterialData};
+    let mut m = (*figure()).clone();
+    let mat = |name: &str| MaterialData { name: name.into(), base_color: [0.5, 0.4, 0.3, 1.0], base_color_texture: None, emissive: [0.0; 3], alpha_mode: AlphaMode::Opaque, alpha_cutoff: 0.5, double_sided: false, unlit: false, normal_texture: None, normal_scale: 1.0, specular_texture: None, specular: None, shininess: None };
+    m.materials = vec![mat("Torso"), mat("Torso"), mat("Face")];
+    Arc::new(m)
+}
+
+#[test]
+fn a_look_puts_pictures_and_tints_on_materials_by_name_and_they_survive_the_file() {
+    let mut s = Scene::default();
+    s.add_model(skinned_figure(), None).unwrap();
+    let pic = Arc::new(photocraft_model3d::TextureData { width: 1, height: 1, rgba: Arc::new(vec![200, 100, 50, 255]) });
+    s.add_texture_data("Pkg.1:/skin.jpg", pic.clone());
+    s.set_material_override(1, "Torso", Some("Pkg.1:/skin.jpg"), Some([0.9, 0.8, 0.7])).unwrap();
+    let m = s.model(1).unwrap().clone();
+    assert_eq!(m.textures.len(), 1, "one picture for both Torso materials");
+    assert_eq!((m.materials[0].base_color_texture, m.materials[1].base_color_texture, m.materials[2].base_color_texture), (Some(0), Some(0), None));
+    assert_eq!(m.materials[0].base_color, [0.9, 0.8, 0.7, 1.0]);
+    assert_eq!(m.materials[2].base_color, [0.5, 0.4, 0.3, 1.0], "other materials untouched");
+    // Morphs and overrides stack: a morph change keeps the skin.
+    s.add_morph_data(1, morph("Wide", &[(1, [0.2, 0.0, 0.0])], vec![])).unwrap();
+    s.set_morph(1, "Wide", 1.0).unwrap();
+    assert_eq!(s.model(1).unwrap().materials[0].base_color_texture, Some(0));
+    // The file keeps the reference, not the pixels; they come back with the model.
+    let mut back = Scene::from_json(&s.to_json().unwrap()).unwrap();
+    assert_eq!(back.material_overrides, s.material_overrides);
+    back.attach_model(1, skinned_figure()).unwrap();
+    assert_eq!(back.model(1).unwrap().materials[0].base_color_texture, None, "no pixels yet");
+    back.add_texture_data("Pkg.1:/skin.jpg", pic);
+    back.apply_morphs(1).unwrap();
+    assert_eq!(back.model(1).unwrap().materials[0].base_color_texture, Some(0));
+    // Taking the override away restores the model's own.
+    s.set_material_override(1, "Torso", None, None).unwrap();
+    assert_eq!(s.model(1).unwrap().materials[0].base_color_texture, None);
+    assert!(s.set_material_override(9, "Torso", None, Some([1.0; 3])).is_err());
 }

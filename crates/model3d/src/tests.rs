@@ -100,3 +100,37 @@ fn the_vam_figures_say_which_base_vertex_each_vertex_copies() {
         assert!(m.meshes.iter().all(|mesh| mesh.positions.len() == n), "every primitive shares the vertex list");
     }
 }
+
+#[test]
+fn the_real_morph_packs_read_and_their_offsets_point_at_real_vertices() {
+    for who in ["female", "male"] {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../samples");
+        let (Ok(pack), Ok(figure)) = (std::fs::read(dir.join(format!("vam_base_{who}.pcmorphs"))), std::fs::read(dir.join(format!("vam_base_{who}.vrm")))) else { return };
+        let model = crate::load("vam.vrm", &figure).unwrap();
+        let t = std::time::Instant::now();
+        let pack = crate::morph::MorphPack::parse(pack).unwrap();
+        assert!(pack.entries.len() > 800, "{who}: {} morphs", pack.entries.len());
+        let i = pack.find("Glutes Size").or_else(|| pack.find("Hip Size")).unwrap_or(0);
+        let m = pack.load(i).unwrap();
+        assert_eq!(m.deltas.len(), m.info.num_deltas);
+        let n = model.vertex_base.len() as u32;
+        assert!(m.deltas.iter().all(|d| d.vertex < n), "{who}: an offset past the figure's vertices");
+        eprintln!("PACK {who}: {} morphs parsed in {:?}", pack.entries.len(), t.elapsed());
+    }
+}
+
+#[test]
+fn the_built_in_genital_morphs_are_marked_and_number_their_vertices_inside_the_graft() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../samples");
+    let (Ok(pack), Ok(figure)) = (std::fs::read(dir.join("vam_base_female.pcmorphs")), std::fs::read(dir.join("vam_base_female.vrm"))) else { return };
+    let model = crate::load("vam.vrm", &figure).unwrap();
+    let graft = model.vertex_base.iter().filter(|&&b| b >= model.graft_start.unwrap_or(u32::MAX)).count() as u32;
+    let pack = crate::morph::MorphPack::parse(pack).unwrap();
+    let i = pack.find("Gen_Innie").expect("the pack has Gen_Innie");
+    assert!(pack.entries[i].info.genital, "Gen_Innie is a genital morph");
+    let m = pack.load(i).unwrap();
+    assert!(m.deltas.iter().all(|d| d.vertex < graft), "its numbers are inside the graft ({graft} vertices)");
+    assert!(pack.entries.iter().filter(|e| e.info.genital).count() > 50);
+    let body = pack.find("Hip Size").unwrap();
+    assert!(!pack.entries[body].info.genital);
+}

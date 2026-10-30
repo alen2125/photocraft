@@ -1,6 +1,6 @@
 //! Triangle setup, rasterisation, shading, resolve and ray picking.
 
-use crate::{Draw, Image, LightW, Prepared, RenderError, RenderOptions, to_srgb};
+use crate::{Draw, Image, LightW, Prepared, RenderError, RenderOptions, TexRef, to_srgb};
 use photocraft_scene3d::LightKind;
 use photocraft_scene3d::NodeId;
 use photocraft_scene3d::glam::{Vec3, Vec4};
@@ -100,8 +100,8 @@ fn edge(a: &Screen, b: &Screen, px: f64, py: f64) -> f64 {
 }
 
 /// Bilinear texture lookup (repeat wrap): linear RGB and alpha.
-fn sample(d: &Draw, lut: &[f32; 256], uv: [f32; 2]) -> Option<(Vec3, f32)> {
-    let t = d.texture.as_ref()?;
+fn sample(t: Option<&TexRef>, lut: &[f32; 256], uv: [f32; 2]) -> Option<(Vec3, f32)> {
+    let t = t?;
     let tex = t.model.textures.get(t.index)?.as_ref()?;
     let (w, h) = (tex.width as i64, tex.height as i64);
     if w == 0 || h == 0 || !uv[0].is_finite() || !uv[1].is_finite() {
@@ -126,8 +126,8 @@ fn sample(d: &Draw, lut: &[f32; 256], uv: [f32; 2]) -> Option<(Vec3, f32)> {
 }
 
 /// The pixel's colour, or `None` when its alpha falls under the material's cutoff.
-fn shade(d: &Draw, prep: &Prepared, pos: Vec3, mut n: Vec3, uv: [f32; 2]) -> Option<Vec3> {
-    let (tex_rgb, tex_a) = sample(d, &prep.lut, uv).unwrap_or((Vec3::ONE, 1.0));
+fn shade(d: &Draw, prep: &Prepared, pos: Vec3, mut n: Vec3, uv: [f32; 2], tangents: Option<(Vec3, Vec3)>) -> Option<Vec3> {
+    let (tex_rgb, tex_a) = sample(d.texture.as_ref(), &prep.lut, uv).unwrap_or((Vec3::ONE, 1.0));
     if let Some(cut) = d.cutoff
         && d.alpha * tex_a < cut
     {
@@ -138,6 +138,19 @@ fn shade(d: &Draw, prep: &Prepared, pos: Vec3, mut n: Vec3, uv: [f32; 2]) -> Opt
         return Some(albedo + d.emissive);
     }
     n = n.normalize_or_zero();
+    // A normal map bends the smooth normal in the surface's own frame (tangent, bitangent, normal).
+    if let (Some((t, b)), Some((m, _))) = (tangents, sample(d.normal_map.as_ref(), &prep.raw, uv)) {
+        let t = (t - n * n.dot(t)).normalize_or_zero();
+        let b = (b - n * n.dot(b) - t * t.dot(b)).normalize_or_zero();
+        if t != Vec3::ZERO && b != Vec3::ZERO {
+            let (x, y, z) = ((m.x * 2.0 - 1.0) * d.normal_scale, (m.y * 2.0 - 1.0) * d.normal_scale, (m.z * 2.0 - 1.0).max(0.05));
+            let bent = (t * x + b * y + n * z).normalize_or_zero();
+            if bent != Vec3::ZERO {
+                n = bent;
+            }
+        }
+    }
+    let spec_scale = sample(d.spec_map.as_ref(), &prep.raw, uv).map_or(1.0, |(s, _)| s.x);
     let v = (prep.eye - pos).normalize_or_zero();
     // Two-sided: planes, cut-open solids and thin cloth light correctly from behind.
     if n.dot(v) < 0.0 {
@@ -153,7 +166,7 @@ fn shade(d: &Draw, prep: &Prepared, pos: Vec3, mut n: Vec3, uv: [f32; 2]) -> Opt
         }
         diffuse += l.radiance * (ndl * atten);
         let h = (to_light + v).normalize_or_zero();
-        spec += l.radiance * (n.dot(h).max(0.0).powf(d.shininess) * d.specular * atten);
+        spec += l.radiance * (n.dot(h).max(0.0).powf(d.shininess) * d.specular * spec_scale * atten);
     }
     Some(albedo * diffuse + spec + d.emissive)
 }
@@ -201,10 +214,27 @@ fn setup_triangle(draw: usize, tri: &[Vert; 3], sw: usize, sh: usize) -> Option<
     Some(SetupTri { draw, v: *tri, s: [a, b, c], area, x0, x1: x1 as usize, y0, y1: y1 as usize })
 }
 
+/// The directions along which a triangle's texture coordinates grow: tangent (u) and bitangent
+/// (against v, since pictures run top-down and normal maps are green-up).
+fn tangent_frame(tri: &[Vert; 3]) -> Option<(Vec3, Vec3)> {
+    let (e1, e2) = (tri[1].pos - tri[0].pos, tri[2].pos - tri[0].pos);
+    let (du1, dv1) = (tri[1].uv[0] - tri[0].uv[0], tri[1].uv[1] - tri[0].uv[1]);
+    let (du2, dv2) = (tri[2].uv[0] - tri[0].uv[0], tri[2].uv[1] - tri[0].uv[1]);
+    let det = du1 * dv2 - du2 * dv1;
+    if det.abs() < 1e-12 || !det.is_finite() {
+        return None;
+    }
+    let r = 1.0 / det;
+    let t = (e1 * dv2 - e2 * dv1) * r;
+    let b = (e2 * du1 - e1 * du2) * r;
+    (t.is_finite() && b.is_finite()).then_some((t, -b))
+}
+
 fn draw_triangle(band: &mut Band, d: &Draw, prep: &Prepared, t: &SetupTri) {
     let [a, b, c] = t.s;
     let tri = &t.v;
     let rows = t.y0.max(band.y0)..=t.y1.min(band.y0 + band.rows - 1);
+    let tangents = if d.normal_map.is_some() { tangent_frame(tri) } else { None };
     for y in rows {
         let py = y as f64 + 0.5;
         for x in t.x0..=t.x1 {
@@ -231,7 +261,7 @@ fn draw_triangle(band: &mut Band, d: &Draw, prep: &Prepared, t: &SetupTri) {
             let nrm = tri[0].nrm * p0 + tri[1].nrm * p1 + tri[2].nrm * p2;
             let uv = [tri[0].uv[0] * p0 + tri[1].uv[0] * p1 + tri[2].uv[0] * p2, tri[0].uv[1] * p0 + tri[1].uv[1] * p1 + tri[2].uv[1] * p2];
             // A dropped (transparent) texel leaves the depth buffer alone.
-            let Some(col) = shade(d, prep, pos, nrm, uv) else { continue };
+            let Some(col) = shade(d, prep, pos, nrm, uv, tangents) else { continue };
             if let (Some(dz), Some(dc)) = (band.depth.get_mut(i), band.color.get_mut(i)) {
                 *dz = z as f32;
                 *dc = col.to_array();

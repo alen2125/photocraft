@@ -43,8 +43,13 @@ fn quad_model(skinned: bool, mode: AlphaMode) -> Arc<ModelData> {
             alpha_cutoff: 0.5,
             double_sided: true,
             unlit: false,
+            normal_texture: None,
+            normal_scale: 1.0,
+            specular_texture: None,
+            specular: None,
+            shininess: None,
         }],
-        textures: vec![Some(TextureData { width: 2, height: 1, rgba: vec![255, 0, 0, 255, 0, 255, 0, 0] })],
+        textures: vec![Some(TextureData { width: 2, height: 1, rgba: std::sync::Arc::new(vec![255, 0, 0, 255, 0, 255, 0, 0]) })],
         humanoid: vec![],
         springs: vec![],
         collider_groups: vec![],
@@ -141,4 +146,62 @@ fn a_scene_without_its_model_loaded_still_renders_the_rest() {
     assert_eq!(px(&img, 32, 32)[3], 0, "no model, nothing drawn");
     back.attach_model(back.assets[0].id, quad_model(true, AlphaMode::Opaque)).unwrap();
     assert_eq!(px(&render(&back, &opts()).unwrap(), 32, 32)[3], 255);
+}
+
+/// The quad lit by one directional light that shines along the quad's plane from the right, so a
+/// flat quad gets almost no light and a normal map that tilts the surface towards it gets some.
+fn lit_quad(normal: Option<[u8; 4]>, spec: Option<[u8; 4]>) -> Image {
+    let mut model = (*quad_model(false, AlphaMode::Opaque)).clone();
+    let tex = |p: [u8; 4]| Some(TextureData { width: 1, height: 1, rgba: Arc::new(p.to_vec()) });
+    model.textures[0] = tex([255, 255, 255, 255]);
+    if let Some(n) = normal {
+        model.textures.push(tex(n));
+        model.materials[0].normal_texture = Some(model.textures.len() - 1);
+    }
+    if let Some(s) = spec {
+        model.textures.push(tex(s));
+        model.materials[0].specular_texture = Some(model.textures.len() - 1);
+    }
+    let mut s = bright_scene(Arc::new(model));
+    s.ambient = [0.0; 3];
+    s.nodes.retain(|n| !matches!(n.kind, NodeKind::Light(_)));
+    let mut light = Node { kind: NodeKind::Light(photocraft_scene3d::Light { kind: photocraft_scene3d::LightKind::Directional, intensity: 2.0, ..Default::default() }), ..Node::default() };
+    // Directional lights shine along their own -Z: turn it to travel along -X (from the right).
+    light.transform.rotation = [0.0, 90.0, 0.0];
+    s.add(light).unwrap();
+    render(&s, &opts()).unwrap()
+}
+
+#[test]
+fn a_normal_map_changes_the_shading_and_a_flat_one_does_not() {
+    let plain = px(&lit_quad(None, None), 32, 32);
+    let flat = px(&lit_quad(Some([128, 128, 255, 255]), None), 32, 32);
+    let tilted = px(&lit_quad(Some([255, 128, 128, 255]), None), 32, 32);
+    assert!(plain[0] < 20, "a light along the plane barely lights a flat quad: {plain:?}");
+    assert!(flat[0].abs_diff(plain[0]) <= 30, "a flat map changes nothing: {flat:?} vs {plain:?}");
+    assert!(tilted[0] > plain[0] + 80, "a map that tilts the surface towards the light lights it: {tilted:?} vs {plain:?}");
+}
+
+#[test]
+fn a_specular_map_scales_the_highlight() {
+    let lit = |spec| {
+        let mut model = (*quad_model(false, AlphaMode::Opaque)).clone();
+        model.textures[0] = Some(TextureData { width: 1, height: 1, rgba: Arc::new(vec![0, 0, 0, 255]) });
+        model.materials[0].specular = Some(0.15);
+        model.materials[0].shininess = Some(8.0);
+        if let Some(s) = spec {
+            model.textures.push(Some(TextureData { width: 1, height: 1, rgba: Arc::new(s) }));
+            model.materials[0].specular_texture = Some(model.textures.len() - 1);
+        }
+        let mut s = bright_scene(Arc::new(model));
+        s.ambient = [0.0; 3];
+        s.nodes.retain(|n| !matches!(n.kind, NodeKind::Light(_)));
+        let mut light = Node { kind: NodeKind::Light(photocraft_scene3d::Light { kind: photocraft_scene3d::LightKind::Directional, intensity: 2.0, ..Default::default() }), ..Node::default() };
+        light.transform.rotation = [0.0, 0.0, 0.0];
+        s.add(light).unwrap();
+        px(&render(&s, &opts()).unwrap(), 32, 32)
+    };
+    let (full, none, half) = (lit(None), lit(Some(vec![0, 0, 0, 255])), lit(Some(vec![128, 0, 0, 255])));
+    assert!(full[0] > 60 && none[0] < 5, "{full:?} {none:?}");
+    assert!(half[0] > none[0] && half[0] < full[0], "{half:?}");
 }

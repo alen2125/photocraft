@@ -90,3 +90,18 @@ fn the_same_model_file_is_decoded_once() {
     let b = load_model("t", &path).unwrap();
     assert!(Arc::ptr_eq(&a, &b));
 }
+
+#[test]
+fn a_prepared_scene_renders_with_the_models_the_editor_holds_not_the_files() {
+    let mut s = session();
+    // A model with no file path: from JSON the render could not find it again.
+    let model = std::sync::Arc::new(photocraft_scene3d::model3d::load("hero.vrm", &skinned_triangle_glb(false, 2)).unwrap());
+    let mut scene = Scene::new();
+    scene.add_model(model, None).unwrap();
+    let json_scene = serde_json::to_value(&scene).unwrap();
+    assert!(s.execute("scene3d.renderToLayer", json!({"scene": json_scene})).is_err(), "no file to reload it from");
+    prepare_scene(scene.clone());
+    s.execute("scene3d.renderToLayer", json!({"prepared": true})).unwrap();
+    // The prepared scene is used once; without one waiting the call falls back to `scene`.
+    assert!(s.execute("scene3d.renderToLayer", json!({"prepared": true})).is_err());
+}

@@ -27,6 +27,17 @@ fn has_doc(s: &Session) -> std::result::Result<(), String> {
     s.active().map(|_| ()).ok_or_else(|| "no document open".into())
 }
 
+/// A scene the editor handed over in memory, with its models as they are now (morphed, with the
+/// skin pictures of a look): a scene sent as JSON carries only the morph values, and the models
+/// would be loaded again from their files without them. Taken by the next `renderToLayer` that
+/// asks for it with `"prepared": true`.
+static PREPARED: Mutex<Option<Scene>> = Mutex::new(None);
+
+/// Leaves a scene for the next `scene3d.renderToLayer` call with `"prepared": true`.
+pub fn prepare_scene(scene: Scene) {
+    *PREPARED.lock().unwrap_or_else(PoisonError::into_inner) = Some(scene);
+}
+
 /// The scene from `scene` (inline JSON) or `path` (a `.pcscene` file).
 fn scene_param(cmd: &str, p: &Value) -> Result<Scene> {
     let text = match (p.get("scene"), p.get("path").and_then(Value::as_str)) {
@@ -97,7 +108,12 @@ fn surface_from_rgba(img: &photocraft_render3d::Image) -> Result<Surface> {
 
 fn run_render(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "scene3d.renderToLayer";
-    let mut scene = scene_param(CMD, p)?;
+    let prepared = if p.get("prepared").and_then(Value::as_bool) == Some(true) { PREPARED.lock().unwrap_or_else(PoisonError::into_inner).take() } else { None };
+    let mut scene = match prepared {
+        Some(scene) => scene,
+        None => scene_param(CMD, p)?,
+    };
+    // Models the editor did not hold in memory still come from their files.
     resolve_assets(CMD, &mut scene)?;
     let doc = s.active().ok_or(EngineError::NoDocument)?;
     let fmt = doc.doc.pixel_format();
@@ -165,7 +181,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Render 3D Scene to Layer",
             menu: &[],
             shortcut: None,
-            params: r##"{"scene":object|"path":text (.pcscene),"width":1..16384=document width,"height":1..16384=document height,"ssaa":1..4=2,"transparent":bool=true,"name":text="3D Render"} → {layer,width,height,nodes}"##,
+            params: r##"{"scene":object|"path":text (.pcscene),"width":1..16384=document width,"height":1..16384=document height,"ssaa":1..4=2,"transparent":bool=true,"name":text="3D Render","prepared":bool=false (use the scene left by the editor)} → {layer,width,height,nodes}"##,
             enabled: has_doc,
             run: run_render,
             journal: true,

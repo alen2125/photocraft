@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use glam::Vec3;
 use photocraft_model3d::morph::{Axis, FormulaKind, Morph, MorphInfo};
-use photocraft_model3d::ModelData;
+use photocraft_model3d::{ModelData, TextureData};
 use serde::{Deserialize, Serialize};
 
 use crate::scene::{NodeKind, Scene, SceneError};
@@ -34,17 +34,50 @@ impl Default for MorphValue {
     }
 }
 
+/// A picture and/or a tint for every material of a model that has this name. The picture is
+/// named by the reference the look used (`Package.N:/Custom/.../skin.jpg`); its pixels are
+/// supplied separately ([`Scene::add_texture_data`]) and are not part of the scene file.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct MaterialOverride {
+    pub asset: u32,
+    pub material: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub texture: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tint: Option<[f32; 3]>,
+    /// Pictures by uid, like `texture`: a normal map and a specular (or gloss) map.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub normal: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub specular_map: Option<String>,
+    /// How strongly the normal map shows, the highlight strength and its sharpness.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bump: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub specular: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shininess: Option<f32>,
+}
+
 /// Morph data and the unmorphed models, by asset. Not part of the scene file, never compared.
 #[derive(Clone, Default)]
 pub struct MorphCache {
     /// The model as it was loaded, kept once the first morph is applied.
     base: HashMap<u32, Arc<ModelData>>,
     data: HashMap<(u32, String), Arc<Morph>>,
+    /// Decoded pictures by the reference that names them.
+    textures: HashMap<String, Arc<photocraft_model3d::TextureData>>,
     /// Per asset, the vertices that copy each base vertex (built when first needed).
     copies: HashMap<u32, Arc<Vec<Vec<u32>>>>,
+    /// Per asset, for each base vertex of the genital graft, the body vertices it follows.
+    graft: HashMap<u32, Arc<Vec<GraftLink>>>,
     /// Per asset, the world offset of each node's centre the current model was built with.
     offsets: HashMap<u32, Vec<Vec3>>,
 }
+
+/// A graft vertex (its base index) and the nearby body vertices (base index, weight) it follows.
+type GraftLink = (u32, Vec<(u32, f32)>);
 
 impl PartialEq for MorphCache {
     fn eq(&self, _: &Self) -> bool {
@@ -83,6 +116,34 @@ impl Scene {
         v
     }
 
+    /// Supplies the pixels of a picture a material override names.
+    pub fn add_texture_data(&mut self, uid: &str, texture: Arc<photocraft_model3d::TextureData>) {
+        self.morph_cache.textures.insert(uid.to_string(), texture);
+    }
+
+    /// The pixels of a picture, if they are known.
+    pub fn texture_data(&self, uid: &str) -> Option<Arc<photocraft_model3d::TextureData>> {
+        self.morph_cache.textures.get(uid).cloned()
+    }
+
+    /// Whether the pixels of a picture are known.
+    pub fn has_texture_data(&self, uid: &str) -> bool {
+        self.morph_cache.textures.contains_key(uid)
+    }
+
+    /// Puts a picture and/or a tint on the materials of a model called `material`; both `None`
+    /// takes the override away. Rebuilds the model.
+    pub fn set_material_override(&mut self, asset: u32, material: &str, texture: Option<&str>, tint: Option<[f32; 3]>) -> Result<(), SceneError> {
+        if !self.assets.iter().any(|a| a.id == asset) {
+            return Err(SceneError::Parse(format!("scene has no asset {asset}")));
+        }
+        self.material_overrides.retain(|o| !(o.asset == asset && o.material == material));
+        if texture.is_some() || tint.is_some() {
+            self.material_overrides.push(MaterialOverride { asset, material: material.to_string(), texture: texture.map(str::to_string), tint: tint.filter(|t| t.iter().all(|c| c.is_finite())), ..MaterialOverride::default() });
+        }
+        self.apply_morphs(asset)
+    }
+
     /// A morph's own value (0 when it is not set).
     pub fn morph_value(&self, asset: u32, id: &str) -> f32 {
         self.morphs.iter().find(|m| m.asset == asset && m.id == id).map_or(0.0, |m| m.value)
@@ -100,6 +161,33 @@ impl Scene {
             self.morphs.push(MorphValue { asset, id: id.to_string(), value });
         }
         self.apply_morphs(asset)
+    }
+
+    /// Sets many morph values at once (a look) and rebuilds the model a single time. Values for
+    /// morphs that are not loaded are returned as `Err` entries; the rest are set. A morph not
+    /// listed keeps its value unless `clear_others`.
+    pub fn set_morph_values(&mut self, asset: u32, values: &[(String, f32)], clear_others: bool) -> Result<Vec<String>, SceneError> {
+        if !self.models.0.contains_key(&asset) {
+            return Err(SceneError::Parse(format!("model of asset {asset} is not loaded")));
+        }
+        if clear_others {
+            self.morphs.retain(|m| m.asset != asset);
+        }
+        let mut unknown = Vec::new();
+        for (id, value) in values {
+            let Some(info) = self.morph_cache.data.get(&(asset, id.clone())).map(|m| m.info.clone()) else {
+                unknown.push(id.clone());
+                continue;
+            };
+            let (lo, hi) = if info.min <= info.max { (info.min, info.max) } else { (info.max, info.min) };
+            let value = if value.is_finite() { value.clamp(lo.min(-10.0), hi.max(10.0)) } else { 0.0 };
+            self.morphs.retain(|m| !(m.asset == asset && m.id == *id));
+            if value != 0.0 {
+                self.morphs.push(MorphValue { asset, id: id.clone(), value });
+            }
+        }
+        self.apply_morphs(asset)?;
+        Ok(unknown)
     }
 
     /// Clears every morph of a model.
@@ -195,6 +283,29 @@ impl Scene {
                 }
             }
         }
+        if changed_vertices && let Some(start) = base.graft_start {
+            // The genital graft is welded to the body along a seam: it follows the body's own
+            // morphs through the nearest body vertices (the seam vertices sit on body vertices).
+            let links = self.graft_links(asset, &base, &copies, start);
+            let rest = base.meshes.first().map(|m| m.positions.as_slice()).unwrap_or(&[]);
+            let moved = |b: u32, positions: &[[f32; 3]]| -> Vec3 {
+                let Some(&j) = copies.get(b as usize).and_then(|l| l.first()) else { return Vec3::ZERO };
+                match (positions.get(j as usize), rest.get(j as usize)) {
+                    (Some(p), Some(r)) => Vec3::from(*p) - Vec3::from(*r),
+                    _ => Vec3::ZERO,
+                }
+            };
+            let follow: Vec<(u32, Vec3)> = links.iter().map(|(g, near)| (*g, near.iter().map(|(b, w)| moved(*b, &positions) * *w).sum::<Vec3>())).collect();
+            for (g, d) in follow {
+                for &j in copies.get(g as usize).into_iter().flatten() {
+                    if let Some(p) = positions.get_mut(j as usize) {
+                        p[0] += d.x;
+                        p[1] += d.y;
+                        p[2] += d.z;
+                    }
+                }
+            }
+        }
         if changed_vertices {
             for mesh in &mut model.meshes {
                 if mesh.positions.len() == positions.len() {
@@ -246,15 +357,111 @@ impl Scene {
             }
         }
         self.morph_cache.offsets.insert(asset, bone_world);
+        self.apply_material_overrides(asset, &mut model);
         self.models.0.insert(asset, Arc::new(model));
         Ok(())
+    }
+
+    /// Puts the overrides' pictures and tints on a freshly built model.
+    fn apply_material_overrides(&self, asset: u32, model: &mut ModelData) {
+        let mut index: HashMap<String, usize> = HashMap::new();
+        for o in self.material_overrides.iter().filter(|o| o.asset == asset) {
+            let find = |uid: &Option<String>| uid.as_ref().and_then(|u| self.morph_cache.textures.get(u).map(|t| (u.clone(), t.clone())));
+            let (picture, normal, spec) = (find(&o.texture), find(&o.normal), find(&o.specular_map));
+            for mi in 0..model.materials.len() {
+                if model.materials.get(mi).is_none_or(|m| m.name != o.material) {
+                    continue;
+                }
+                let mut put = |model: &mut ModelData, hit: &Option<(String, Arc<TextureData>)>| -> Option<usize> {
+                    let (uid, tex) = hit.as_ref()?;
+                    Some(*index.entry(uid.clone()).or_insert_with(|| {
+                        model.textures.push(Some((**tex).clone()));
+                        model.textures.len() - 1
+                    }))
+                };
+                let (pi, ni, si) = (put(model, &picture), put(model, &normal), put(model, &spec));
+                let Some(m) = model.materials.get_mut(mi) else { continue };
+                if let Some(i) = pi {
+                    m.base_color_texture = Some(i);
+                    m.base_color = [1.0, 1.0, 1.0, m.base_color[3]];
+                }
+                if let Some(i) = ni {
+                    m.normal_texture = Some(i);
+                    m.normal_scale = o.bump.filter(|b| b.is_finite()).unwrap_or(1.0).clamp(0.0, 4.0);
+                }
+                if let Some(i) = si {
+                    m.specular_texture = Some(i);
+                }
+                m.specular = o.specular.filter(|v| v.is_finite()).map(|v| v.clamp(0.0, 1.0)).or(m.specular);
+                m.shininess = o.shininess.filter(|v| v.is_finite()).map(|v| v.clamp(1.0, 512.0)).or(m.shininess);
+                if let Some(t) = o.tint {
+                    m.base_color = [t[0], t[1], t[2], m.base_color[3]];
+                }
+            }
+        }
+    }
+
+    /// The model of an asset as it was loaded, before any morph.
+    pub fn morph_cache_base(&self, asset: u32) -> Option<Arc<ModelData>> {
+        self.morph_cache.base.get(&asset).cloned()
     }
 
     /// Forgets the unmorphed model of an asset (a new one was attached).
     pub(crate) fn reset_morph_base(&mut self, asset: u32) {
         self.morph_cache.base.remove(&asset);
+        self.morph_cache.graft.remove(&asset);
         self.morph_cache.copies.remove(&asset);
         self.morph_cache.offsets.remove(&asset);
+    }
+
+    /// For each base vertex of the genital graft, its nearest body vertices with weights, built once.
+    fn graft_links(&mut self, asset: u32, base: &ModelData, copies: &[Vec<u32>], start: u32) -> Arc<Vec<GraftLink>> {
+        if let Some(l) = self.morph_cache.graft.get(&asset) {
+            return l.clone();
+        }
+        let rest = base.meshes.first().map(|m| m.positions.as_slice()).unwrap_or(&[]);
+        let at = |b: usize| copies.get(b).and_then(|l| l.first()).and_then(|&j| rest.get(j as usize)).map(|p| Vec3::from(*p));
+        const CELL: f32 = 0.03;
+        let cell = |p: Vec3| ((p.x / CELL).floor() as i32, (p.y / CELL).floor() as i32, (p.z / CELL).floor() as i32);
+        let mut grid: HashMap<(i32, i32, i32), Vec<u32>> = HashMap::new();
+        for b in 0..(start as usize).min(copies.len()) {
+            if let Some(p) = at(b) {
+                grid.entry(cell(p)).or_default().push(b as u32);
+            }
+        }
+        let mut links = Vec::new();
+        for g in (start as usize)..copies.len() {
+            let Some(p) = at(g) else { continue };
+            let (cx, cy, cz) = cell(p);
+            let mut best: Vec<(f32, u32)> = Vec::new();
+            for r in [1, 2, 4] {
+                best.clear();
+                for dx in -r..=r {
+                    for dy in -r..=r {
+                        for dz in -r..=r {
+                            for &b in grid.get(&(cx + dx, cy + dy, cz + dz)).into_iter().flatten() {
+                                if let Some(q) = at(b as usize) {
+                                    best.push((p.distance_squared(q), b));
+                                }
+                            }
+                        }
+                    }
+                }
+                if best.len() >= 6 {
+                    break;
+                }
+            }
+            best.sort_by(|a, b| a.0.total_cmp(&b.0));
+            best.truncate(6);
+            let weights: Vec<f32> = best.iter().map(|(d2, _)| 1.0 / (d2 + 1e-7)).collect();
+            let total: f32 = weights.iter().sum();
+            if total > 0.0 {
+                links.push((g as u32, best.iter().zip(&weights).map(|((_, b), w)| (*b, w / total)).collect()));
+            }
+        }
+        let arc = Arc::new(links);
+        self.morph_cache.graft.insert(asset, arc.clone());
+        arc
     }
 
     /// The vertices that copy each base vertex of a model, built once.

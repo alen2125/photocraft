@@ -37,7 +37,7 @@ impl Scene {
         // A model brought in fresh is the unmorphed one: morphs are applied to it again.
         self.reset_morph_base(asset);
         self.relink_joints(asset);
-        if self.morphs.iter().any(|m| m.asset == asset) {
+        if self.morphs.iter().any(|m| m.asset == asset) || self.material_overrides.iter().any(|o| o.asset == asset) {
             self.apply_morphs(asset)?;
         }
         Ok(())

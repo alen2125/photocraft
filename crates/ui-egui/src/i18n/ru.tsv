@@ -4695,3 +4695,10 @@ shape	Appearance	Оформление
 	No morphs are on. Move one in the All tab and it appears here.	Нет включённых морфов. Подвиньте любой во вкладке «Все», и он появится здесь.
 	Active morphs	Активные
 	All morphs	Все
+	Import look (.vap)…	Импорт внешности (.vap)…
+	Sets the morphs and the skin pictures from a VaM appearance preset. Clothing and hair are not imported yet.	Ставит морфы и текстуры кожи из пресета внешности VaM. Одежда и волосы пока не импортируются.
+	The figure's built-in morphs file (.pcmorphs) is not next to it: export the figure again.	Файла встроенных морфов фигуры (.pcmorphs) нет рядом с ней: выгрузите фигуру заново.
+	Looks	Образы
+	Set the VaM folder above to list its looks.	Укажите папку VaM выше, чтобы увидеть её образы.
+	Search looks…	Поиск образов…
+	No looks found.	Образы не найдены.

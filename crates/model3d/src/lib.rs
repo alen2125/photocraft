@@ -105,6 +105,15 @@ pub struct MaterialData {
     pub double_sided: bool,
     /// The file asked for `KHR_materials_unlit` (VRM exporters set it on everything).
     pub unlit: bool,
+    /// A tangent-space normal map (index into [`ModelData::textures`]), green up.
+    pub normal_texture: Option<usize>,
+    /// How strongly the normal map bends the surface (1 = as drawn).
+    pub normal_scale: f32,
+    /// A picture whose red channel scales the highlight (a specular or gloss map).
+    pub specular_texture: Option<usize>,
+    /// Highlight strength and sharpness; `None` leaves the renderer's own values.
+    pub specular: Option<f32>,
+    pub shininess: Option<f32>,
 }
 
 /// Decoded sRGB RGBA8 image, row-major from the top-left.
@@ -112,7 +121,8 @@ pub struct MaterialData {
 pub struct TextureData {
     pub width: u32,
     pub height: u32,
-    pub rgba: Vec<u8>,
+    /// Shared, so copying a model (a morph rebuilds it) does not copy its pictures.
+    pub rgba: std::sync::Arc<Vec<u8>>,
 }
 
 /// A VRM spring-bone chain (hair, skirt, accessories): the roots whose descendants sway.

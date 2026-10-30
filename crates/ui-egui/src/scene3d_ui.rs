@@ -78,6 +78,8 @@ pub struct Scene3dEditor {
     pub(crate) pose_name: String,
     /// Set by the side panel; carried out after the window is drawn (it opens a file dialog).
     pub(crate) want_import: bool,
+    /// Same for importing a VaM look (`.vap`).
+    pub(crate) want_look: bool,
     pub(crate) worker: crate::scene3d_worker::PreviewWorker,
     /// `egui` time of the last camera or pose change; the preview is coarse until it settles.
     pub(crate) last_change: f64,
@@ -169,6 +171,7 @@ impl Default for Scene3dEditor {
             ik_chain: 2,
             pose_name: "Pose 1".into(),
             want_import: false,
+            want_look: false,
             worker: Default::default(),
             last_change: f64::NEG_INFINITY,
             owner: None,
@@ -953,6 +956,7 @@ fn pose_panel(ui: &mut egui::Ui, ed: &mut Scene3dEditor) {
 
 pub(crate) enum Action {
     Import,
+    ImportLook,
     Bake,
     Close,
     New,
@@ -997,6 +1001,16 @@ pub(crate) fn run_action(app: &mut PhotocraftApp, ctx: &egui::Context, action: A
                 app.scene3d.import_model(&name, &bytes)?;
                 app.scene3d.status.clear();
                 Ok(json!({"imported": name}))
+            });
+            if let Err(e) = asked {
+                app.scene3d.status = e;
+            }
+        }
+        Action::ImportLook => {
+            let asked = app.pick_file_bytes_filtered(&["vap"], |app, name, bytes| {
+                let summary = crate::scene3d_vam::import_look(&mut app.scene3d, &name, &bytes)?;
+                app.scene3d.status = summary.clone();
+                Ok(json!({"imported": name, "summary": summary}))
             });
             if let Err(e) = asked {
                 app.scene3d.status = e;
@@ -1064,12 +1078,16 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
         crate::scene3d_canvas::close(&mut ed);
     }
     let import = std::mem::take(&mut ed.want_import);
+    let look = std::mem::take(&mut ed.want_look);
     app.scene3d = ed;
     if let Some(a) = action {
         run_action(app, ctx, a);
     }
     if import {
         run_action(app, ctx, Action::Import);
+    }
+    if look {
+        run_action(app, ctx, Action::ImportLook);
     }
 }
 

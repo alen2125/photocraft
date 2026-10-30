@@ -5144,6 +5144,7 @@ version = "0.15.1"
 name = "photocraft-model3d"
 version = "0.15.1"
 dependencies = [
+ "flate2",
  "gltf",
  "thiserror 2.0.21",
 ]
@@ -5335,7 +5336,9 @@ name = "photocraft-vam"
 version = "0.15.1"
 dependencies = [
  "flate2",
+ "photocraft-codecs",
  "photocraft-model3d",
+ "serde_json",
  "thiserror 2.0.21",
 ]
 

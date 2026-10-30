@@ -11,5 +11,7 @@ workspace = true
 # folder and the zip packages in AddonPackages. Nothing from it is ever copied into the repository.
 [dependencies]
 photocraft-model3d = { workspace = true }
+photocraft-codecs = { workspace = true }
 flate2 = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }

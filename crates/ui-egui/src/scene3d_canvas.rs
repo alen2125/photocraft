@@ -582,9 +582,11 @@ pub(crate) fn bake(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let ed = &app.scene3d;
     let [w, h] = ed.doc_size;
     let ssaa = limited_ssaa(w, h, ed.out_ssaa);
+    // The scene goes in memory: as JSON its models would come back from their files, without the
+    // morphs and skin pictures of an imported look.
+    photocraft_engine::scene3d_cmds::prepare_scene(ed.scene.clone());
     let params = json!({
-        "scene": serde_json::to_value(&ed.scene).unwrap_or_default(),
-        "width": w, "height": h, "ssaa": ssaa, "transparent": ed.out_transparent,
+        "prepared": true, "width": w, "height": h, "ssaa": ssaa, "transparent": ed.out_transparent,
     });
     match crate::menus::invoke(app, ctx, "scene3d.renderToLayer", params) {
         Ok(_) => close(&mut app.scene3d),

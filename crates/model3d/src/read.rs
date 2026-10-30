@@ -69,7 +69,7 @@ pub fn load(name: &str, bytes: &[u8]) -> Result<ModelData, ModelError> {
             }
             let rgba = to_rgba8(img)?;
             texture_bytes += size;
-            Some(TextureData { width: w, height: h, rgba })
+            Some(TextureData { width: w, height: h, rgba: std::sync::Arc::new(rgba) })
         })
         .collect();
 
@@ -170,6 +170,11 @@ fn material(m: &gltf::Material, image_count: usize) -> MaterialData {
         alpha_cutoff: m.alpha_cutoff().unwrap_or(0.5),
         double_sided: m.double_sided(),
         unlit: m.unlit(),
+        normal_texture: None,
+        normal_scale: 1.0,
+        specular_texture: None,
+        specular: None,
+        shininess: None,
     }
 }
 
