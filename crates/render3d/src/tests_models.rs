@@ -32,6 +32,7 @@ fn quad_model(skinned: bool, mode: AlphaMode) -> Arc<ModelData> {
             weights: if skinned { vec![[1.0, 0.0, 0.0, 0.0]; 4] } else { vec![] },
             indices: vec![0, 1, 2, 0, 2, 3],
             material: Some(0),
+            lines: false,
         }],
         skins: if skinned { vec![SkinData { joints: vec![0], inverse_bind: vec![id] }] } else { vec![] },
         materials: vec![MaterialData {
@@ -241,4 +242,20 @@ fn the_two_normal_strengths_shape_the_light_and_the_shine_separately() {
     };
     let (flat, bent) = (lit(0.0, 1.0), lit(1.0, 1.0));
     assert!(flat[0] < 40 && bent[0] > flat[0] + 60, "strength 0 keeps the surface unlit, 1 lights it: {flat:?} {bent:?}");
+}
+
+#[test]
+fn hair_lines_are_drawn_thin_with_depth_and_are_not_picked() {
+    // The quad's diagonal as one hair segment, in front of nothing but the background.
+    let mut m = (*quad_model(true, AlphaMode::Opaque)).clone();
+    m.meshes[0].lines = true;
+    m.meshes[0].indices = vec![0, 2];
+    m.meshes[0].normals = vec![[1.0, 1.0, 0.0]; 4];
+    let s = bright_scene(Arc::new(m));
+    let img = render(&s, &opts()).unwrap();
+    let lit = img.rgba.as_chunks::<4>().0.iter().filter(|p| p[3] > 0).count();
+    assert!((30..250).contains(&lit), "a thin line, not a surface: {lit} pixels");
+    assert!(px(&img, 32, 32)[3] > 0, "the middle of the diagonal is on it");
+    assert_eq!(px(&img, 8, 56)[3], 0, "the corner away from the diagonal is empty");
+    assert_eq!(pick(&s, 64, 64, 32.0, 32.0), None, "a hair is not something to click");
 }

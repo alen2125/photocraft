@@ -104,6 +104,8 @@ pub(crate) struct Draw {
     pub spec_map: Option<TexRef>,
     /// Drawn after the opaque things, mixed over them by its alpha (no depth write).
     pub blend: bool,
+    /// The indices are pairs, the segments of hair lines (the normals are the strands' directions).
+    pub lines: bool,
 }
 
 pub(crate) struct LightW {
@@ -160,6 +162,7 @@ fn primitive_draw(node: NodeId, mesh: &photocraft_scene3d::Mesh, world: Mat4, m:
         spec_normal_scale: 1.0,
         spec_map: None,
         blend: false,
+        lines: false,
     })
 }
 
@@ -269,6 +272,7 @@ fn model_draw(scene: &Scene, world: &std::collections::HashMap<NodeId, Mat4>, no
         spec_normal_scale: if spec_normal_scale.is_finite() { spec_normal_scale } else { normal_scale },
         spec_map,
         blend: mat.is_some_and(|m| m.alpha_mode == AlphaMode::Blend),
+        lines: mesh.lines,
     })
 }
 

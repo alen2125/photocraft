@@ -74,6 +74,11 @@ pub(crate) struct VamState {
     touched: HashSet<(u32, String)>,
     /// The figures' built-in morphs, read from the file next to the model (`None`: not there).
     packs: HashMap<u32, Option<Arc<MorphPack>>>,
+    /// `characters.json` of the folder the figure was imported from: character name to bundle.
+    characters: Option<HashMap<String, String>>,
+    /// The folder with the exported figures (`vam_base_female.vrm`, `characters.json`), as typed.
+    pub(crate) figures: String,
+    figures_restored: bool,
     rows: Vec<Row>,
     /// The Looks tab: presets that match the search (indices into the library), by library and search.
     look_rows: Option<(usize, String, Vec<usize>)>,
@@ -123,7 +128,13 @@ fn pack_for(ed: &mut Scene3dEditor, asset: u32) -> Option<Arc<MorphPack>> {
         .iter()
         .find(|a| a.id == asset)
         .and_then(|a| a.path.as_ref())
-        .and_then(|path| std::fs::read(std::path::Path::new(path).with_extension("pcmorphs")).ok())
+        .and_then(|path| {
+            let p = std::path::Path::new(path);
+            // A character's model (`vam_base_female_f_12.vrm`) shares the pack of its gender.
+            let own = p.with_extension("pcmorphs");
+            let shared = p.parent().map(|d| d.join(if p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.contains("_male") && !n.contains("female")) { "vam_base_male.pcmorphs" } else { "vam_base_female.pcmorphs" }));
+            std::fs::read(own).ok().or_else(|| shared.and_then(|s| std::fs::read(s).ok()))
+        })
         .and_then(|bytes| MorphPack::parse(bytes).ok())
         .map(Arc::new);
     ed.vam.packs.insert(asset, pack.clone());
@@ -275,10 +286,6 @@ pub(crate) fn restore_morphs(ed: &mut Scene3dEditor) {
 /// The page switch at the top of the panel, shown when the scene has a VaM figure. True when the
 /// Morphs page is up (and drawn), so the rest of the panel is left out.
 pub(crate) fn page_switch(ui: &mut egui::Ui, ed: &mut Scene3dEditor) -> bool {
-    if ed.scene.assets.iter().all(|a| ed.scene.model(a.id).is_none_or(|m| m.vertex_base.is_empty())) {
-        ed.vam.page = Page::Scene;
-        return false;
-    }
     ui.horizontal(|ui| {
         ui.selectable_value(&mut ed.vam.page, Page::Scene, tl!("Scene"));
         ui.selectable_value(&mut ed.vam.page, Page::Morphs, tl!("Morphs"));
@@ -344,26 +351,39 @@ fn morphs_page(ui: &mut egui::Ui, ed: &mut Scene3dEditor) {
             open_library(ed, &ui.ctx().clone());
         }
     }
-    let Some((asset, gender)) = figure(ed) else {
-        ui.weak(tl!("Import a VaM figure (vam_base_female / vam_base_male) to use morphs."));
-        return;
-    };
-    let has_pack = pack_for(ed, asset).is_some();
+    let ctx = ui.ctx().clone();
+    let _ = figures_dir(ed, Some(&ctx));
+    let figure = figure(ed);
+    let has_pack = figure.is_none_or(|(a, _)| pack_for(ed, a).is_some());
     egui::CollapsingHeader::new(tl!("VaM folder")).default_open(ed.vam.library.is_none()).show(ui, |ui| {
         ui.horizontal(|ui| {
-            ui.add(egui::TextEdit::singleline(&mut ed.vam.dir).desired_width(210.0).hint_text(r"F:\Virt-a-Mate"));
-            if ui.button(tl!("Read")).clicked() {
-                let ctx = ui.ctx().clone();
+            let edit = ui.add(egui::TextEdit::singleline(&mut ed.vam.dir).desired_width(210.0).hint_text(r"F:\Virt-a-Mate"));
+            // Enter (or leaving the field) reads the folder: no button to press.
+            if edit.lost_focus() && edit.changed() || ui.button(tl!("Read")).clicked() {
                 open_library(ed, &ctx);
             }
         });
         if !ed.vam.message.is_empty() {
             ui.weak(&ed.vam.message);
         }
+        ui.horizontal(|ui| {
+            let edit = ui.add(egui::TextEdit::singleline(&mut ed.vam.figures).desired_width(210.0).hint_text(tl!("Folder with the exported figures")));
+            if edit.lost_focus() && edit.changed() {
+                ctx.data_mut(|d| d.insert_persisted(egui::Id::new("scene3d-vam-figures"), ed.vam.figures.clone()));
+                ed.vam.characters = None;
+            }
+        });
         if !has_pack {
             ui.weak(tl!("The figure's built-in morphs file (.pcmorphs) is not next to it: export the figure again."));
         }
     });
+    let Some((asset, gender)) = figure else {
+        // No body yet: picking a look puts in the one it needs.
+        ui.weak(tl!("Pick a look: the body it needs is put in the scene."));
+        let lib = ed.vam.library.clone();
+        looks_tab(ui, ed, lib.as_deref());
+        return;
+    };
     if ui.button(tl!("Import look (.vap)…")).on_hover_text(tl!("Sets the morphs and the skin pictures from a VaM appearance preset. Clothing and hair are not imported yet.")).clicked() {
         ed.want_look = true;
     }
@@ -571,23 +591,25 @@ fn eyes_tab(ui: &mut egui::Ui, ed: &mut Scene3dEditor, lib: Option<&GameLibrary>
     }
     let pick = pick_list(ui, ed, lib, "eyes", rows.len(), |pos| rows.get(pos).and_then(|&i| lib.eyes.get(i)).map(|p| (p.name.clone(), p.package.clone(), p.thumbnail.clone())));
     if let Some(eye) = pick.and_then(|pos| rows.get(pos)).and_then(|&i| lib.eyes.get(i)) {
-        let mut failed = Vec::new();
-        if fetch_picture(ed, Some(lib), &mut failed, &eye.reference).is_some() {
-            ed.scene.material_overrides.retain(|o| !(o.asset == asset && o.material == "Irises"));
-            ed.scene.material_overrides.push(photocraft_scene3d::morph::MaterialOverride { asset, material: "Irises".into(), texture: Some(eye.reference.clone()), ..Default::default() });
-            match ed.scene.apply_morphs(asset) {
-                Ok(()) => {
-                    ed.touch();
-                    ed.pending_change = true;
-                    ed.status = format!("Eyes: {}", eye.name);
-                }
-                Err(e) => ed.status = e.to_string(),
-            }
-        } else {
-            ed.status = failed.join("; ");
-        }
+        ed.status = match apply_eye(ed, lib, asset, eye) {
+            Ok(s) | Err(s) => s,
+        };
         ui.ctx().request_repaint();
     }
+}
+
+/// Puts an iris picture on the figure's eyes: the `irises` material of the game takes it, nothing else.
+pub(crate) fn apply_eye(ed: &mut Scene3dEditor, lib: &GameLibrary, asset: u32, eye: &photocraft_vam::Preset) -> Result<String, String> {
+    let mut failed = Vec::new();
+    if fetch_picture(ed, Some(lib), &mut failed, &eye.reference).is_none() {
+        return Err(failed.join("; "));
+    }
+    ed.scene.material_overrides.retain(|o| !(o.asset == asset && o.material == "Irises"));
+    ed.scene.material_overrides.push(photocraft_scene3d::morph::MaterialOverride { asset, material: "Irises".into(), texture: Some(eye.reference.clone()), ..Default::default() });
+    ed.scene.apply_morphs(asset).map_err(|e| e.to_string())?;
+    ed.touch();
+    ed.pending_change = true;
+    Ok(format!("Eyes: {}", eye.name))
 }
 
 /// The Clothing and Hair tabs: what the figure wears, and the items of the folder and packages.
@@ -644,21 +666,22 @@ pub(crate) struct ItemLooks<'a> {
     pub(crate) hair: &'a [(String, photocraft_vam::HairLook)],
 }
 
-/// The picture a strand hair material has: the colour from the root (top) to the tip, and an
-/// opacity that is full along the middle of the ribbon and falls to nothing at its edges.
+/// The picture a strand hair material has: the colour from the root (top) to the tip, and across
+/// it the tone of one hair against the next (each hair takes a column at random).
 fn hair_gradient(look: &photocraft_vam::HairLook) -> photocraft_scene3d::model3d::TextureData {
-    const W: usize = 8;
+    const W: usize = 16;
     const H: usize = 64;
+    const TONE: f32 = 0.18;
     let mut rgba = Vec::with_capacity(W * H * 4);
     for y in 0..H {
         let t = (y as f32 / (H - 1) as f32).powf(look.color_rolloff);
         for x in 0..W {
-            let edge = 1.0 - (2.0 * (x as f32 + 0.5) / W as f32 - 1.0).abs();
+            let tone = 1.0 + ((x as f32 + 0.5) / W as f32 * 2.0 - 1.0) * TONE;
             for c in 0..3 {
-                let v = look.root_color[c] + (look.tip_color[c] - look.root_color[c]) * t;
+                let v = (look.root_color[c] + (look.tip_color[c] - look.root_color[c]) * t) * tone;
                 rgba.push((v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
             }
-            rgba.push((edge.clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+            rgba.push(255);
         }
     }
     photocraft_scene3d::model3d::TextureData { width: W as u32, height: H as u32, rgba: Arc::new(rgba) }
@@ -709,10 +732,10 @@ fn wear_hair(ed: &mut Scene3dEditor, lib: &GameLibrary, asset: u32, item: &Item,
         }
         ranges.push((start, positions.len() as u32 - start));
     }
-    // Ribbons per guide: a fifth of the game's hairs per guide (the scene trims them to its budget).
-    let copies = (look.hair_multiplier / 5.0).round().clamp(1.0, 3.0) as u32;
-    let spread = look.spread.map(|f| f * look.max_spread * 0.5);
-    let spec = photocraft_scene3d::cloth::HairSpec { strands: ranges, half_width: 0.0010, copies, spread };
+    // The game's hairs per guide; the scene grows as many as the quality setting says.
+    let copies = look.hair_multiplier.round().clamp(1.0, 64.0) as u32;
+    let spread = look.spread.map(|f| f * look.max_spread);
+    let spec = photocraft_scene3d::cloth::HairSpec { strands: ranges, copies, spread };
     let input = ClothInput { name: item.name.clone(), positions, hair: Some(spec), pieces: vec![("Hair".to_string(), Vec::new()), ("Scalp".to_string(), Vec::new())], ..ClothInput::default() };
     ed.scene.add_cloth(asset, &item.reference, input).map_err(|e| e.to_string())?;
     let uid_picture = hair_picture_uid(&look);
@@ -721,7 +744,7 @@ fn wear_hair(ed: &mut Scene3dEditor, lib: &GameLibrary, asset: u32, item: &Item,
         ed.scene.material_overrides.retain(|o| !o.material.starts_with(&format!("{}:", item.name)));
         for part in ["Hair", "Scalp"] {
             let material = photocraft_scene3d::cloth::cloth_material_name(&item.name, part);
-            ed.scene.material_overrides.push(photocraft_scene3d::morph::MaterialOverride { asset, material, texture: Some(uid_picture.clone()), mask_cutoff: Some(0.4), specular: Some(0.08), shininess: Some(60.0), ..Default::default() });
+            ed.scene.material_overrides.push(photocraft_scene3d::morph::MaterialOverride { asset, material, texture: Some(uid_picture.clone()), specular: Some(0.2), shininess: Some(80.0), ..Default::default() });
         }
     }
     ed.scene.apply_morphs(asset).map_err(|e| e.to_string())?;
@@ -850,6 +873,119 @@ fn average_picture(t: &photocraft_scene3d::model3d::TextureData) -> Arc<photocra
     Arc::new(photocraft_scene3d::model3d::TextureData { width: 1, height: 1, rgba: Arc::new(vec![(sum[0] / n) as u8, (sum[1] / n) as u8, (sum[2] / n) as u8, 255]) })
 }
 
+/// The bundle (`f_12`, `m_futi`) of a character of the game, from `characters.json` in `dir`.
+fn bundle_of(ed: &mut Scene3dEditor, dir: &std::path::Path, character: &str) -> Option<String> {
+    if ed.vam.characters.is_none() {
+        let table: HashMap<String, String> = std::fs::read(dir.join("characters.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+            .and_then(|v| v.as_object().map(|o| o.iter().filter_map(|(k, e)| Some((k.clone(), e.get("bundle")?.as_str()?.to_string()))).collect()))
+            .unwrap_or_default();
+        ed.vam.characters = Some(table);
+    }
+    ed.vam.characters.as_ref()?.get(character).cloned()
+}
+
+/// The model file of a character: the plain base for the first skin of the gender, else the base
+/// with the bundle in its name.
+fn character_file(gender: Gender, bundle: &str) -> String {
+    let who = if gender == Gender::Male { "male" } else { "female" };
+    let default_bundle = if gender == Gender::Male { "m_1" } else { "f_1" };
+    if bundle == default_bundle { format!("vam_base_{who}.vrm") } else { format!("vam_base_{who}_{bundle}.vrm") }
+}
+
+/// The folder the exported figures are in: the one typed (or saved), the folder of a figure in the
+/// scene, or a `samples` folder beside the working directory or the program.
+fn figures_dir(ed: &mut Scene3dEditor, ctx: Option<&egui::Context>) -> Option<std::path::PathBuf> {
+    let has = |d: &std::path::Path| d.join("vam_base_female.vrm").is_file();
+    if !ed.vam.figures_restored {
+        ed.vam.figures_restored = true;
+        if ed.vam.figures.trim().is_empty()
+            && let Some(saved) = ctx.and_then(|c| c.data_mut(|d| d.get_persisted::<String>(egui::Id::new("scene3d-vam-figures"))))
+        {
+            ed.vam.figures = saved;
+        }
+    }
+    let typed = std::path::PathBuf::from(ed.vam.figures.trim().trim_matches('"'));
+    if !ed.vam.figures.trim().is_empty() && has(&typed) {
+        return Some(typed);
+    }
+    let from_scene = ed.scene.assets.iter().filter_map(|a| a.path.as_deref()).filter_map(|p| std::path::Path::new(p).parent()).find(|d| has(d)).map(std::path::Path::to_path_buf);
+    let mut found = from_scene;
+    if found.is_none() {
+        let mut roots: Vec<std::path::PathBuf> = std::env::current_dir().into_iter().collect();
+        if let Ok(exe) = std::env::current_exe() {
+            roots.extend(exe.ancestors().skip(1).take(5).map(std::path::Path::to_path_buf));
+        }
+        found = roots.iter().flat_map(|r| r.ancestors().take(4).map(|a| a.join("samples")).collect::<Vec<_>>()).find(|d| has(d));
+    }
+    if let Some(d) = &found {
+        ed.vam.figures = d.to_string_lossy().into_owned();
+        if let Some(c) = ctx {
+            c.data_mut(|data| data.insert_persisted(egui::Id::new("scene3d-vam-figures"), ed.vam.figures.clone()));
+        }
+    }
+    found
+}
+
+/// Puts the body a look needs into the scene (when the scene has none): the model of its character.
+fn create_figure(ed: &mut Scene3dEditor, character: &str, fallback: Gender) -> Result<(), String> {
+    let dir = figures_dir(ed, None).ok_or("The folder with the exported figures (vam_base_female.vrm, characters.json) was not found: give it under VaM folder")?;
+    let bundle = bundle_of(ed, &dir, character);
+    let gender = match &bundle {
+        Some(b) if b.starts_with("m_") => Gender::Male,
+        Some(_) => Gender::Female,
+        None => fallback,
+    };
+    let file = bundle.map_or_else(|| character_file(gender, if gender == Gender::Male { "m_1" } else { "f_1" }), |b| character_file(gender, &b));
+    let path = dir.join(&file);
+    let bytes = std::fs::read(&path).map_err(|e| format!("{file}: {e}"))?;
+    ed.import_model(&path.to_string_lossy(), &bytes)
+}
+
+/// A look names a character of the game (`Female 12`, `Tina`). Each has its own UV set and skin
+/// pictures, so the look's own pictures only fit the model made from that character's bundle
+/// (`vam_base_female_f_12.vrm`, written by `tools/vam_export/export_characters.py` next to the base
+/// model). Switches the figure to it. Returns what to tell the user, if anything.
+fn switch_character(ed: &mut Scene3dEditor, asset: u32, gender: Gender, character: &str) -> Option<String> {
+    if character.is_empty() {
+        return None;
+    }
+    let (path, name) = ed.scene.assets.iter().find(|a| a.id == asset).map(|a| (a.path.clone(), a.name.clone()))?;
+    let dir = std::path::Path::new(path.as_deref()?).parent()?.to_path_buf();
+    let bundle = bundle_of(ed, &dir, character)?;
+    let file = character_file(gender, &bundle);
+    if std::path::Path::new(path.as_deref()?).file_name().and_then(|n| n.to_str()) == Some(file.as_str()) {
+        return None;
+    }
+    let target = dir.join(&file);
+    let Ok(bytes) = std::fs::read(&target) else {
+        return Some(format!("character {character}: its model {file} is not there (python tools/vam_export/export_characters.py <folder> {bundle})"));
+    };
+    let model = match photocraft_scene3d::model3d::load(&file, &bytes) {
+        Ok(m) => std::sync::Arc::new(m),
+        Err(e) => return Some(format!("character {character}: {file}: {e}")),
+    };
+    let same_shape = ed.scene.morph_cache_base(asset).or_else(|| ed.scene.model(asset).cloned()).is_some_and(|old| old.meshes.len() == model.meshes.len() && old.nodes.len() == model.nodes.len());
+    if !same_shape {
+        return Some(format!("character {character}: {file} does not fit the figure in the scene"));
+    }
+    // Worn items were bound to the old mesh: take them off; the look puts its own on again.
+    for worn in ed.scene.worn(asset).iter().map(|w| w.reference.clone()).collect::<Vec<_>>() {
+        let _ = ed.scene.remove_cloth(asset, &worn);
+    }
+    if ed.scene.attach_model(asset, model).is_err() {
+        return Some(format!("character {character}: could not switch to {file}"));
+    }
+    if let Some(a) = ed.scene.assets.iter_mut().find(|a| a.id == asset) {
+        a.name = file.clone();
+        a.path = Some(target.to_string_lossy().into_owned());
+    }
+    let _ = name;
+    ed.vam.packs.remove(&asset);
+    Some(format!("character {character} ({file})"))
+}
+
 /// Reads a picture from the install once and keeps its pixels in the scene under its reference.
 fn fetch_picture(ed: &mut Scene3dEditor, lib: Option<&GameLibrary>, failed: &mut Vec<String>, url: &str) -> Option<Arc<photocraft_scene3d::model3d::TextureData>> {
     if url.is_empty() {
@@ -911,6 +1047,94 @@ fn bake_overlays(base: Option<&Picture>, tint: Option<[f32; 3]>, decal: Option<&
         }
     }
     Some(Picture { width: w as u32, height: h as u32, rgba: Arc::new(out) })
+}
+
+fn rgb_to_hsv(c: [f32; 3]) -> [f32; 3] {
+    let (mx, mn) = (c[0].max(c[1]).max(c[2]), c[0].min(c[1]).min(c[2]));
+    let d = mx - mn;
+    let h = if d <= 1e-6 {
+        0.0
+    } else if mx == c[0] {
+        ((c[1] - c[2]) / d).rem_euclid(6.0) / 6.0
+    } else if mx == c[1] {
+        ((c[2] - c[0]) / d + 2.0) / 6.0
+    } else {
+        ((c[0] - c[1]) / d + 4.0) / 6.0
+    };
+    [h, if mx <= 1e-6 { 0.0 } else { d / mx }, mx]
+}
+
+fn hsv_to_rgb(h: [f32; 3]) -> [f32; 3] {
+    let (s, v) = (h[1].clamp(0.0, 1.0), h[2].clamp(0.0, 1.0));
+    let k = |n: f32| {
+        let k = (n + h[0].rem_euclid(1.0) * 6.0) % 6.0;
+        v - v * s * k.min(4.0 - k).clamp(0.0, 1.0)
+    };
+    [k(5.0), k(3.0), k(1.0)]
+}
+
+/// The game's `BlendGenitalTexture`: the genital graft's picture is the torso's where the mask is 0 and
+/// the genitals' where it is 1, the genitals' colour first moved by the look's lighten/hue/saturation
+/// offsets. All three pictures lie in the torso's layout; sizes are matched by position.
+fn blend_genitals(torso: &Picture, genitals: Option<&Picture>, mask: &Picture, adjust: [f32; 3]) -> Option<Picture> {
+    let (w, h) = ((torso.width as usize).min(2048), (torso.height as usize).min(2048));
+    if w == 0 || h == 0 {
+        return None;
+    }
+    let at = |t: &Picture, x: usize, y: usize| -> Option<[u8; 4]> {
+        let (tw, th) = (t.width as usize, t.height as usize);
+        let i = ((y * th / h).min(th.checked_sub(1)?) * tw + (x * tw / w).min(tw.checked_sub(1)?)) * 4;
+        let p = t.rgba.get(i..i + 4)?;
+        Some([p[0], p[1], p[2], p[3]])
+    };
+    let adjusting = adjust.iter().any(|a| *a != 0.0);
+    let mut out = Vec::with_capacity(w * h * 4);
+    for y in 0..h {
+        for x in 0..w {
+            let t = at(torso, x, y)?;
+            let m = f32::from(at(mask, x, y).map_or(0, |m| m[0])) / 255.0;
+            let g = genitals.and_then(|g| at(g, x, y)).unwrap_or(t);
+            let mut gc = [f32::from(g[0]) / 255.0, f32::from(g[1]) / 255.0, f32::from(g[2]) / 255.0];
+            if adjusting && m > 0.0 {
+                let mut hsv = rgb_to_hsv(gc);
+                hsv[2] = (hsv[2] + adjust[0]).clamp(0.0, 1.0);
+                hsv[0] = (hsv[0] + adjust[1]).clamp(0.0, 1.0);
+                hsv[1] = (hsv[1] + adjust[2]).clamp(0.0, 1.0);
+                gc = hsv_to_rgb(hsv);
+            }
+            for (tc, gv) in t.iter().take(3).zip(gc) {
+                out.push(((f32::from(*tc) / 255.0 * (1.0 - m) + gv * m).clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+            }
+            out.push(255);
+        }
+    }
+    Some(Picture { width: w as u32, height: h as u32, rgba: Arc::new(out) })
+}
+
+/// The game's genital blend mask for the figure's character (`genmask_<bundle>.png` next to the models,
+/// written by `tools/vam_export/export_genmasks.py`); the first female skin's when the character has none.
+fn genital_mask(ed: &mut Scene3dEditor, asset: u32) -> Option<Arc<Picture>> {
+    let path = ed.scene.assets.iter().find(|a| a.id == asset).and_then(|a| a.path.clone())?;
+    let file = std::path::Path::new(&path);
+    let stem = file.file_stem()?.to_str()?;
+    let rest = stem.strip_prefix("vam_base_")?;
+    let bundle = rest.split_once('_').map_or_else(|| if rest == "male" { "m_1".to_string() } else { "f_1".to_string() }, |(_, b)| b.to_string());
+    let dir = file.parent()?;
+    for name in [bundle.as_str(), if rest.starts_with("male") { "m_1" } else { "f_1" }] {
+        let uid = format!("genmask:{name}");
+        if let Some(t) = ed.scene.texture_data(&uid) {
+            return Some(t);
+        }
+        if let Ok(bytes) = std::fs::read(dir.join(format!("genmask_{name}.png")))
+            && let Ok(img) = photocraft_codecs::decode(&bytes)
+        {
+            let (width, height) = img.dimensions();
+            let t = Arc::new(Picture { width, height, rgba: Arc::new(img.to_rgba8()) });
+            ed.scene.add_texture_data(&uid, t.clone());
+            return Some(t);
+        }
+    }
+    None
 }
 
 /// Sets what a material storable says on the figure's materials called `materials`: pictures (with
@@ -988,11 +1212,16 @@ pub(crate) fn import_look(ed: &mut Scene3dEditor, name: &str, bytes: &[u8]) -> R
 pub(crate) fn import_look_from(ed: &mut Scene3dEditor, name: &str, bytes: &[u8], package: &str) -> Result<String, String> {
     let mut look = photocraft_vam::parse_vap(bytes).map_err(|e| format!("{name}: {e}"))?;
     look.localize(package);
+    if figure(ed).is_none() {
+        create_figure(ed, &look.character, if look.character.to_lowercase().starts_with("male") { Gender::Male } else { Gender::Female })?;
+    }
     let (asset, gender) = figure(ed).ok_or("Import a VaM figure (vam_base_female / vam_base_male) first")?;
-    let wants_male = look.character.to_lowercase().starts_with("male");
+    let figure_dir = ed.scene.assets.iter().find(|a| a.id == asset).and_then(|a| a.path.clone()).and_then(|p| std::path::Path::new(&p).parent().map(std::path::Path::to_path_buf));
+    let wants_male = figure_dir.and_then(|d| bundle_of(ed, &d, &look.character)).map_or_else(|| look.character.to_lowercase().starts_with("male"), |b| b.starts_with("m_"));
     if !look.character.is_empty() && wants_male != (gender == Gender::Male) {
         return Err(format!("{name} is for a {} figure; the figure in the scene is {}", if wants_male { "male" } else { "female" }, if gender == Gender::Male { "male" } else { "female" }));
     }
+    let character_note = switch_character(ed, asset, gender, &look.character);
     // Morphs: every one the look lists; the rest go back to 0 (a look sets what it does not name to default).
     let mut values = Vec::new();
     let mut missing = Vec::new();
@@ -1041,8 +1270,26 @@ pub(crate) fn import_look_from(ed: &mut Scene3dEditor, name: &str, bytes: &[u8],
                 picture = Some(uid);
             }
         }
-        // The genital graft has its own picture layout: with none of its own, VaM blends it from the
-        // torso's. Here it takes the torso picture's average colour, so it does not show as a patch.
+        // `autoBlendGenitalTextures`: the graft's picture is the torso's, with the genitals' where the game's mask is.
+        if region == "genitals"
+            && look.auto_blend
+            && let Some(torso_url) = look.textures.iter().find(|(k, _)| k == "torsoDiffuseUrl").map(|(_, u)| u.clone())
+            && let Some(torso) = ed.scene.texture_data(&torso_url)
+            && let Some(mask) = genital_mask(ed, asset)
+        {
+            let ground = diffuse.clone().or_else(|| photocraft_vam::skin_region_materials(gender, region).first().and_then(|m| ed.scene.original_picture(asset, m)));
+            let uid = format!("blend:{torso_url}+{diffuse_url}+{:?}", look.blend_adjust);
+            if !ed.scene.has_texture_data(&uid)
+                && let Some(t) = blend_genitals(&torso, ground.as_deref(), &mask, look.blend_adjust)
+            {
+                ed.scene.add_texture_data(&uid, Arc::new(t));
+            }
+            if ed.scene.has_texture_data(&uid) {
+                picture = Some(uid);
+            }
+        }
+        // Without the blend a graft picture of its own is shown as it is. With none, the game shows its
+        // default one; here it takes the torso picture's average colour (as when no mask is at hand).
         if region == "genitals"
             && picture.is_none()
             && let Some(torso) = look.textures.iter().find(|(k, _)| k == "torsoDiffuseUrl").and_then(|(_, u)| ed.scene.texture_data(u))
@@ -1112,7 +1359,7 @@ pub(crate) fn import_look_from(ed: &mut Scene3dEditor, name: &str, bytes: &[u8],
     ed.touch();
     ed.pending_change = true;
     missing.extend(unknown);
-    let mut summary = format!("Look {name}: {} of {} morphs, {pictures} skin pictures, {parts} eye/mouth materials", values.len(), look.morphs.len());
+    let mut summary = format!("Look {name}{}: {} of {} morphs, {pictures} skin pictures, {parts} eye/mouth materials", character_note.map_or(String::new(), |n| format!(" [{n}]")), values.len(), look.morphs.len());
     if !missing.is_empty() {
         summary.push_str(&format!("; not found: {}", join_some(&missing, 6)));
     }
@@ -1156,6 +1403,31 @@ mod tests {
         note_leaving(&mut ed, Some((Page::Morphs, MorphTab::Active)));
         note_leaving(&mut ed, None);
         assert!(!ed.vam.touched.iter().any(|k| k.1 == "Later"));
+    }
+
+    #[test]
+    fn the_genital_graft_is_the_torso_where_the_mask_is_black_and_the_genitals_where_it_is_white() {
+        let pic = |rgba: [u8; 4]| Picture { width: 2, height: 1, rgba: Arc::new([rgba, rgba].concat()) };
+        let torso = pic([200, 100, 50, 255]);
+        let genitals = pic([20, 40, 60, 255]);
+        let mask = Picture { width: 2, height: 1, rgba: Arc::new(vec![0, 0, 0, 255, 255, 255, 255, 255]) };
+        let out = blend_genitals(&torso, Some(&genitals), &mask, [0.0; 3]).unwrap();
+        assert_eq!(&out.rgba[..4], &[200, 100, 50, 255], "mask 0: torso");
+        assert_eq!(&out.rgba[4..8], &[20, 40, 60, 255], "mask 1: genitals");
+        // Lightening moves the genitals' colour only where the mask lets it through.
+        let lighter = blend_genitals(&torso, Some(&genitals), &mask, [0.3, 0.0, 0.0]).unwrap();
+        assert_eq!(&lighter.rgba[..4], &out.rgba[..4]);
+        assert!(lighter.rgba[6] > out.rgba[6]);
+        // No picture of its own: the torso shows through.
+        assert_eq!(&blend_genitals(&torso, None, &mask, [0.0; 3]).unwrap().rgba[4..8], &[200, 100, 50, 255]);
+    }
+
+    #[test]
+    fn colours_survive_a_trip_through_hsv() {
+        for c in [[0.8, 0.4, 0.2], [0.1, 0.9, 0.5], [0.3, 0.3, 0.3]] {
+            let back = hsv_to_rgb(rgb_to_hsv(c));
+            assert!(c.iter().zip(back).all(|(a, b)| (a - b).abs() < 1e-3), "{c:?} -> {back:?}");
+        }
     }
 
     #[test]

@@ -134,7 +134,14 @@ pub(crate) fn frame(app: &mut PhotocraftApp, ctx: &egui::Context) {
     // A quarter of the pixels and no smoothing while things move; full quality once they rest.
     // With the physics running the picture is always full size (a frame costs about the same at
     // any size: most of it is skinning), just without smoothing while things move.
-    let (render, ssaa) = if settled { (view, ed.out_ssaa.clamp(1, 2)) } else if ed.physics.is_some() { (view, 1) } else { (((view.0 / 2).max(8), (view.1 / 2).max(8)), 1) };
+    let scale = ed.motion_scale.clamp(0.25, 1.0);
+    let (render, ssaa) = if settled || ed.no_blur {
+        (view, ed.out_ssaa.clamp(1, 2))
+    } else if ed.physics.is_some() {
+        (view, 1)
+    } else {
+        ((((view.0 as f32 * scale) as u32).max(8), ((view.1 as f32 * scale) as u32).max(8)), 1)
+    };
     crate::scene3d_ui::refresh_preview(ctx, ed, render, ssaa);
 }
 
@@ -622,7 +629,18 @@ pub(crate) fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &Vi
     let view = view_size(ed.doc_size);
     let (dw, dh) = (ed.doc_size[0] as f32, ed.doc_size[1] as f32);
     let to_screen = |x: f32, y: f32| xf.to_screen(x / view.0 as f32 * dw, y / view.1 as f32 * dh);
-    let bones = if ed.show_bones { bone_screen(&ed.scene, view) } else { Vec::new() };
+    // The picture is drawn in the background: until a newer one comes, the skeleton is seen from the
+    // camera that made the one shown, or it would slide off the body when the camera moves.
+    let shown = ed.preview.as_ref().and_then(|p| p.camera.clone()).filter(|c| *c != ed.scene.camera);
+    let lite;
+    let scene: &photocraft_scene3d::Scene = match shown {
+        Some(camera) => {
+            lite = ed.scene.with_camera_only(camera);
+            &lite
+        }
+        None => &ed.scene,
+    };
+    let bones = if ed.show_bones { bone_screen(scene, view) } else { Vec::new() };
     let screen_of = |id| bones.iter().find(|b| b.0 == id).map(|b| to_screen(b.2.0, b.2.1));
     // The bones' lines first, then a cube on each bone: turned the way the bone faces and coloured
     // by what is On (see `scene3d_cubes`). The selected one gets a big see-through cube round it.
@@ -631,8 +649,8 @@ pub(crate) fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &Vi
             painter.line_segment([pp, to_screen(*x, *y)], Stroke::new(2.0, Color32::from_rgba_unmultiplied(120, 200, 255, 200)));
         }
     }
-    let world = ed.scene.world_matrices();
-    let mut cubes: Vec<(f32, NodeId)> = bones.iter().filter_map(|(id, _, _)| Some(((world.get(id)?.transform_point3(Vec3::ZERO) - Vec3::from(ed.scene.camera.position)).length(), *id))).collect();
+    let world = scene.world_matrices();
+    let mut cubes: Vec<(f32, NodeId)> = bones.iter().filter_map(|(id, _, _)| Some(((world.get(id)?.transform_point3(Vec3::ZERO) - Vec3::from(scene.camera.position)).length(), *id))).collect();
     cubes.sort_by(|a, b| b.0.total_cmp(&a.0));
     for (_, id) in cubes {
         let (Some(node), Some(m)) = (ed.scene.node(id), world.get(&id)) else { continue };
@@ -647,24 +665,24 @@ pub(crate) fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &Vi
             rot = q.normalize();
         }
         if centre.distance(body) > 0.01 {
-            let pts = photocraft_render3d::project_points(&ed.scene, view.0, view.1, &[body, centre]);
+            let pts = photocraft_render3d::project_points(scene, view.0, view.1, &[body, centre]);
             if let [Some(a), Some(b)] = pts[..] {
                 painter.line_segment([to_screen(a.0, a.1), to_screen(b.0, b.1)], Stroke::new(1.5, bone_tint(node)));
             }
         }
         let selected = ed.selected == Some(id);
         if selected {
-            crate::scene3d_cubes::draw_cube(painter, &to_screen, &ed.scene, view, centre, rot, crate::scene3d_cubes::HALF_PX * 2.4, Color32::from_rgb(90, 120, 255), 90, Color32::from_rgba_unmultiplied(160, 190, 255, 200));
+            crate::scene3d_cubes::draw_cube(painter, &to_screen, scene, view, centre, rot, crate::scene3d_cubes::HALF_PX * 2.4, Color32::from_rgb(90, 120, 255), 90, Color32::from_rgba_unmultiplied(160, 190, 255, 200));
         }
         let outline = if selected { Color32::WHITE } else { Color32::from_black_alpha(200) };
-        crate::scene3d_cubes::draw_cube(painter, &to_screen, &ed.scene, view, centre, rot, crate::scene3d_cubes::HALF_PX, crate::scene3d_cubes::bone_color(node), 255, outline);
+        crate::scene3d_cubes::draw_cube(painter, &to_screen, scene, view, centre, rot, crate::scene3d_cubes::HALF_PX, crate::scene3d_cubes::bone_color(node), 255, outline);
     }
-    draw_links(ed, view, painter, &to_screen);
+    draw_links(scene, ed, view, painter, &to_screen);
     if let Some(gizmo) = gizmo_for(ed) {
-        draw_gizmo(ed, &gizmo, view, painter, xf, &to_screen);
+        draw_gizmo(scene, ed, &gizmo, view, painter, xf, &to_screen);
     } else if let Some(id) = ed.selected
         && !bones.iter().any(|b| b.0 == id)
-        && let Some((x, y)) = photocraft_render3d::project(&ed.scene, view.0, view.1, id)
+        && let Some((x, y)) = photocraft_render3d::project(scene, view.0, view.1, id)
     {
         let c = to_screen(x, y);
         painter.circle_stroke(c, 9.0, Stroke::new(2.5, Color32::from_rgb(255, 170, 40)));
@@ -673,15 +691,15 @@ pub(crate) fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &Vi
 }
 
 /// A dashed line from each linked node to its target, with a diamond on the target.
-fn draw_links(ed: &Scene3dEditor, view: (u32, u32), painter: &egui::Painter, to_screen: &dyn Fn(f32, f32) -> egui::Pos2) {
-    let world = ed.scene.world_matrices();
+fn draw_links(scene: &photocraft_scene3d::Scene, ed: &Scene3dEditor, view: (u32, u32), painter: &egui::Painter, to_screen: &dyn Fn(f32, f32) -> egui::Pos2) {
+    let world = scene.world_matrices();
     let at = |id: NodeId| world.get(&id).map(|m| m.transform_point3(Vec3::ZERO));
-    let pairs: Vec<(NodeId, Vec3, Vec3)> = ed.scene.nodes.iter().filter_map(|n| Some((n.id, at(n.id)?, at(n.link.as_ref()?.target)?))).collect();
+    let pairs: Vec<(NodeId, Vec3, Vec3)> = scene.nodes.iter().filter_map(|n| Some((n.id, at(n.id)?, at(n.link.as_ref()?.target)?))).collect();
     if pairs.is_empty() {
         return;
     }
     let pts: Vec<Vec3> = pairs.iter().flat_map(|p| [p.1, p.2]).collect();
-    let screen = photocraft_render3d::project_points(&ed.scene, view.0, view.1, &pts);
+    let screen = photocraft_render3d::project_points(scene, view.0, view.1, &pts);
     for (i, (id, _, _)) in pairs.iter().enumerate() {
         let (Some(Some((ax, ay))), Some(Some((bx, by)))) = (screen.get(i * 2), screen.get(i * 2 + 1)) else { continue };
         let (a, b) = (to_screen(*ax, *ay), to_screen(*bx, *by));
@@ -692,7 +710,7 @@ fn draw_links(ed: &Scene3dEditor, view: (u32, u32), painter: &egui::Painter, to_
     }
 }
 
-fn draw_gizmo(ed: &Scene3dEditor, g: &Gizmo, view: (u32, u32), painter: &egui::Painter, xf: &ViewXform, to_screen: &dyn Fn(f32, f32) -> egui::Pos2) {
+fn draw_gizmo(scene: &photocraft_scene3d::Scene, ed: &Scene3dEditor, g: &Gizmo, view: (u32, u32), painter: &egui::Painter, xf: &ViewXform, to_screen: &dyn Fn(f32, f32) -> egui::Pos2) {
     // The handle under the pointer (or being dragged) is lit.
     let active = match ed.pointer.as_ref().map(|p| &p.kind) {
         Some(PointerKind::Gizmo(d)) => Some(d.drag.handle),
@@ -703,7 +721,7 @@ fn draw_gizmo(ed: &Scene3dEditor, g: &Gizmo, view: (u32, u32), painter: &egui::P
         }),
     };
     let colour = |axis: usize| if active == Some(Handle::Axis(axis)) { HOT } else { AXIS_COLORS[axis] };
-    let project = |pts: &[Vec3]| photocraft_render3d::project_points(&ed.scene, view.0, view.1, pts);
+    let project = |pts: &[Vec3]| photocraft_render3d::project_points(scene, view.0, view.1, pts);
     let screen = |p: Option<(f32, f32)>| p.map(|(x, y)| to_screen(x, y));
     let rings = |width: f32| {
         for axis in 0..3 {
@@ -717,8 +735,8 @@ fn draw_gizmo(ed: &Scene3dEditor, g: &Gizmo, view: (u32, u32), painter: &egui::P
                 .collect();
             // Points at or behind the camera's near plane would stretch a segment across the
             // screen: they break the ring instead.
-            let (_, _, fwd) = camera_axes(&ed.scene.camera);
-            let eye = Vec3::from(ed.scene.camera.position);
+            let (_, _, fwd) = camera_axes(&scene.camera);
+            let eye = Vec3::from(scene.camera.position);
             let ahead: Vec<bool> = ring.iter().map(|p| (*p - eye).dot(fwd) > 0.05).collect();
             let pts: Vec<Option<egui::Pos2>> = project(&ring).into_iter().zip(&ahead).map(|(p, ok)| if *ok { screen(p) } else { None }).collect();
             for w in pts.windows(2) {
@@ -738,7 +756,7 @@ fn draw_gizmo(ed: &Scene3dEditor, g: &Gizmo, view: (u32, u32), painter: &egui::P
             if let [Some(o), Some(b)] = pts.as_slice().iter().map(|p| screen(*p)).collect::<Vec<_>>()[..] {
                 painter.line_segment([o, b], Stroke::new(4.0, colour(axis)));
             }
-            crate::scene3d_cubes::draw_cone(painter, to_screen, &ed.scene, view, base, tip, g.size * 0.07, colour(axis));
+            crate::scene3d_cubes::draw_cone(painter, to_screen, scene, view, base, tip, g.size * 0.07, colour(axis));
         }
     };
     match ed.gizmo_mode {

@@ -74,6 +74,9 @@ pub struct MeshData {
     pub weights: Vec<[f32; 4]>,
     pub indices: Vec<u32>,
     pub material: Option<usize>,
+    /// The indices are pairs, each a segment of a line (strand hair), not triangles. The vertex
+    /// normal then holds the direction of the strand.
+    pub lines: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]

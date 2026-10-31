@@ -120,6 +120,7 @@ pub fn load(name: &str, bytes: &[u8]) -> Result<ModelData, ModelError> {
                 weights,
                 indices,
                 material: prim.material().index().filter(|&m| m < materials.len()),
+                lines: false,
             });
         }
     }

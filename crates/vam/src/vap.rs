@@ -123,6 +123,10 @@ pub struct Appearance {
     pub morphs: Vec<VapMorph>,
     /// The skin images (`faceDiffuseUrl` …) that are set, as (key, reference).
     pub textures: Vec<(String, String)>,
+    /// `autoBlendGenitalTextures`: the genital graft's picture is blended from the torso's (and the genitals') by the game's mask.
+    pub auto_blend: bool,
+    /// Its lighten/darken, hue and saturation offsets.
+    pub blend_adjust: [f32; 3],
     /// The skin tint, as RGB 0–1 (the preset stores it as hue, saturation, value).
     pub skin_color: Option<[f32; 3]>,
     /// The skin material's numbers: `Specular Intensity`, `Gloss`, `Diffuse Bumpiness`, `Specular Bumpiness`.
@@ -310,6 +314,8 @@ pub fn parse_storables(storables: &[Value]) -> Appearance {
                 a.hair = items("hair");
             }
             Some("textures") => {
+                a.auto_blend = flag(s.get("autoBlendGenitalTextures"));
+                a.blend_adjust = ["autoBlendGenitalLightenDarken", "autoBlendGenitalHueOffset", "autoBlendGenitalSaturationOffset"].map(|k| number(s.get(k)).unwrap_or(0.0));
                 if let Some(o) = s.as_object() {
                     for (k, v) in o {
                         if k.ends_with("Url") && let Some(url) = v.as_str().filter(|u| !u.is_empty()) {
@@ -357,13 +363,15 @@ mod tests {
         let json = br#"{ "setUnlistedParamsToDefault":"true", "storables":[
             { "id":"geometry", "character":"Female Custom", "clothing":[{"id":"Tank Top","enabled":"true"},{"id":"Shorts","enabled":"false"}], "hair":[{"id":"Hair A","enabled":"true"}],
               "morphs":[ {"uid":"Pkg.2:/Custom/Atom/Person/Morphs/female/x/Wide.vmi","name":"Wide","value":"0.65"}, {"uid":"Bare","name":"Bare","value":-0.2}, {"uid":"Broken","value":"nope"}, {"name":"NoUid","value":"1"} ] },
-            { "id":"textures", "faceDiffuseUrl":"Pkg.2:/Custom/Atom/Person/Textures/f.jpg", "torsoDiffuseUrl":"", "limbsDiffuseUrl":"x.png", "autoBlend":"true" },
+            { "id":"textures", "faceDiffuseUrl":"Pkg.2:/Custom/Atom/Person/Textures/f.jpg", "torsoDiffuseUrl":"", "limbsDiffuseUrl":"x.png", "autoBlendGenitalTextures":"true", "autoBlendGenitalHueOffset":"0.25" },
             { "id":"skin", "Skin Color":{"h":"0.5","s":"1","v":"1"}, "Specular Intensity":"3.5", "Gloss":"5", "Diffuse Bumpiness":"0.2" },
             { "id":"unrelated" } ] }"#;
         let a = parse_vap(json).unwrap();
         assert_eq!(a.character, "Female Custom");
         assert_eq!(a.morphs.len(), 2, "the ones with no uid or a bad value are skipped");
         assert_eq!((a.morphs[0].name.as_str(), a.morphs[0].value, a.morphs[1].value), ("Wide", 0.65, -0.2));
+        assert!(a.auto_blend);
+        assert_eq!(a.blend_adjust, [0.0, 0.25, 0.0]);
         assert_eq!(a.textures, vec![("faceDiffuseUrl".into(), "Pkg.2:/Custom/Atom/Person/Textures/f.jpg".into()), ("limbsDiffuseUrl".into(), "x.png".into())]);
         let c = a.skin_color.unwrap();
         assert!(c[0].abs() < 1e-6 && (c[1] - 1.0).abs() < 1e-6 && (c[2] - 1.0).abs() < 1e-6, "hue 0.5 is cyan: {c:?}");

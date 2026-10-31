@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::scene::{Node, NodeKind, Scene, SceneError};
 
-/// Most ribbon vertices all the strand hair of a figure may have in all.
-pub const HAIR_VERTEX_BUDGET: usize = 120_000;
+/// Most vertices all the strand hair of a figure may have in all (each is skinned every frame).
+pub const HAIR_VERTEX_BUDGET: usize = 700_000;
 
 /// Most vertices one item may have, and most items one figure may wear.
 pub const MAX_CLOTH_VERTICES: usize = 1_000_000;
@@ -43,16 +43,14 @@ pub struct WrapVert {
 }
 
 /// Strand hair worn on a figure: the guide strands are the item's points (`ClothInput::positions`, each
-/// strand a run of them), and the hair is drawn as thin ribbons grown round each guide.
+/// strand a run of them), and the hair is drawn as thin lines grown round each guide.
 #[derive(Clone, Debug, Default)]
 pub struct HairSpec {
     /// Start and length of each strand in `ClothInput::positions`.
     pub strands: Vec<(u32, u32)>,
-    /// Half the width of a ribbon (metres).
-    pub half_width: f32,
-    /// Ribbons per guide strand.
+    /// Hairs per guide strand at full quality (the game's `hairMultiplier`).
     pub copies: u32,
-    /// How far the ribbons may lie from their guide at the root, the middle and the tip (metres).
+    /// How far the hairs may lie from their guide at the root, the middle and the tip (metres).
     pub spread: [f32; 3],
 }
 
@@ -300,16 +298,15 @@ struct HairMesh {
 }
 
 impl Cloth {
-    /// Ribbons round the guide strands, built from the guides' places on the (morphed) body. Each
-    /// ribbon lies at a fixed random distance and angle from its guide and turns at a fixed random
-    /// roll, so from any side some of them face the eye; u runs across, v from the root to the tip.
-    fn hair_mesh(&self, spec: &HairSpec, points: &[[f32; 3]], copies: u32, keep_every: usize) -> HairMesh {
+    /// Hairs round the guide strands, built from the guides' places on the (morphed) body. Each hair
+    /// lies at a fixed random distance and angle from its guide (the first one runs along it), the
+    /// distance following the spread from the root to the tip. A hair is a line: its vertices'
+    /// normals hold the direction of the strand, u is a random pick of the hair's tone, v runs from
+    /// the root to the tip.
+    fn hair_mesh(&self, spec: &HairSpec, points: &[[f32; 3]], copies: u32) -> HairMesh {
         let mut m = HairMesh { positions: Vec::new(), normals: Vec::new(), uvs: Vec::new(), joints: Vec::new(), weights: Vec::new(), indices: Vec::new() };
         let at = |i: usize| points.get(i).map_or(Vec3::ZERO, |p| Vec3::from(*p));
         for (si, &(start, len)) in spec.strands.iter().enumerate() {
-            if si % keep_every.max(1) != 0 {
-                continue;
-            }
             let (start, len) = (start as usize, len as usize);
             if len < 2 || start + len > points.len() {
                 continue;
@@ -323,32 +320,25 @@ impl Cloth {
                     (t, n1, t.cross(n1))
                 })
                 .collect();
+            // A strand moves as one with the place it grows from (the head), so every point of it has
+            // the root's skin weights: drawing then blends one matrix per strand, not per point.
+            let (j, w) = (self.joints.get(start).copied().unwrap_or([0; 4]), self.weights.get(start).copied().unwrap_or([1.0, 0.0, 0.0, 0.0]));
             for k in 0..copies.max(1) {
                 let (r1, r2, r3) = (unit_hash(si as u32, k, 1), unit_hash(si as u32, k, 2), unit_hash(si as u32, k, 3));
-                let (phi, psi, dist) = (r1 * std::f32::consts::TAU, r3 * std::f32::consts::PI, r2.sqrt());
-                // The first copy runs along the guide itself.
-                let dist = if k == 0 { 0.0 } else { dist };
+                let phi = r1 * std::f32::consts::TAU;
+                // The first hair runs along the guide itself.
+                let dist = if k == 0 { 0.0 } else { r2.sqrt() };
                 let base = m.positions.len() as u32;
                 for (i, &(t, n1, n2)) in frames.iter().enumerate() {
                     let along = i as f32 / (len - 1) as f32;
                     let spread = if along < 0.5 { spec.spread[0] + (spec.spread[1] - spec.spread[0]) * (along / 0.5) } else { spec.spread[1] + (spec.spread[2] - spec.spread[1]) * ((along - 0.5) / 0.5) };
-                    let centre = at(start + i) + (n1 * phi.cos() + n2 * phi.sin()) * (dist * spread);
-                    let side = (n1 * psi.cos() + n2 * psi.sin()) * spec.half_width;
-                    let normal = t.cross(side).normalize_or_zero();
-                    let normal = if normal == Vec3::ZERO { [0.0, 1.0, 0.0] } else { normal.to_array() };
-                    // A strand moves as one with the place it grows from (the head), so every point of it
-                    // has the root's skin weights: drawing then blends one matrix per strand, not per point.
-                    let (j, w) = (self.joints.get(start).copied().unwrap_or([0; 4]), self.weights.get(start).copied().unwrap_or([1.0, 0.0, 0.0, 0.0]));
-                    for (sign, u) in [(-1.0f32, 0.0f32), (1.0, 1.0)] {
-                        m.positions.push((centre + side * sign).to_array());
-                        m.normals.push(normal);
-                        m.uvs.push([u, along]);
-                        m.joints.push(j);
-                        m.weights.push(w);
-                    }
+                    m.positions.push((at(start + i) + (n1 * phi.cos() + n2 * phi.sin()) * (dist * spread)).to_array());
+                    m.normals.push(if t == Vec3::ZERO { [0.0, -1.0, 0.0] } else { t.to_array() });
+                    m.uvs.push([r3, along]);
+                    m.joints.push(j);
+                    m.weights.push(w);
                     if i + 1 < len {
-                        let a = base + 2 * i as u32;
-                        m.indices.extend([a, a + 1, a + 2, a + 2, a + 1, a + 3]);
+                        m.indices.extend([base + i as u32, base + i as u32 + 1]);
                     }
                 }
             }
@@ -500,6 +490,20 @@ impl Scene {
         self.apply_morphs(asset)
     }
 
+    /// Sets how much of the hair is drawn (0 to 1) and rebuilds the figures that wear hair.
+    pub fn set_hair_quality(&mut self, quality: f32) -> Result<(), SceneError> {
+        let q = if quality.is_finite() { quality.clamp(0.0, 1.0) } else { 1.0 };
+        if (q - self.hair_quality).abs() < 1e-4 {
+            return Ok(());
+        }
+        self.hair_quality = q;
+        let assets: Vec<u32> = self.morph_cache.cloths.iter().filter(|(_, l)| l.iter().any(|c| c.hair.is_some())).map(|(a, _)| *a).collect();
+        for a in assets {
+            self.apply_morphs(a)?;
+        }
+        Ok(())
+    }
+
     /// Whether the item's mesh is loaded onto the figure.
     pub fn cloth_loaded(&self, asset: u32, reference: &str) -> bool {
         self.morph_cache.cloths.get(&asset).is_some_and(|l| l.iter().any(|c| c.item.reference == reference))
@@ -535,16 +539,16 @@ impl Scene {
     pub(crate) fn append_cloth(&self, asset: u32, base: &ModelData, body_positions: &[[f32; 3]], model: &mut ModelData) {
         let Some(list) = self.morph_cache.cloths.get(&asset) else { return };
         let Some(body) = base.meshes.first() else { return };
-        // All the hair a figure wears shares one budget of ribbon vertices (each is skinned and
-        // drawn every frame): first fewer ribbons per guide, then fewer guides.
+        // Quality 1 grows every hair the game does (`hairMultiplier` per guide), quality 0 only the guides.
+        let q = self.hair_quality.clamp(0.0, 1.0);
         let hair_points: usize = list.iter().filter_map(|c| c.hair.as_ref()).map(|h| h.strands.iter().map(|s| s.1 as usize).sum::<usize>()).sum();
-        let per_copy = (hair_points * 2).max(1);
-        let copies_cap = (HAIR_VERTEX_BUDGET / per_copy).max(1) as u32;
-        let keep_every = per_copy.div_ceil(HAIR_VERTEX_BUDGET).max(1);
         for c in list {
             let positions = c.wrapped(body_positions);
             if let Some(spec) = &c.hair {
-                let h = c.hair_mesh(spec, &positions, spec.copies.min(copies_cap), if copies_cap <= 1 { keep_every } else { 1 });
+                let wanted = 1.0 + (spec.copies.max(1) - 1) as f32 * q;
+                // All the hair a figure wears shares one budget of vertices.
+                let cap = (HAIR_VERTEX_BUDGET / hair_points.max(1)).max(1) as f32;
+                let h = c.hair_mesh(spec, &positions, wanted.round().min(cap) as u32);
                 model.materials.push(MaterialData {
                     name: cloth_material_name(&c.item.name, "Hair"),
                     base_color: [1.0; 4],
@@ -572,6 +576,7 @@ impl Scene {
                     weights: h.weights,
                     indices: h.indices,
                     material: Some(model.materials.len() - 1),
+                    lines: true,
                 });
                 // The scalp under the roots: the body's own triangles there, lifted off the skin a little.
                 let body_normals: Vec<[f32; 3]> = model.meshes.first().map(|m| m.normals.clone()).unwrap_or_default();
@@ -607,6 +612,7 @@ impl Scene {
                     weights: used.iter().map(|&v| body.weights.get(v).copied().unwrap_or([1.0, 0.0, 0.0, 0.0])).collect(),
                     indices,
                     material: Some(model.materials.len() - 1),
+                    lines: false,
                 });
                 continue;
             }
@@ -652,6 +658,7 @@ impl Scene {
                     weights: used.iter().map(|&v| c.weights.get(v).copied().unwrap_or([1.0, 0.0, 0.0, 0.0])).collect(),
                     indices,
                     material: Some(model.materials.len() - 1),
+                    lines: false,
                 });
             }
         }

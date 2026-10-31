@@ -377,6 +377,8 @@ pub struct Scene {
     /// Clothing and hair items worn by the figures (their files are named, not stored).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub clothing: Vec<crate::cloth::ClothRef>,
+    /// How much of the hair is drawn, 0 (the guide strands only) to 1 (all of it); a view setting kept with the scene.
+    pub hair_quality: f32,
     next_id: NodeId,
     #[serde(skip)]
     pub(crate) models: ModelCache,
@@ -386,11 +388,17 @@ pub struct Scene {
 
 impl Default for Scene {
     fn default() -> Self {
-        Self { version: FORMAT_VERSION, nodes: Vec::new(), camera: Camera::default(), background: [0.18, 0.19, 0.22], ambient: [0.18, 0.18, 0.2], assets: Vec::new(), poses: Vec::new(), controls: Vec::new(), morphs: Vec::new(), material_overrides: Vec::new(), clothing: Vec::new(), next_id: 1, models: ModelCache::default(), morph_cache: Default::default() }
+        Self { version: FORMAT_VERSION, nodes: Vec::new(), camera: Camera::default(), background: [0.18, 0.19, 0.22], ambient: [0.18, 0.18, 0.2], assets: Vec::new(), poses: Vec::new(), controls: Vec::new(), morphs: Vec::new(), material_overrides: Vec::new(), clothing: Vec::new(), hair_quality: 1.0, next_id: 1, models: ModelCache::default(), morph_cache: Default::default() }
     }
 }
 
 impl Scene {
+    /// The nodes of this scene seen from another camera, with no models: enough to project them (an
+    /// overlay drawn over a picture that was made with that camera).
+    pub fn with_camera_only(&self, camera: Camera) -> Scene {
+        Scene { nodes: self.nodes.clone(), camera, ..Scene::default() }
+    }
+
     /// An empty scene with one sun light, so a first primitive is visibly lit.
     pub fn new() -> Self {
         let mut s = Self::default();

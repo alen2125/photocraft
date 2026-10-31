@@ -1,11 +1,15 @@
-"""Export a VaM base figure (female or male) from the game's own asset bundles to a skinned .vrm (VRM 0.x)."""
+"""Export a VaM base figure (female or male) from the game's own asset bundles to a skinned .vrm (VRM 0.x).
+Usage: python export.py female|male [out_dir] [character bundle, e.g. f_12]"""
 import json, os, struct, sys
 import UnityPy
 
 SA = r"F:\Virt-a-Mate_1.22.0.3\VaM_1.22.0.3\VaM_Data\StreamingAssets"
 OUT = sys.argv[2] if len(sys.argv) > 2 else "."
 who = sys.argv[1]  # female | male
-bundle, person = ("f_1", "a_per") if who == "female" else ("m_1", "a_per")
+default_bundle = "f_1" if who == "female" else "m_1"
+# A character bundle (f_12, f_rti, m_3 ...) gives its own mesh (its UV set) and skin pictures.
+bundle = sys.argv[3] if len(sys.argv) > 3 else default_bundle
+person = "a_per"
 pos_key = "_worldPosition" if who == "female" else "_maleWorldPosition"
 
 # ---- mesh + skin
@@ -268,7 +272,7 @@ import io
 import re
 from PIL import Image
 
-SKIN = sys.argv[3] if len(sys.argv) > 3 else ("f_1" if who == "female" else "m_1")
+SKIN = bundle
 TEX_MAX = 2048
 senv = UnityPy.load(*[os.path.join(SA, n) for n in (SKIN + "_mat", "p_eye_mat", "p_sha_mat", "z_sha")])
 slot_mat = {}
@@ -596,6 +600,6 @@ js += b" " * (-len(js) % 4)
 bin_ = bytes(blob) + b"\0" * (-len(blob) % 4)
 glb = struct.pack("<4sII", b"glTF", 2, 12 + 8 + len(js) + 8 + len(bin_)) + struct.pack("<I4s", len(js), b"JSON") + js + struct.pack("<I4s", len(bin_), b"BIN\0") + bin_
 os.makedirs(OUT, exist_ok=True)
-path = os.path.join(OUT, f"vam_base_{who}.vrm")
+path = os.path.join(OUT, f"vam_base_{who}.vrm" if bundle == default_bundle else f"vam_base_{who}_{bundle}.vrm")
 open(path, "wb").write(glb)
 print("wrote", path, len(glb) // 1024, "KB; materials", len(materials), "joints", len(need))

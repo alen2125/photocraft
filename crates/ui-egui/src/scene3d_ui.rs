@@ -71,6 +71,14 @@ pub struct Scene3dEditor {
     pub(crate) file_name: Option<String>,
     pub(crate) out_ssaa: u32,
     pub(crate) out_transparent: bool,
+    /// How sharp the picture is while something moves (a fraction of the full size), and whether it
+    /// is drawn at full size and smoothed then too. Kept between runs.
+    pub(crate) motion_scale: f32,
+    pub(crate) no_blur: bool,
+    /// The quality settings were read back from the saved ones.
+    pub(crate) quality_restored: bool,
+    /// What the renderer was last asked for: its key and the camera it was given.
+    pub(crate) submitted: Option<((u64, u32, u32, u32), photocraft_scene3d::Camera)>,
     pub(crate) show_bones: bool,
     pub(crate) pose_mode: PoseMode,
     /// How many bones above the dragged one turn in IK mode.
@@ -148,6 +156,9 @@ pub(crate) struct BoneDrag {
 pub(crate) struct Preview {
     pub(crate) texture: egui::TextureHandle,
     pub(crate) key: (u64, u32, u32, u32),
+    /// The camera the picture was drawn with: the skeleton over it is drawn with this one too, so it
+    /// stays on the body while a newer picture is still being made.
+    pub(crate) camera: Option<photocraft_scene3d::Camera>,
 }
 
 impl Default for Scene3dEditor {
@@ -166,6 +177,10 @@ impl Default for Scene3dEditor {
             file_name: None,
             out_ssaa: 2,
             out_transparent: true,
+            motion_scale: 0.5,
+            no_blur: false,
+            quality_restored: false,
+            submitted: None,
             show_bones: true,
             pose_mode: PoseMode::Ik,
             ik_chain: 2,
@@ -340,12 +355,14 @@ pub(crate) fn refresh_preview(ctx: &egui::Context, ed: &mut Scene3dEditor, size:
         match result {
             Ok(img) => {
                 let color = egui::ColorImage::from_rgba_unmultiplied([img.width as usize, img.height as usize], &img.rgba);
+                let camera = ed.submitted.as_ref().filter(|(k, _)| *k == key).map(|(_, c)| c.clone());
                 match ed.preview.as_mut() {
                     Some(p) => {
                         p.texture.set(color, egui::TextureOptions::LINEAR);
                         p.key = key;
+                        p.camera = camera;
                     }
-                    None => ed.preview = Some(Preview { texture: ctx.load_texture("scene3d-preview", color, egui::TextureOptions::LINEAR), key }),
+                    None => ed.preview = Some(Preview { texture: ctx.load_texture("scene3d-preview", color, egui::TextureOptions::LINEAR), key, camera }),
                 }
             }
             Err(e) => ed.status = e,
@@ -355,6 +372,7 @@ pub(crate) fn refresh_preview(ctx: &egui::Context, ed: &mut Scene3dEditor, size:
     let want = (ed.preview_rev(), size.0, size.1, ssaa);
     if ed.preview.as_ref().is_none_or(|p| p.key != want) && !ed.worker.busy() && !ed.worker.is_last(want) {
         let opts = photocraft_render3d::RenderOptions { width: size.0, height: size.1, ssaa, transparent: ed.out_transparent };
+        ed.submitted = Some((want, ed.scene.camera.clone()));
         ed.worker.submit(ctx, want, ed.scene.clone(), opts);
     }
 }
@@ -777,6 +795,7 @@ fn side_panels(ui: &mut egui::Ui, ed: &mut Scene3dEditor) {
             }
         }
     });
+    quality_panel(ui, ed);
     // How the physics feels; takes effect at once, also while it runs.
     ui.horizontal(|ui| {
         let g = ui.add(egui::Slider::new(&mut ed.gravity_scale, 0.0..=3.0).text(tl!("Gravity")).max_decimals(2));
@@ -1054,6 +1073,38 @@ pub(crate) fn run_action(app: &mut PhotocraftApp, ctx: &egui::Context, action: A
 
 /// Every frame: keeps the on-canvas mode going (preview, document check) and draws its panel,
 /// the node list, inspector and poses, as a floating window next to the canvas.
+fn quality_setting_id() -> egui::Id {
+    egui::Id::new("scene3d-quality")
+}
+
+/// What is drawn while things move, and how much of the hair: kept between runs.
+fn quality_panel(ui: &mut egui::Ui, ed: &mut Scene3dEditor) {
+    if !ed.quality_restored {
+        ed.quality_restored = true;
+        if let Some((scale, no_blur, hair)) = ui.ctx().data_mut(|d| d.get_persisted::<(f32, bool, f32)>(quality_setting_id())) {
+            ed.motion_scale = scale.clamp(0.25, 1.0);
+            ed.no_blur = no_blur;
+            let _ = ed.scene.set_hair_quality(hair);
+        }
+    }
+    let mut changed = false;
+    egui::CollapsingHeader::new(tl!("Quality")).default_open(false).show(ui, |ui| {
+        changed |= ui.checkbox(&mut ed.no_blur, tl!("Do not coarsen while moving")).on_hover_text(tl!("Draw at full size and smoothed while the camera or a pose moves. Sharper, but slower.")).changed();
+        changed |= ui.add_enabled(!ed.no_blur, egui::Slider::new(&mut ed.motion_scale, 0.25..=1.0).text(tl!("Sharpness while moving")).max_decimals(2)).changed();
+        let mut hair = ed.scene.hair_quality;
+        if ui.add(egui::Slider::new(&mut hair, 0.0..=1.0).text(tl!("Hair quality")).max_decimals(2)).on_hover_text(tl!("How much of the hair is drawn: all of it at 1, the guide strands only at 0. Lower it if it is slow.")).changed() && ed.scene.set_hair_quality(hair).is_ok() {
+            ed.touch();
+            ed.pending_change = true;
+            changed = true;
+        }
+    });
+    if changed {
+        let value = (ed.motion_scale, ed.no_blur, ed.scene.hair_quality);
+        ui.ctx().data_mut(|d| d.insert_persisted(quality_setting_id(), value));
+        ed.pending_change = true;
+    }
+}
+
 pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
     crate::scene3d_canvas::frame(app, ctx);
     if !app.scene3d.open {

@@ -112,12 +112,16 @@ pub struct Item {
     pub thumbnail: Option<String>,
 }
 
-/// Whether a texture file is an eye picture to pick from: a colour picture with "eye" in its path.
+/// Whether a texture file is an iris picture to pick from: a colour picture in a folder of eyes
+/// (VaM keeps them in `Textures/Eyes`). Make-up and face pictures that only have "eye" in their
+/// names (`hearts+red eye+lips+blush.png`) are not: they lie on the face, not on the iris.
 fn is_eye_picture(path: &str) -> bool {
-    let p = path.to_ascii_lowercase();
+    let p = path.to_ascii_lowercase().replace('\\', "/");
     let picture = p.ends_with(".png") || p.ends_with(".jpg") || p.ends_with(".jpeg");
-    let name = p.rsplit('/').next().unwrap_or(&p);
-    picture && p.contains("eye") && !["normal", "spec", "gloss", "bump", "alpha", "mask", "_n.", "_s.", "_g.", "_a.", "_nrm", "_bump", "sclera", "lash"].iter().any(|k| name.contains(k))
+    let mut parts: Vec<&str> = p.split('/').collect();
+    let name = parts.pop().unwrap_or("");
+    let in_eye_folder = parts.iter().any(|d| matches!(*d, "eye" | "eyes" | "iris" | "irises" | "irides")) && parts.iter().any(|d| *d == "textures" || *d == "person" || *d == "atom");
+    picture && in_eye_folder && !["normal", "spec", "gloss", "bump", "alpha", "mask", "_n.", "_s.", "_g.", "_a.", "_nrm", "_bump", "sclera", "lash", "lip", "blush", "brow", "makeup", "shadow", "liner", "reflection", "+"].iter().any(|k| name.contains(k))
 }
 
 /// A reference with another extension.
@@ -697,6 +701,8 @@ mod tests {
     fn eye_pictures_are_found_by_name_and_maps_are_left_out() {
         assert!(is_eye_picture("Custom/Atom/Person/Textures/Eyes/Green_Eye_01.png"));
         assert!(is_eye_picture("Custom/Atom/Person/Textures/Maker/eyes/iris.JPG"));
+        assert!(!is_eye_picture("Custom/Atom/Person/Textures/Alter3go/[Alter3go] hearts+red eye+lips+nose+blush.png"), "make-up with eye in its name");
+        assert!(!is_eye_picture("Custom/Clothing/Female/Maker/Eyes reflection/Eyes reflection.jpg"), "clothing is not an iris");
         assert!(!is_eye_picture("Custom/Atom/Person/Textures/Maker/eyes/iris_Normal.png"));
         assert!(!is_eye_picture("Custom/Atom/Person/Textures/Maker/skin.png"));
         assert!(!is_eye_picture("Custom/Atom/Person/Textures/Eyes/readme.txt"));

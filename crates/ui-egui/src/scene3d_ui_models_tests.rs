@@ -407,6 +407,10 @@ fn looks_from_packages_import_with_their_own_package_as_self() {
         let t0 = std::time::Instant::now();
         let r = crate::scene3d_vam::import_look_from(&mut ed, &p.name, &bytes, &p.package);
         eprintln!("PRESET {} [{}] -> {:?} ({:?}); morph values now {}", p.name, p.package, r.map(|s| s.chars().take(4000).collect::<String>()), t0.elapsed(), ed.scene.morphs.len());
+        if let Ok(eye) = std::env::var("EYE") {
+            let pick = lib.eyes.iter().find(|e| e.name.contains(&eye)).expect("no such eye picture");
+            eprintln!("EYE {:?}", crate::scene3d_vam::apply_eye(&mut ed, &lib, 1, pick));
+        }
         if let Ok(drop) = std::env::var("DROP") {
             let names: Vec<&str> = drop.split(',').collect();
             if drop == "ALL" {
@@ -432,11 +436,11 @@ fn looks_from_packages_import_with_their_own_package_as_self() {
             }
         }
         if let Ok(out) = std::env::var("PIC_DIR") {
-            for (cam, pos, target, size) in [("face", [0.0, 1.66, 0.75], [0.0, 1.645, 0.0], (700, 700)), ("body", [0.0, 1.0, 3.4], [0.0, 0.95, 0.0], (520, 800)), ("back", [0.0, 1.5, -1.5], [0.0, 1.45, 0.0], (700, 700))] {
+            for (cam, pos, target, size) in [("face", [0.0, 1.66, 0.75], [0.0, 1.645, 0.0], (700, 700)), ("body", [0.0, 1.0, 3.4], [0.0, 0.95, 0.0], (520, 800)), ("back", [0.0, 1.5, -1.5], [0.0, 1.45, 0.0], (700, 700)), ("eyes", [0.0, 1.57, 0.42], [0.0, 1.57, 0.0], (800, 400))] {
                 let mut sc = ed.scene.clone();
                 sc.camera.position = pos;
                 sc.camera.target = target;
-                sc.camera.fov = if cam == "face" { 30.0 } else { 35.0 };
+                sc.camera.fov = if cam == "face" || cam == "eyes" { 30.0 } else { 35.0 };
                 let t_render = std::time::Instant::now();
                 let img = photocraft_render3d::render(&sc, &photocraft_render3d::RenderOptions { ssaa: 2, ..photocraft_render3d::RenderOptions::new(size.0, size.1) }).unwrap();
                 eprintln!("RENDER {cam}: {:?}", t_render.elapsed());
@@ -532,4 +536,22 @@ fn many_items_can_be_worn_and_drawn() {
         let _ = ed.scene.remove_cloth(1, &item.reference);
     }
     eprintln!("ITEMS ok {ok} failed {failed}");
+}
+
+/// With no figure in the scene a look brings the body of its character (run with `VAM_DIR`).
+#[test]
+#[ignore = "needs a VaM install and the exported figures in samples"]
+fn a_look_picked_with_no_figure_puts_in_the_body_of_its_character() {
+    let dir = std::env::var("VAM_DIR").unwrap_or_default();
+    let mut ed = Scene3dEditor::default();
+    ed.vam.dir = dir;
+    crate::scene3d_vam::open_library(&mut ed, &egui::Context::default());
+    let lib = ed.vam.library.clone().unwrap();
+    let p = lib.presets_matching("Mackenzie").into_iter().next().unwrap();
+    let bytes = lib.read_file(&p.reference).unwrap();
+    assert!(crate::scene3d_vam::figure(&ed).is_none());
+    let r = crate::scene3d_vam::import_look_from(&mut ed, &p.name, &bytes, &p.package).unwrap();
+    let (asset, _) = crate::scene3d_vam::figure(&ed).expect("the body was put in");
+    let name = ed.scene.assets.iter().find(|a| a.id == asset).unwrap().name.clone();
+    assert!(name.ends_with("vam_base_female_f_12.vrm") || name.contains("f_12"), "Mackenzie is Female 12, got {name}: {r}");
 }

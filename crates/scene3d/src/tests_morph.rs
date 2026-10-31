@@ -266,19 +266,21 @@ fn an_override_can_hide_a_material_fade_it_and_tint_by_multiplying() {
 }
 
 #[test]
-fn strand_hair_is_grown_as_ribbons_round_guides_that_follow_the_body_and_comes_off() {
+fn strand_hair_is_grown_as_lines_round_guides_that_follow_the_body_and_comes_off() {
     use crate::cloth::{ClothInput, HairSpec};
     let (mut s, a) = scene_with_figure();
     // Two guide strands of three points, rooted on the body triangle (game axes: z is mirrored).
     let points = vec![[0.2, 0.2, -0.0], [0.2, 0.15, -0.05], [0.2, 0.1, -0.1], [0.3, 0.2, 0.0], [0.3, 0.15, -0.05], [0.3, 0.1, -0.1]];
-    let spec = HairSpec { strands: vec![(0, 3), (3, 3)], half_width: 0.001, copies: 2, spread: [0.01, 0.01, 0.01] };
+    let spec = HairSpec { strands: vec![(0, 3), (3, 3)], copies: 2, spread: [0.01, 0.01, 0.01] };
     let input = ClothInput { name: "Bob".into(), positions: points, hair: Some(spec), pieces: vec![("Hair".into(), vec![]), ("Scalp".into(), vec![])], ..ClothInput::default() };
     s.add_cloth(a, "Pkg.1:/Bob.vam", input).unwrap();
     let m = s.model(a).unwrap().clone();
-    assert_eq!(m.meshes.len(), 4, "the figure's two meshes, the ribbons and the scalp");
-    // 2 strands x 2 copies x 3 points x 2 sides.
-    assert_eq!(m.meshes[2].positions.len(), 24);
-    assert_eq!(m.meshes[2].indices.len(), 2 * 2 * 2 * 6, "two quads per ribbon segment, two segments");
+    assert_eq!(m.meshes.len(), 4, "the figure's two meshes, the hair and the scalp");
+    // 2 strands x 2 hairs x 3 points; each hair has two segments of two indices.
+    assert_eq!(m.meshes[2].positions.len(), 12);
+    assert!(m.meshes[2].lines);
+    assert_eq!(m.meshes[2].indices.len(), 2 * 2 * 2 * 2, "two segments a hair");
+    assert!(m.meshes[2].normals.iter().all(|n| (n[0] * n[0] + n[1] * n[1] + n[2] * n[2] - 1.0).abs() < 1e-4), "a vertex's normal is its strand's direction");
     assert!(m.meshes[2].joints.iter().all(|j| *j == m.meshes[2].joints[0]), "a strand takes its root's skin weights");
     assert!(m.meshes[2].uvs.iter().any(|uv| uv[1] == 1.0) && m.meshes[2].uvs.iter().any(|uv| uv[1] == 0.0), "v runs root to tip");
     assert_eq!(s.nodes.iter().filter(|n| matches!(&n.kind, NodeKind::Mesh(mm) if mm.asset == a && mm.mesh >= 2)).count(), 2);
@@ -290,4 +292,39 @@ fn strand_hair_is_grown_as_ribbons_round_guides_that_follow_the_body_and_comes_o
     assert!((after[2] - before[2] + 0.5).abs() < 0.05, "{before:?} -> {after:?}");
     s.remove_cloth(a, "Pkg.1:/Bob.vam").unwrap();
     assert_eq!(s.model(a).unwrap().meshes.len(), 2);
+}
+
+#[test]
+fn the_hair_quality_is_clamped_kept_with_the_scene_and_trims_big_hair() {
+    use crate::cloth::{ClothInput, HairSpec};
+    let (mut s, a) = scene_with_figure();
+    s.set_hair_quality(7.0).unwrap();
+    assert_eq!(s.hair_quality, 1.0);
+    s.set_hair_quality(f32::NAN).unwrap();
+    assert_eq!(s.hair_quality, 1.0, "nonsense means full quality");
+    // 300 strands of 200 points, three hairs a guide at full quality; one at zero.
+    let strands: Vec<(u32, u32)> = (0..300).map(|i| (i * 200, 200)).collect();
+    let points: Vec<[f32; 3]> = (0..300 * 200).map(|i| [0.2 + (i / 200) as f32 * 1e-4, 0.2 - (i % 200) as f32 * 1e-4, 0.0]).collect();
+    let spec = HairSpec { strands, copies: 3, spread: [0.01; 3] };
+    s.add_cloth(a, "Pkg.1:/Long.vam", ClothInput { name: "Long".into(), positions: points, hair: Some(spec), pieces: vec![("Hair".into(), vec![]), ("Scalp".into(), vec![])], ..ClothInput::default() }).unwrap();
+    let full = s.model(a).unwrap().meshes[2].positions.len();
+    s.set_hair_quality(0.0).unwrap();
+    let least = s.model(a).unwrap().meshes[2].positions.len();
+    assert_eq!(least * 3, full, "zero keeps the guides, full three hairs each");
+    s.set_hair_quality(1.0).unwrap();
+    assert_eq!(s.model(a).unwrap().meshes[2].positions.len(), full, "back to full");
+    let back = Scene::from_json(&s.to_json().unwrap()).unwrap();
+    assert_eq!(back.hair_quality, 1.0);
+}
+
+#[test]
+fn a_camera_only_copy_keeps_the_nodes_and_takes_the_given_camera() {
+    let (s, _) = scene_with_figure();
+    let mut cam = s.camera.clone();
+    cam.position = [9.0, 9.0, 9.0];
+    let lite = s.with_camera_only(cam.clone());
+    assert_eq!(lite.camera, cam);
+    assert_eq!(lite.nodes.len(), s.nodes.len());
+    assert_eq!(lite.world_matrices().len(), s.world_matrices().len(), "the nodes stand where they did");
+    assert!(lite.assets.is_empty(), "no models are copied");
 }

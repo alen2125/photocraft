@@ -5,6 +5,9 @@ use photocraft_scene3d::LightKind;
 use photocraft_scene3d::NodeId;
 use photocraft_scene3d::glam::{Vec3, Vec4};
 
+/// Most sample steps one hair segment is walked in (a segment that long fills the picture).
+const MAX_SEGMENT_STEPS: usize = 8192;
+
 #[derive(Clone, Copy)]
 struct Vert {
     clip: Vec4,
@@ -235,6 +238,115 @@ fn tangent_frame(tri: &[Vert; 3]) -> Option<(Vec3, Vec3)> {
     (t.is_finite() && b.is_finite()).then_some((t, -b))
 }
 
+/// A hair segment in screen space, with the colour of each end.
+struct SetupSeg {
+    a: Screen,
+    b: Screen,
+    ca: Vec3,
+    cb: Vec3,
+    y0: usize,
+    y1: usize,
+}
+
+/// The colour of one hair vertex: the picture's colour along the strand lit the way Kajiya and Kay
+/// lit hair: the light's share is the strand's angle to it (a strand lies in many surfaces), and the
+/// highlight is a ring round the strand, sharp where the half vector is square to it.
+fn hair_colour(d: &Draw, prep: &Prepared, pos: Vec3, tangent: Vec3, uv: [f32; 2]) -> Vec3 {
+    let (tex_rgb, _) = sample(d.texture.as_ref(), &prep.lut, uv).unwrap_or((Vec3::ONE, 1.0));
+    let albedo = d.albedo * tex_rgb;
+    let t = tangent.normalize_or_zero();
+    let v = (prep.eye - pos).normalize_or_zero();
+    let mut diffuse = prep.ambient;
+    let mut spec = Vec3::ZERO;
+    for l in &prep.lights {
+        let (to_light, atten) = light_vec(l, pos);
+        if atten <= 0.0 {
+            continue;
+        }
+        let tl = t.dot(to_light);
+        diffuse += l.radiance * ((1.0 - tl * tl).max(0.0).sqrt() * 0.8 + 0.2) * atten;
+        let h = (to_light + v).normalize_or_zero();
+        let th = t.dot(h);
+        spec += l.radiance * ((1.0 - th * th).max(0.0).sqrt().powf(d.shininess) * d.specular * atten);
+    }
+    albedo * diffuse + spec
+}
+
+/// The screen-space segments of one hair mesh, near-plane clipped, with their colours (made on all cores).
+fn setup_lines(prep: &Prepared, d: &Draw, sw: usize, sh: usize) -> Vec<SetupSeg> {
+    let clip: Vec<Vec4> = d.positions.iter().map(|p| prep.view_proj * p.extend(1.0)).collect();
+    let colour = |(i, p): (usize, &Vec3)| hair_colour(d, prep, *p, d.normals.get(i).copied().unwrap_or(Vec3::Y), d.uvs.get(i).copied().unwrap_or([0.0; 2]));
+    let (fw, fh) = (sw as f64, sh as f64);
+    let segment = |pair: &[u32; 2], colours: &[Vec3]| -> Option<SetupSeg> {
+        let [i0, i1] = *pair;
+        let (mut c0, mut c1) = (*clip.get(i0 as usize)?, *clip.get(i1 as usize)?);
+        let (mut k0, mut k1) = (*colours.get(i0 as usize)?, *colours.get(i1 as usize)?);
+        match (c0.z >= 0.0, c1.z >= 0.0) {
+            (false, false) => return None,
+            (true, false) => {
+                let t = c0.z / (c0.z - c1.z);
+                c1 = c0.lerp(c1, t);
+                k1 = k0.lerp(k1, t);
+            }
+            (false, true) => {
+                let t = c0.z / (c0.z - c1.z);
+                c0 = c0.lerp(c1, t);
+                k0 = k0.lerp(k1, t);
+            }
+            (true, true) => {}
+        }
+        let screen = |c: Vec4| to_screen(&Vert { clip: c, pos: Vec3::ZERO, nrm: Vec3::ZERO, uv: [0.0; 2] }, fw, fh);
+        let (a, b) = (screen(c0)?, screen(c1)?);
+        let (lo, hi) = (a.y.min(b.y), a.y.max(b.y));
+        if hi < 0.0 || lo >= fh || a.x.max(b.x) < 0.0 || a.x.min(b.x) >= fw {
+            return None;
+        }
+        Some(SetupSeg { a, b, ca: k0, cb: k1, y0: lo.floor().max(0.0) as usize, y1: (hi.floor() + 1.0).min(fh - 1.0) as usize })
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use rayon::prelude::*;
+        let colours: Vec<Vec3> = d.positions.par_iter().enumerate().map(colour).collect();
+        d.indices.as_chunks::<2>().0.par_iter().filter_map(|p| segment(p, &colours)).collect()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let colours: Vec<Vec3> = d.positions.iter().enumerate().map(colour).collect();
+        d.indices.as_chunks::<2>().0.iter().filter_map(|p| segment(p, &colours)).collect()
+    }
+}
+
+/// Walks a hair segment one sample at a time, two samples wide (across its major axis): depth tested
+/// and written, the colour lerped along it. A single sample would drop out between neighbours and
+/// leave the hair as sparse dots.
+fn draw_segment(band: &mut Band, s: &SetupSeg) {
+    let (dx, dy) = (s.b.x - s.a.x, s.b.y - s.a.y);
+    let steps = (dx.abs().max(dy.abs()).ceil().max(1.0) as usize).min(MAX_SEGMENT_STEPS);
+    let (y_lo, y_hi) = (band.y0 as i64, (band.y0 + band.rows) as i64);
+    let steep = dy.abs() > dx.abs();
+    for k in 0..=steps {
+        let t = k as f64 / steps as f64;
+        let (x0, y0) = ((s.a.x + dx * t).floor() as i64, (s.a.y + dy * t).floor() as i64);
+        let z = s.a.z + (s.b.z - s.a.z) * t;
+        if !(0.0..=1.0).contains(&z) {
+            continue;
+        }
+        let colour = s.ca.lerp(s.cb, t as f32).to_array();
+        for (x, y) in [(x0, y0), if steep { (x0 + 1, y0) } else { (x0, y0 + 1) }] {
+            if x < 0 || x >= band.sw as i64 || y < y_lo || y >= y_hi {
+                continue;
+            }
+            let i = (y - y_lo) as usize * band.sw + x as usize;
+            let (Some(dz), Some(dc)) = (band.depth.get_mut(i), band.color.get_mut(i)) else { continue };
+            if z as f32 >= *dz {
+                continue;
+            }
+            *dz = z as f32;
+            *dc = colour;
+        }
+    }
+}
+
 fn draw_triangle(band: &mut Band, d: &Draw, prep: &Prepared, t: &SetupTri) {
     let [a, b, c] = t.s;
     let tri = &t.v;
@@ -307,6 +419,9 @@ fn run_bands(bands: Vec<Band>, f: impl Fn(&mut Band) + Sync + Send) {
 
 /// The screen-space triangles of one mesh, near-plane clipped, in index order.
 fn setup_draw(prep: &Prepared, di: usize, d: &Draw, sw: usize, sh: usize) -> Vec<SetupTri> {
+    if d.lines {
+        return Vec::new();
+    }
     let verts: Vec<Vert> = d
         .positions
         .iter()
@@ -340,6 +455,14 @@ pub(crate) fn render(prep: &Prepared, opts: &RenderOptions, ss: u32, samples: u6
     #[cfg(target_arch = "wasm32")]
     let per_draw: Vec<Vec<SetupTri>> = prep.draws.iter().enumerate().map(|(di, d)| setup_draw(prep, di, d, sw, sh)).collect();
     let tris: Vec<SetupTri> = per_draw.into_iter().flatten().collect();
+    // Hair: lines, in parallel by mesh too.
+    #[cfg(not(target_arch = "wasm32"))]
+    let segs: Vec<SetupSeg> = {
+        use rayon::prelude::*;
+        prep.draws.par_iter().filter(|d| d.lines).map(|d| setup_lines(prep, d, sw, sh)).collect::<Vec<_>>().into_iter().flatten().collect()
+    };
+    #[cfg(target_arch = "wasm32")]
+    let segs: Vec<SetupSeg> = prep.draws.iter().filter(|d| d.lines).flat_map(|d| setup_lines(prep, d, sw, sh)).collect();
 
     let bands: Vec<Band> = depth
         .chunks_mut(sw * BAND_ROWS)
@@ -356,6 +479,14 @@ pub(crate) fn render(prep: &Prepared, opts: &RenderOptions, ss: u32, samples: u6
                 }
                 if let Some(d) = prep.draws.get(t.draw).filter(|d| d.blend == blend) {
                     draw_triangle(band, d, prep, t);
+                }
+            }
+            // The hair goes in with the opaque things.
+            if !blend {
+                for sg in &segs {
+                    if sg.y1 >= band.y0 && sg.y0 < band.y0 + band.rows {
+                        draw_segment(band, sg);
+                    }
                 }
             }
         }
@@ -406,7 +537,7 @@ fn resolve(depth: &[f32], color: &[[f32; 3]], sw: usize, w: usize, h: usize, ss:
 /// Nearest triangle hit by the world-space ray, two-sided (Möller–Trumbore).
 pub(crate) fn ray_pick(prep: &Prepared, origin: Vec3, dir: Vec3) -> Option<NodeId> {
     let mut best: Option<(f32, NodeId)> = None;
-    for d in &prep.draws {
+    for d in prep.draws.iter().filter(|d| !d.lines) {
         for tri in d.indices.as_chunks::<3>().0 {
             let get = |i: u32| d.positions.get(i as usize).copied();
             let (Some(v0), Some(v1), Some(v2)) = (get(tri[0]), get(tri[1]), get(tri[2])) else { continue };

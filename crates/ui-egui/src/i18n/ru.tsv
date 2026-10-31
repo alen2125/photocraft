@@ -4712,3 +4712,10 @@ shape	Appearance	Оформление
 	Eyes	Глаза
 	Search eyes…	Поиск глаз…
 	Set the VaM folder above to list its eye pictures.	Укажите папку VaM выше, чтобы увидеть картинки глаз.
+	Do not coarsen while moving	Не огрублять в движении
+	Draw at full size and smoothed while the camera or a pose moves. Sharper, but slower.	Рисовать в полном размере и со сглаживанием, пока двигается камера или поза. Чётче, но медленнее.
+	Sharpness while moving	Чёткость в движении
+	Hair quality	Качество волос
+	How much of the hair is drawn: all of it at 1, the guide strands only at 0. Lower it if it is slow.	Сколько волос рисуется: все при 1, только направляющие пряди при 0. Уменьшите, если тормозит.
+	Folder with the exported figures	Папка с выгруженными фигурами
+	Pick a look: the body it needs is put in the scene.	Выберите образ: нужное ему тело появится в сцене.
