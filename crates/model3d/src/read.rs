@@ -172,6 +172,7 @@ fn material(m: &gltf::Material, image_count: usize) -> MaterialData {
         unlit: m.unlit(),
         normal_texture: None,
         normal_scale: 1.0,
+        spec_normal_scale: 1.0,
         specular_texture: None,
         specular: None,
         shininess: None,

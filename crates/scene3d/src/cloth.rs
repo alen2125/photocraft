@@ -13,6 +13,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::scene::{Node, NodeKind, Scene, SceneError};
 
+/// Most ribbon vertices all the strand hair of a figure may have in all.
+pub const HAIR_VERTEX_BUDGET: usize = 120_000;
+
 /// Most vertices one item may have, and most items one figure may wear.
 pub const MAX_CLOTH_VERTICES: usize = 1_000_000;
 pub const MAX_CLOTH_ITEMS: usize = 64;
@@ -39,9 +42,25 @@ pub struct WrapVert {
     pub tangent2_dot: f32,
 }
 
+/// Strand hair worn on a figure: the guide strands are the item's points (`ClothInput::positions`, each
+/// strand a run of them), and the hair is drawn as thin ribbons grown round each guide.
+#[derive(Clone, Debug, Default)]
+pub struct HairSpec {
+    /// Start and length of each strand in `ClothInput::positions`.
+    pub strands: Vec<(u32, u32)>,
+    /// Half the width of a ribbon (metres).
+    pub half_width: f32,
+    /// Ribbons per guide strand.
+    pub copies: u32,
+    /// How far the ribbons may lie from their guide at the root, the middle and the tip (metres).
+    pub spread: [f32; 3],
+}
+
 /// An item's mesh as read from its file, in the game's axes.
 #[derive(Clone, Debug, Default)]
 pub struct ClothInput {
+    /// Set for strand hair: the item has no triangles of its own.
+    pub hair: Option<HairSpec>,
     /// The game's own tie of each vertex to the body, when the file has it (else the nearest body
     /// surface is used); and the item's surface offset and thickness setting.
     pub wrap: Vec<WrapVert>,
@@ -93,6 +112,9 @@ pub(crate) struct Cloth {
     binds: Vec<Bind>,
     joints: Vec<[u16; 4]>,
     weights: Vec<[f32; 4]>,
+    hair: Option<HairSpec>,
+    /// For hair: the body triangles under the roots, drawn as a scalp in the hair's colour.
+    cap: Vec<[u32; 3]>,
 }
 
 fn mirror(p: [f32; 3]) -> Vec3 {
@@ -232,6 +254,109 @@ impl Cloth {
     }
 }
 
+/// The body triangles that lie under the roots of the strands (within three centimetres of
+/// one): VaM draws the scalp there in the hair's colour, so the skin does not show between strands.
+fn cap_triangles(points: &[Vec3], strands: &[(u32, u32)], body: &[Vec3], tris: &[[u32; 3]]) -> Vec<[u32; 3]> {
+    const CELL: f32 = 0.03;
+    let cell = |p: Vec3| ((p.x / CELL).floor() as i32, (p.y / CELL).floor() as i32, (p.z / CELL).floor() as i32);
+    let mut grid: HashMap<(i32, i32, i32), Vec<Vec3>> = HashMap::new();
+    for &(start, len) in strands {
+        if len > 0
+            && let Some(&root) = points.get(start as usize)
+        {
+            grid.entry(cell(root)).or_default().push(root);
+        }
+    }
+    let at = |i: u32| body.get(i as usize).copied().unwrap_or(Vec3::ZERO);
+    tris.iter()
+        .filter(|t| {
+            let c = (at(t[0]) + at(t[1]) + at(t[2])) / 3.0;
+            let (cx, cy, cz) = cell(c);
+            (-1..=1).any(|dx| (-1..=1).any(|dy| (-1..=1).any(|dz| grid.get(&(cx + dx, cy + dy, cz + dz)).is_some_and(|roots| roots.iter().any(|r| r.distance(c) < CELL)))))
+        })
+        .copied()
+        .collect()
+}
+
+/// A number in [0, 1) from three small integers (a fixed pseudo-random choice, the same every time).
+fn unit_hash(a: u32, b: u32, c: u32) -> f32 {
+    let mut h = a.wrapping_mul(0x9E37_79B1) ^ b.wrapping_mul(0x85EB_CA6B) ^ c.wrapping_mul(0xC2B2_AE35);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x2C1B_3C6D);
+    h ^= h >> 12;
+    h = h.wrapping_mul(0x297A_2D39);
+    h ^= h >> 15;
+    (h >> 8) as f32 / (1u32 << 24) as f32
+}
+
+/// What the hair mesh of one item is made of.
+struct HairMesh {
+    positions: Vec<[f32; 3]>,
+    normals: Vec<[f32; 3]>,
+    uvs: Vec<[f32; 2]>,
+    joints: Vec<[u16; 4]>,
+    weights: Vec<[f32; 4]>,
+    indices: Vec<u32>,
+}
+
+impl Cloth {
+    /// Ribbons round the guide strands, built from the guides' places on the (morphed) body. Each
+    /// ribbon lies at a fixed random distance and angle from its guide and turns at a fixed random
+    /// roll, so from any side some of them face the eye; u runs across, v from the root to the tip.
+    fn hair_mesh(&self, spec: &HairSpec, points: &[[f32; 3]], copies: u32, keep_every: usize) -> HairMesh {
+        let mut m = HairMesh { positions: Vec::new(), normals: Vec::new(), uvs: Vec::new(), joints: Vec::new(), weights: Vec::new(), indices: Vec::new() };
+        let at = |i: usize| points.get(i).map_or(Vec3::ZERO, |p| Vec3::from(*p));
+        for (si, &(start, len)) in spec.strands.iter().enumerate() {
+            if si % keep_every.max(1) != 0 {
+                continue;
+            }
+            let (start, len) = (start as usize, len as usize);
+            if len < 2 || start + len > points.len() {
+                continue;
+            }
+            // The frame along the strand, once.
+            let frames: Vec<(Vec3, Vec3, Vec3)> = (0..len)
+                .map(|i| {
+                    let t = (at(start + (i + 1).min(len - 1)) - at(start + i.saturating_sub(1))).normalize_or_zero();
+                    let up = if t.y.abs() > 0.95 { Vec3::X } else { Vec3::Y };
+                    let n1 = t.cross(up).normalize_or_zero();
+                    (t, n1, t.cross(n1))
+                })
+                .collect();
+            for k in 0..copies.max(1) {
+                let (r1, r2, r3) = (unit_hash(si as u32, k, 1), unit_hash(si as u32, k, 2), unit_hash(si as u32, k, 3));
+                let (phi, psi, dist) = (r1 * std::f32::consts::TAU, r3 * std::f32::consts::PI, r2.sqrt());
+                // The first copy runs along the guide itself.
+                let dist = if k == 0 { 0.0 } else { dist };
+                let base = m.positions.len() as u32;
+                for (i, &(t, n1, n2)) in frames.iter().enumerate() {
+                    let along = i as f32 / (len - 1) as f32;
+                    let spread = if along < 0.5 { spec.spread[0] + (spec.spread[1] - spec.spread[0]) * (along / 0.5) } else { spec.spread[1] + (spec.spread[2] - spec.spread[1]) * ((along - 0.5) / 0.5) };
+                    let centre = at(start + i) + (n1 * phi.cos() + n2 * phi.sin()) * (dist * spread);
+                    let side = (n1 * psi.cos() + n2 * psi.sin()) * spec.half_width;
+                    let normal = t.cross(side).normalize_or_zero();
+                    let normal = if normal == Vec3::ZERO { [0.0, 1.0, 0.0] } else { normal.to_array() };
+                    // A strand moves as one with the place it grows from (the head), so every point of it
+                    // has the root's skin weights: drawing then blends one matrix per strand, not per point.
+                    let (j, w) = (self.joints.get(start).copied().unwrap_or([0; 4]), self.weights.get(start).copied().unwrap_or([1.0, 0.0, 0.0, 0.0]));
+                    for (sign, u) in [(-1.0f32, 0.0f32), (1.0, 1.0)] {
+                        m.positions.push((centre + side * sign).to_array());
+                        m.normals.push(normal);
+                        m.uvs.push([u, along]);
+                        m.joints.push(j);
+                        m.weights.push(w);
+                    }
+                    if i + 1 < len {
+                        let a = base + 2 * i as u32;
+                        m.indices.extend([a, a + 1, a + 2, a + 2, a + 1, a + 3]);
+                    }
+                }
+            }
+        }
+        m
+    }
+}
+
 /// The material name a cloth piece's material has in the figure's model.
 pub fn cloth_material_name(item: &str, material: &str) -> String {
     format!("{item}:{material}")
@@ -354,7 +479,8 @@ impl Scene {
             .collect();
         let item = ClothRef { asset, reference: reference.to_string(), name: input.name.clone() };
         let uvs = if input.uvs.len() == cloth_pos.len() { input.uvs } else { vec![[0.0; 2]; cloth_pos.len()] };
-        let cloth = Cloth { item: item.clone(), uvs, base_of, pieces, binds, joints, weights };
+        let cap = input.hair.as_ref().map(|h| cap_triangles(&cloth_pos, &h.strands, &rest, &tris)).unwrap_or_default();
+        let cloth = Cloth { item: item.clone(), uvs, base_of, pieces, binds, joints, weights, hair: input.hair, cap };
         self.clothing.retain(|c| !(c.asset == asset && c.reference == reference));
         let list = self.morph_cache.cloths.entry(asset).or_default();
         list.retain(|c| c.item.reference != reference);
@@ -409,8 +535,81 @@ impl Scene {
     pub(crate) fn append_cloth(&self, asset: u32, base: &ModelData, body_positions: &[[f32; 3]], model: &mut ModelData) {
         let Some(list) = self.morph_cache.cloths.get(&asset) else { return };
         let Some(body) = base.meshes.first() else { return };
+        // All the hair a figure wears shares one budget of ribbon vertices (each is skinned and
+        // drawn every frame): first fewer ribbons per guide, then fewer guides.
+        let hair_points: usize = list.iter().filter_map(|c| c.hair.as_ref()).map(|h| h.strands.iter().map(|s| s.1 as usize).sum::<usize>()).sum();
+        let per_copy = (hair_points * 2).max(1);
+        let copies_cap = (HAIR_VERTEX_BUDGET / per_copy).max(1) as u32;
+        let keep_every = per_copy.div_ceil(HAIR_VERTEX_BUDGET).max(1);
         for c in list {
             let positions = c.wrapped(body_positions);
+            if let Some(spec) = &c.hair {
+                let h = c.hair_mesh(spec, &positions, spec.copies.min(copies_cap), if copies_cap <= 1 { keep_every } else { 1 });
+                model.materials.push(MaterialData {
+                    name: cloth_material_name(&c.item.name, "Hair"),
+                    base_color: [1.0; 4],
+                    base_color_texture: None,
+                    emissive: [0.0; 3],
+                    alpha_mode: photocraft_model3d::AlphaMode::Opaque,
+                    alpha_cutoff: 0.5,
+                    double_sided: true,
+                    unlit: false,
+                    normal_texture: None,
+                    normal_scale: 1.0,
+                    spec_normal_scale: 1.0,
+                    specular_texture: None,
+                    specular: Some(0.1),
+                    shininess: Some(60.0),
+                });
+                model.meshes.push(MeshData {
+                    name: format!("{} (Hair)", c.item.name),
+                    node: body.node,
+                    skin: body.skin,
+                    positions: h.positions,
+                    normals: h.normals,
+                    uvs: h.uvs,
+                    joints: h.joints,
+                    weights: h.weights,
+                    indices: h.indices,
+                    material: Some(model.materials.len() - 1),
+                });
+                // The scalp under the roots: the body's own triangles there, lifted off the skin a little.
+                let body_normals: Vec<[f32; 3]> = model.meshes.first().map(|m| m.normals.clone()).unwrap_or_default();
+                let mut slot: HashMap<u32, u32> = HashMap::new();
+                let mut used: Vec<usize> = Vec::new();
+                let indices: Vec<u32> = c
+                    .cap
+                    .iter()
+                    .flatten()
+                    .map(|&v| {
+                        *slot.entry(v).or_insert_with(|| {
+                            used.push(v as usize);
+                            (used.len() - 1) as u32
+                        })
+                    })
+                    .collect();
+                let lifted = |v: usize| {
+                    let (p, n) = (Vec3::from(body_positions.get(v).copied().unwrap_or([0.0; 3])), Vec3::from(body_normals.get(v).copied().unwrap_or([0.0; 3])));
+                    (p + n.normalize_or_zero() * 0.0006).to_array()
+                };
+                let mut scalp = model.materials.last().cloned().unwrap_or_else(|| model.materials[0].clone());
+                scalp.name = cloth_material_name(&c.item.name, "Scalp");
+                model.materials.push(scalp);
+                model.meshes.push(MeshData {
+                    name: format!("{} (Scalp)", c.item.name),
+                    node: body.node,
+                    skin: body.skin,
+                    positions: used.iter().map(|&v| lifted(v)).collect(),
+                    normals: used.iter().map(|&v| body_normals.get(v).copied().unwrap_or([0.0, 1.0, 0.0])).collect(),
+                    // The root colour: the first row of the hair picture, its opaque middle.
+                    uvs: vec![[0.5, 0.0]; used.len()],
+                    joints: used.iter().map(|&v| body.joints.get(v).copied().unwrap_or([0; 4])).collect(),
+                    weights: used.iter().map(|&v| body.weights.get(v).copied().unwrap_or([1.0, 0.0, 0.0, 0.0])).collect(),
+                    indices,
+                    material: Some(model.materials.len() - 1),
+                });
+                continue;
+            }
             let normals = c.normals(&positions);
             for (mat, tris) in &c.pieces {
                 model.materials.push(MaterialData {
@@ -424,20 +623,34 @@ impl Scene {
                     unlit: false,
                     normal_texture: None,
                     normal_scale: 1.0,
+                    spec_normal_scale: 1.0,
                     specular_texture: None,
                     specular: None,
                     shininess: None,
                 });
+                // Each piece keeps only the vertices it uses, so skinning it costs what it draws.
+                let mut slot: HashMap<u32, u32> = HashMap::new();
+                let mut used: Vec<usize> = Vec::new();
+                let indices: Vec<u32> = tris
+                    .iter()
+                    .map(|&v| {
+                        *slot.entry(v).or_insert_with(|| {
+                            used.push(v as usize);
+                            (used.len() - 1) as u32
+                        })
+                    })
+                    .collect();
+                let pick = |list: &[[f32; 3]]| used.iter().map(|&v| list.get(v).copied().unwrap_or([0.0; 3])).collect::<Vec<_>>();
                 model.meshes.push(MeshData {
                     name: format!("{} ({mat})", c.item.name),
                     node: body.node,
                     skin: body.skin,
-                    positions: positions.clone(),
-                    normals: normals.clone(),
-                    uvs: c.uvs.clone(),
-                    joints: c.joints.clone(),
-                    weights: c.weights.clone(),
-                    indices: tris.clone(),
+                    positions: pick(&positions),
+                    normals: pick(&normals),
+                    uvs: used.iter().map(|&v| c.uvs.get(v).copied().unwrap_or([0.0; 2])).collect(),
+                    joints: used.iter().map(|&v| c.joints.get(v).copied().unwrap_or([0; 4])).collect(),
+                    weights: used.iter().map(|&v| c.weights.get(v).copied().unwrap_or([1.0, 0.0, 0.0, 0.0])).collect(),
+                    indices,
                     material: Some(model.materials.len() - 1),
                 });
             }

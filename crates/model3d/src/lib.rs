@@ -109,6 +109,8 @@ pub struct MaterialData {
     pub normal_texture: Option<usize>,
     /// How strongly the normal map bends the surface (1 = as drawn).
     pub normal_scale: f32,
+    /// The same for the highlight (VaM has one number for the lit surface and one for the shine).
+    pub spec_normal_scale: f32,
     /// A picture whose red channel scales the highlight (a specular or gloss map).
     pub specular_texture: Option<usize>,
     /// Highlight strength and sharpness; `None` leaves the renderer's own values.

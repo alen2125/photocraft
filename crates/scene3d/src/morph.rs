@@ -54,6 +54,9 @@ pub struct MaterialOverride {
     /// How strongly the normal map shows, the highlight strength and its sharpness.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bump: Option<f32>,
+    /// The same for the highlight (`None`: as `bump`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spec_bump: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub specular: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -61,6 +64,19 @@ pub struct MaterialOverride {
     /// The picture's alpha is a cut-out (clothing with holes).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub alpha_mask: bool,
+    /// A fixed opacity for a material with no picture (VaM's `Alpha Adjust` on a bare material).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub opacity: Option<f32>,
+    /// The material is not drawn (`hideMaterial`).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub hidden: bool,
+    /// Pixels with less alpha than this are cut out instead of blended (hair, which cannot be sorted).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mask_cutoff: Option<f32>,
+    /// The tint multiplies the material's own colour instead of replacing it (the figure's eyes keep
+    /// the colour they were made with).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub tint_multiplies: bool,
 }
 
 /// Morph data and the unmorphed models, by asset. Not part of the scene file, never compared.
@@ -370,6 +386,13 @@ impl Scene {
 
     /// Puts the overrides' pictures and tints on a freshly built model.
     fn apply_material_overrides(&self, asset: u32, model: &mut ModelData) {
+        // Materials the look hides are not drawn: their meshes lose their triangles.
+        for o in self.material_overrides.iter().filter(|o| o.asset == asset && o.hidden) {
+            let hidden: Vec<usize> = model.materials.iter().enumerate().filter(|(_, m)| m.name == o.material).map(|(i, _)| i).collect();
+            for mesh in model.meshes.iter_mut().filter(|m| m.material.is_some_and(|i| hidden.contains(&i))) {
+                mesh.indices.clear();
+            }
+        }
         let mut index: HashMap<String, usize> = HashMap::new();
         for o in self.material_overrides.iter().filter(|o| o.asset == asset) {
             let find = |uid: &Option<String>| uid.as_ref().and_then(|u| self.morph_cache.textures.get(u).map(|t| (u.clone(), t.clone())));
@@ -394,6 +417,7 @@ impl Scene {
                 if let Some(i) = ni {
                     m.normal_texture = Some(i);
                     m.normal_scale = o.bump.filter(|b| b.is_finite()).unwrap_or(1.0).clamp(0.0, 4.0);
+                    m.spec_normal_scale = o.spec_bump.filter(|b| b.is_finite()).map_or(m.normal_scale, |b| b.clamp(0.0, 4.0));
                 }
                 if let Some(i) = si {
                     m.specular_texture = Some(i);
@@ -403,11 +427,27 @@ impl Scene {
                 if o.alpha_mask {
                     m.alpha_mode = photocraft_model3d::AlphaMode::Blend;
                 }
+                if let Some(c) = o.mask_cutoff.filter(|c| c.is_finite()) {
+                    m.alpha_mode = photocraft_model3d::AlphaMode::Mask;
+                    m.alpha_cutoff = c.clamp(0.0, 1.0);
+                }
+                if let Some(a) = o.opacity.filter(|a| a.is_finite()) {
+                    m.alpha_mode = photocraft_model3d::AlphaMode::Blend;
+                    m.base_color[3] = a.clamp(0.0, 1.0);
+                }
                 if let Some(t) = o.tint {
-                    m.base_color = [t[0], t[1], t[2], m.base_color[3]];
+                    let k = if o.tint_multiplies { [m.base_color[0] * t[0], m.base_color[1] * t[1], m.base_color[2] * t[2]] } else { t };
+                    m.base_color = [k[0], k[1], k[2], m.base_color[3]];
                 }
             }
         }
+    }
+
+    /// The picture a model's material had when it was loaded (before any look put its own on it).
+    pub fn original_picture(&self, asset: u32, material: &str) -> Option<Arc<photocraft_model3d::TextureData>> {
+        let base = self.morph_cache.base.get(&asset)?;
+        let index = base.materials.iter().find(|m| m.name == material)?.base_color_texture?;
+        base.textures.get(index)?.as_ref().map(|t| Arc::new(t.clone()))
     }
 
     /// The model of an asset as it was loaded, before any morph.

@@ -70,6 +70,9 @@ fn lin3(c: [f32; 3]) -> Vec3 {
     Vec3::new(to_linear(c[0]), to_linear(c[1]), to_linear(c[2]))
 }
 
+/// A vertex's joints and their weights.
+type Skinning = ([u16; 4], [f32; 4]);
+
 /// A texture of an imported model.
 pub(crate) struct TexRef {
     pub model: Arc<ModelData>,
@@ -96,6 +99,7 @@ pub(crate) struct Draw {
     /// A tangent-space normal map (needs texture coordinates) and how strongly it bends the normal.
     pub normal_map: Option<TexRef>,
     pub normal_scale: f32,
+    pub spec_normal_scale: f32,
     /// A map whose red channel scales the highlight.
     pub spec_map: Option<TexRef>,
     /// Drawn after the opaque things, mixed over them by its alpha (no depth write).
@@ -153,6 +157,7 @@ fn primitive_draw(node: NodeId, mesh: &photocraft_scene3d::Mesh, world: Mat4, m:
         unlit: m.unlit,
         normal_map: None,
         normal_scale: 1.0,
+        spec_normal_scale: 1.0,
         spec_map: None,
         blend: false,
     })
@@ -162,6 +167,10 @@ fn primitive_draw(node: NodeId, mesh: &photocraft_scene3d::Mesh, world: Mat4, m:
 fn model_draw(scene: &Scene, world: &std::collections::HashMap<NodeId, Mat4>, node: NodeId, mm: &ModelMesh) -> Option<Draw> {
     let model = scene.model(mm.asset)?;
     let mesh = model.meshes.get(mm.mesh as usize)?;
+    // A mesh with nothing to draw (a hidden material) is not skinned either.
+    if mesh.indices.is_empty() {
+        return None;
+    }
     let n = mesh.positions.len();
     let (positions, normals) = match mesh.skin.and_then(|s| model.skins.get(s)) {
         Some(skin) if mm.joints.len() == skin.joints.len() && mesh.joints.len() == n && mesh.weights.len() == n => {
@@ -173,22 +182,32 @@ fn model_draw(scene: &Scene, world: &std::collections::HashMap<NodeId, Mat4>, no
                 .collect();
             let mut positions = Vec::with_capacity(n);
             let mut normals = Vec::with_capacity(n);
+            // Neighbouring vertices often have the same joints and weights (hair strands, rigid parts):
+            // the blended matrix is made once for such a run.
+            let mut last: Option<(Skinning, Mat4)> = None;
             for i in 0..n {
                 let (js, ws) = (mesh.joints.get(i)?, mesh.weights.get(i)?);
-                let mut blend = Mat4::ZERO;
-                let mut total = 0.0;
-                for k in 0..4 {
-                    let w = ws[k];
-                    if w > 0.0 && w.is_finite() && let Some(m) = mats.get(js[k] as usize) {
-                        blend += *m * w;
-                        total += w;
+                let blend = match last {
+                    Some((key, m)) if key == (*js, *ws) => m,
+                    _ => {
+                        let mut blend = Mat4::ZERO;
+                        let mut total = 0.0;
+                        for k in 0..4 {
+                            let w = ws[k];
+                            if w > 0.0 && w.is_finite() && let Some(m) = mats.get(js[k] as usize) {
+                                blend += *m * w;
+                                total += w;
+                            }
+                        }
+                        if total <= 1e-6 {
+                            blend = Mat4::IDENTITY;
+                        } else {
+                            blend *= 1.0 / total;
+                        }
+                        last = Some(((*js, *ws), blend));
+                        blend
                     }
-                }
-                if total <= 1e-6 {
-                    blend = Mat4::IDENTITY;
-                } else {
-                    blend *= 1.0 / total;
-                }
+                };
                 positions.push(blend.transform_point3(Vec3::from(*mesh.positions.get(i)?)));
                 normals.push(blend.transform_vector3(Vec3::from(*mesh.normals.get(i)?)));
             }
@@ -227,6 +246,7 @@ fn model_draw(scene: &Scene, world: &std::collections::HashMap<NodeId, Mat4>, no
     let map = |t: Option<usize>| t.filter(|&t| has_uv && model.textures.get(t).is_some_and(Option::is_some)).map(|index| TexRef { model: model.clone(), index });
     let (normal_map, spec_map) = (mat.and_then(|m| map(m.normal_texture)), mat.and_then(|m| map(m.specular_texture)));
     let normal_scale = mat.map_or(1.0, |m| m.normal_scale);
+    let spec_normal_scale = mat.map_or(1.0, |m| m.spec_normal_scale);
     let uses_uv = tex.is_some() || normal_map.is_some() || spec_map.is_some();
     let (specular, shininess) = (mat.and_then(|m| m.specular).unwrap_or(0.08), mat.and_then(|m| m.shininess).unwrap_or(24.0));
     Some(Draw {
@@ -246,6 +266,7 @@ fn model_draw(scene: &Scene, world: &std::collections::HashMap<NodeId, Mat4>, no
         unlit: false,
         normal_map,
         normal_scale: if normal_scale.is_finite() { normal_scale } else { 1.0 },
+        spec_normal_scale: if spec_normal_scale.is_finite() { spec_normal_scale } else { normal_scale },
         spec_map,
         blend: mat.is_some_and(|m| m.alpha_mode == AlphaMode::Blend),
     })

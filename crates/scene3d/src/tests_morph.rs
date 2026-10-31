@@ -191,7 +191,7 @@ fn a_real_genital_morph_lands_on_the_graft_vertices_only() {
 fn skinned_figure() -> Arc<ModelData> {
     use photocraft_model3d::{AlphaMode, MaterialData};
     let mut m = (*figure()).clone();
-    let mat = |name: &str| MaterialData { name: name.into(), base_color: [0.5, 0.4, 0.3, 1.0], base_color_texture: None, emissive: [0.0; 3], alpha_mode: AlphaMode::Opaque, alpha_cutoff: 0.5, double_sided: false, unlit: false, normal_texture: None, normal_scale: 1.0, specular_texture: None, specular: None, shininess: None };
+    let mat = |name: &str| MaterialData { name: name.into(), base_color: [0.5, 0.4, 0.3, 1.0], base_color_texture: None, emissive: [0.0; 3], alpha_mode: AlphaMode::Opaque, alpha_cutoff: 0.5, double_sided: false, unlit: false, normal_texture: None, normal_scale: 1.0, spec_normal_scale: 1.0, specular_texture: None, specular: None, shininess: None };
     m.materials = vec![mat("Torso"), mat("Torso"), mat("Face")];
     Arc::new(m)
 }
@@ -248,4 +248,46 @@ fn clothing_is_bound_to_the_body_follows_its_morphs_and_comes_off() {
     s.remove_cloth(a, "Pkg.1:/Tee.vam").unwrap();
     assert_eq!(s.model(a).unwrap().meshes.len(), 2);
     assert!(s.nodes.iter().all(|n| !matches!(&n.kind, NodeKind::Mesh(mm) if mm.mesh >= 2)) && s.worn(a).is_empty());
+}
+
+#[test]
+fn an_override_can_hide_a_material_fade_it_and_tint_by_multiplying() {
+    use crate::morph::MaterialOverride;
+    let mut s = Scene::default();
+    s.add_model(skinned_figure(), None).unwrap();
+    s.material_overrides.push(MaterialOverride { asset: 1, material: "Face".into(), hidden: true, ..MaterialOverride::default() });
+    s.material_overrides.push(MaterialOverride { asset: 1, material: "Torso".into(), opacity: Some(0.25), tint: Some([0.5, 1.0, 1.0]), tint_multiplies: true, ..MaterialOverride::default() });
+    s.apply_morphs(1).unwrap();
+    let m = s.model(1).unwrap();
+    assert!(m.meshes.iter().filter(|me| me.material == Some(2)).all(|me| me.indices.is_empty()), "the hidden material draws nothing");
+    assert!(m.meshes.iter().filter(|me| me.material != Some(2)).any(|me| !me.indices.is_empty()), "the others still do");
+    assert_eq!(m.materials[0].alpha_mode, photocraft_model3d::AlphaMode::Blend);
+    assert_eq!(m.materials[0].base_color, [0.25, 0.4, 0.3, 0.25], "multiplied, not replaced; the opacity is its alpha");
+}
+
+#[test]
+fn strand_hair_is_grown_as_ribbons_round_guides_that_follow_the_body_and_comes_off() {
+    use crate::cloth::{ClothInput, HairSpec};
+    let (mut s, a) = scene_with_figure();
+    // Two guide strands of three points, rooted on the body triangle (game axes: z is mirrored).
+    let points = vec![[0.2, 0.2, -0.0], [0.2, 0.15, -0.05], [0.2, 0.1, -0.1], [0.3, 0.2, 0.0], [0.3, 0.15, -0.05], [0.3, 0.1, -0.1]];
+    let spec = HairSpec { strands: vec![(0, 3), (3, 3)], half_width: 0.001, copies: 2, spread: [0.01, 0.01, 0.01] };
+    let input = ClothInput { name: "Bob".into(), positions: points, hair: Some(spec), pieces: vec![("Hair".into(), vec![]), ("Scalp".into(), vec![])], ..ClothInput::default() };
+    s.add_cloth(a, "Pkg.1:/Bob.vam", input).unwrap();
+    let m = s.model(a).unwrap().clone();
+    assert_eq!(m.meshes.len(), 4, "the figure's two meshes, the ribbons and the scalp");
+    // 2 strands x 2 copies x 3 points x 2 sides.
+    assert_eq!(m.meshes[2].positions.len(), 24);
+    assert_eq!(m.meshes[2].indices.len(), 2 * 2 * 2 * 6, "two quads per ribbon segment, two segments");
+    assert!(m.meshes[2].joints.iter().all(|j| *j == m.meshes[2].joints[0]), "a strand takes its root's skin weights");
+    assert!(m.meshes[2].uvs.iter().any(|uv| uv[1] == 1.0) && m.meshes[2].uvs.iter().any(|uv| uv[1] == 0.0), "v runs root to tip");
+    assert_eq!(s.nodes.iter().filter(|n| matches!(&n.kind, NodeKind::Mesh(mm) if mm.asset == a && mm.mesh >= 2)).count(), 2);
+    // The body moves, the hair follows.
+    let before = m.meshes[2].positions[0];
+    s.add_morph_data(a, morph("Wide", &[(0, [0.0, 0.0, 0.5]), (1, [0.0, 0.0, 0.5]), (2, [0.0, 0.0, 0.5])], vec![])).unwrap();
+    s.set_morph(a, "Wide", 1.0).unwrap();
+    let after = s.model(a).unwrap().meshes[2].positions[0];
+    assert!((after[2] - before[2] + 0.5).abs() < 0.05, "{before:?} -> {after:?}");
+    s.remove_cloth(a, "Pkg.1:/Bob.vam").unwrap();
+    assert_eq!(s.model(a).unwrap().meshes.len(), 2);
 }

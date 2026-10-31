@@ -6,6 +6,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 mod dazmesh;
+mod hair;
 mod vap;
 mod zipfile;
 
@@ -13,8 +14,9 @@ use std::path::{Path, PathBuf};
 
 use photocraft_model3d::morph::{parse_morph, parse_vmi, Morph, MorphInfo};
 
+pub use hair::{parse_hair, HairStrands};
 pub use dazmesh::{parse_dazmesh, DazMesh, Poly, WrapVert};
-pub use vap::{hsv_to_rgb, item_reference, localize, parse_item_materials, parse_wrap_params, parse_storables, parse_vap, part_materials, Appearance, PartLook, VapMorph, PART_IDS};
+pub use vap::{hair_look, hsv_to_rgb, parse_item_hair, HairLook, item_reference, localize, parse_item_materials, parse_wrap_params, parse_storables, parse_vap, part_materials, Appearance, PartLook, VapMorph, PART_IDS};
 pub use zipfile::{ZipEntry, ZipFile};
 
 /// Largest single file read from the install (a morph, a texture).
@@ -156,6 +158,28 @@ pub struct GameLibrary {
     pub skipped: Vec<(PathBuf, String)>,
     /// Morph files found outside the female/male (and genitalia) folders: listed, never applied.
     pub other_morphs: usize,
+    /// Every picture in the install by lower-case file name, as references (see [`GameLibrary::read_file`]).
+    files_by_name: std::collections::HashMap<String, Vec<String>>,
+    /// How many files were found by name because their own reference did not open.
+    matched_by_name: std::sync::atomic::AtomicUsize,
+}
+
+/// Most pictures indexed by name.
+pub const MAX_NAMED_FILES: usize = 2_000_000;
+
+fn is_picture(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    [".png", ".jpg", ".jpeg", ".tif", ".tiff", ".tga", ".bmp"].iter().any(|e| n.ends_with(e))
+}
+
+/// The lower-case file name of a reference or path.
+fn base_name(reference: &str) -> String {
+    reference.rsplit(['/', '\\']).next().unwrap_or(reference).to_ascii_lowercase()
+}
+
+/// A package's version number (`Maker.Pack.12` is 12; none is 0).
+fn package_version(reference: &str) -> u32 {
+    reference.split_once(":/").map_or(reference, |(p, _)| p).rsplit('.').next().and_then(|v| v.parse().ok()).unwrap_or(0)
 }
 
 /// The materials of a VaM figure that each skin texture region (`face`, `torso`, `limbs`,
@@ -217,7 +241,7 @@ impl GameLibrary {
         if !root.join("Custom").is_dir() && !root.join("AddonPackages").is_dir() {
             return Err(VamError::NotAnInstall(root.display().to_string()));
         }
-        let mut lib = GameLibrary { root: root.to_path_buf(), packages: Vec::new(), morphs: Vec::new(), presets: Vec::new(), items: Vec::new(), eyes: Vec::new(), skipped: Vec::new(), other_morphs: 0 };
+        let mut lib = GameLibrary { root: root.to_path_buf(), packages: Vec::new(), morphs: Vec::new(), presets: Vec::new(), items: Vec::new(), eyes: Vec::new(), skipped: Vec::new(), other_morphs: 0, files_by_name: Default::default(), matched_by_name: Default::default() };
         // Loose morphs.
         let base = root.join(MORPH_DIR);
         let mut files = Vec::new();
@@ -246,6 +270,16 @@ impl GameLibrary {
             let Ok(rel) = p.strip_prefix(root) else { continue };
             let thumbnail = ["jpg", "jpeg", "png"].iter().map(|e| p.with_extension(e)).find(|t| t.is_file()).and_then(|t| t.strip_prefix(root).ok().map(|r| r.to_string_lossy().replace('\\', "/")));
             lib.presets.push(Preset { name: name.to_string(), package: String::new(), reference: rel.to_string_lossy().replace('\\', "/"), thumbnail });
+        }
+        // Every loose picture, by name, for finding a file whose own reference does not open.
+        for dir in ["Custom", "Saves"] {
+            let mut pics = Vec::new();
+            walk(&root.join(dir), 0, &mut pics, MAX_NAMED_FILES);
+            for p in pics.iter().filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(is_picture)) {
+                let Ok(rel) = p.strip_prefix(root) else { continue };
+                let reference = rel.to_string_lossy().replace('\\', "/");
+                lib.files_by_name.entry(base_name(&reference)).or_default().push(reference);
+            }
         }
         // Loose eye pictures.
         let mut textures = Vec::new();
@@ -283,6 +317,11 @@ impl GameLibrary {
                     let index = lib.packages.len();
                     let prefix = format!("{MORPH_DIR}/");
                     let look_prefix = format!("{LOOK_DIR}/");
+                    for e in z.entries.iter().filter(|e| is_picture(&e.name)) {
+                        if lib.files_by_name.len() < MAX_NAMED_FILES {
+                            lib.files_by_name.entry(base_name(&e.name)).or_default().push(format!("{name}:/{}", e.name));
+                        }
+                    }
                     for e in z.entries.iter().filter(|e| e.name.starts_with(&format!("{TEXTURE_DIR}/")) && is_eye_picture(&e.name)) {
                         if lib.eyes.len() >= MAX_ITEMS {
                             break;
@@ -444,8 +483,44 @@ impl GameLibrary {
     }
 
     /// A file by the reference a look uses: `Package.N:/path` inside a package, or a path under the
-    /// game folder (or absolute).
+    /// game folder (or absolute). A picture whose own reference does not open (a package that is not
+    /// installed, another version, a moved file) is looked for by its file name everywhere in the
+    /// install, and the closest match is read.
     pub fn read_file(&self, reference: &str) -> Result<Vec<u8>, VamError> {
+        match self.read_exact(reference) {
+            Ok(bytes) => Ok(bytes),
+            Err(e) => {
+                if let Some(alt) = self.find_by_name(reference)
+                    && let Ok(bytes) = self.read_exact(&alt)
+                {
+                    self.matched_by_name.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    return Ok(bytes);
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// How many pictures were found by name since the last call.
+    pub fn take_name_matches(&self) -> usize {
+        self.matched_by_name.swap(0, std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The reference of the picture that best stands in for `reference`: the same file name, the most
+    /// path parts in common (counted from the end), then the newest package.
+    pub fn find_by_name(&self, reference: &str) -> Option<String> {
+        if !is_picture(reference) {
+            return None;
+        }
+        let wanted: Vec<String> = reference.split_once(":/").map_or(reference, |(_, p)| p).replace('\\', "/").to_ascii_lowercase().split('/').map(str::to_string).collect();
+        let tail_match = |candidate: &str| -> usize {
+            let have: Vec<String> = candidate.split_once(":/").map_or(candidate, |(_, p)| p).to_ascii_lowercase().split('/').map(str::to_string).collect();
+            wanted.iter().rev().zip(have.iter().rev()).take_while(|(a, b)| a == b).count()
+        };
+        self.files_by_name.get(&base_name(reference))?.iter().filter(|c| c.as_str() != reference).max_by_key(|c| (tail_match(c), package_version(c))).cloned()
+    }
+
+    fn read_exact(&self, reference: &str) -> Result<Vec<u8>, VamError> {
         if let Some((package, path)) = reference.split_once(":/") {
             if let Some(name) = self.package_named(package)
                 && let Some((_, z)) = self.packages.iter().find(|(n, _)| *n == name)
@@ -601,6 +676,21 @@ mod tests {
         assert_eq!(lib.read_file(&with_extension(&bob.reference, "vab")).unwrap(), b"mesh");
         assert!(lib.find_item("Maker.Presets.1:/Custom/Hair/Female/Maker/Nobody.vam").is_none());
         assert_eq!(lib.eyes.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["Blue_Eye"], "normal maps are not eye pictures");
+    }
+
+    #[test]
+    fn a_picture_whose_reference_does_not_open_is_found_by_its_name() {
+        let lib = GameLibrary::open(&install()).unwrap();
+        // Another version of the package, and a package that is not installed at all.
+        assert_eq!(lib.read_file("Maker.Looks.1:/Custom/Atom/Person/Textures/skin.jpg").unwrap(), b"jpegbytes");
+        assert_eq!(lib.read_file("Nobody.Here.3:/Whatever/Folder/SKIN.JPG").unwrap(), b"jpegbytes", "names match without case");
+        assert!(lib.take_name_matches() >= 2 && lib.take_name_matches() == 0);
+        // Of two candidates the one with more of the path in common wins, then the newer package.
+        assert_eq!(lib.find_by_name("X.1:/Custom/Atom/Person/Textures/skin.jpg").as_deref(), Some("Maker.Looks.10:/Custom/Atom/Person/Textures/skin.jpg"));
+        // The exact reference is used when it opens; things that are not pictures are never guessed.
+        assert_eq!(lib.take_name_matches(), 0);
+        assert!(lib.read_file("Maker.Looks.2:/Custom/nope.vmi").is_err());
+        assert!(lib.read_file("../skin.jpg").is_err() || lib.take_name_matches() > 0, "no path out of the folder is opened");
     }
 
     #[test]

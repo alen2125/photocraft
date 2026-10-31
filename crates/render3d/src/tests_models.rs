@@ -45,6 +45,7 @@ fn quad_model(skinned: bool, mode: AlphaMode) -> Arc<ModelData> {
             unlit: false,
             normal_texture: None,
             normal_scale: 1.0,
+            spec_normal_scale: 1.0,
             specular_texture: None,
             specular: None,
             shininess: None,
@@ -218,4 +219,26 @@ fn a_blending_material_mixes_over_what_is_behind_it_and_leaves_the_depth_alone()
     s.node_mut(front).unwrap().transform.translation = [0.0, 0.0, 0.5];
     let c = px(&render(&s, &opts()).unwrap(), 32, 32);
     assert!(c[0] > 60 && c[2] > 60 && c[1] < 20, "half red over blue is a mix of both: {c:?}");
+}
+
+#[test]
+fn the_two_normal_strengths_shape_the_light_and_the_shine_separately() {
+    // The map tilts the surface towards a light along the plane; with no strength for the light the
+    // quad stays dark, with a strength it is lit. The shine uses its own number.
+    let lit = |light_scale: f32, shine_scale: f32| {
+        let mut model = (*quad_model(false, AlphaMode::Opaque)).clone();
+        model.textures[0] = Some(TextureData { width: 1, height: 1, rgba: Arc::new(vec![255, 255, 255, 255]) });
+        model.textures.push(Some(TextureData { width: 1, height: 1, rgba: Arc::new(vec![255, 128, 128, 255]) }));
+        let m = &mut model.materials[0];
+        (m.normal_texture, m.normal_scale, m.spec_normal_scale) = (Some(1), light_scale, shine_scale);
+        let mut s = bright_scene(Arc::new(model));
+        s.ambient = [0.0; 3];
+        s.nodes.retain(|n| !matches!(n.kind, NodeKind::Light(_)));
+        let mut light = Node { kind: NodeKind::Light(photocraft_scene3d::Light { kind: photocraft_scene3d::LightKind::Directional, intensity: 2.0, ..Default::default() }), ..Node::default() };
+        light.transform.rotation = [0.0, 90.0, 0.0];
+        s.add(light).unwrap();
+        px(&render(&s, &opts()).unwrap(), 32, 32)
+    };
+    let (flat, bent) = (lit(0.0, 1.0), lit(1.0, 1.0));
+    assert!(flat[0] < 40 && bent[0] > flat[0] + 60, "strength 0 keeps the surface unlit, 1 lights it: {flat:?} {bent:?}");
 }

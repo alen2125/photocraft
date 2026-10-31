@@ -244,7 +244,7 @@ pub(crate) fn restore_morphs(ed: &mut Scene3dEditor) {
     // Pictures of the skin and of worn items, and the worn items' meshes, come back from the install.
     let lib = ed.vam.library.clone();
     let mut failed = Vec::new();
-    let uids: Vec<String> = ed.scene.material_overrides.iter().flat_map(|o| [o.texture.clone(), o.normal.clone(), o.specular_map.clone()]).flatten().filter(|u| !u.contains('+') && !u.starts_with("average of ")).collect();
+    let uids: Vec<String> = ed.scene.material_overrides.iter().flat_map(|o| [o.texture.clone(), o.normal.clone(), o.specular_map.clone()]).flatten().filter(|u| !u.contains('+') && !u.starts_with("average of ") && !u.starts_with("hair:")).collect();
     for uid in uids {
         fetch_picture(ed, lib.as_deref(), &mut failed, &uid);
     }
@@ -253,7 +253,7 @@ pub(crate) fn restore_morphs(ed: &mut Scene3dEditor) {
         for (asset, reference) in worn {
             match l.find_item(&reference) {
                 Some(item) => {
-                    if let Err(e) = wear_item(ed, l, asset, item, &[], false) {
+                    if let Err(e) = wear_item(ed, l, asset, item, &ItemLooks::default(), false) {
                         missing.push(e);
                     }
                 }
@@ -629,7 +629,7 @@ fn items_tab(ui: &mut egui::Ui, ed: &mut Scene3dEditor, lib: Option<&GameLibrary
         rows.get(pos).and_then(|&i| items.get(i)).and_then(|&k| lib.items.get(k)).map(|it| (it.name.clone(), if it.package.is_empty() { it.folder.clone() } else { it.package.clone() }, it.thumbnail.clone()))
     });
     if let Some(item) = pick.and_then(|pos| rows.get(pos)).and_then(|&i| items.get(i)).and_then(|&k| lib.items.get(k)) {
-        match wear_item(ed, lib, asset, item, &[], true) {
+        match wear_item(ed, lib, asset, item, &ItemLooks::default(), true) {
             Ok(()) => ed.status = format!("Put on {}", item.name),
             Err(e) => ed.status = e,
         }
@@ -637,24 +637,122 @@ fn items_tab(ui: &mut egui::Ui, ed: &mut Scene3dEditor, lib: Option<&GameLibrary
     }
 }
 
-/// Puts an item on the figure: its mesh bound to the body, and its materials set from the item's own
-/// defaults and then from `look_parts` (what a look says about this item's materials).
-pub(crate) fn wear_item(ed: &mut Scene3dEditor, lib: &GameLibrary, asset: u32, item: &Item, look_parts: &[photocraft_vam::PartLook], set_materials: bool) -> Result<(), String> {
-    let mesh = photocraft_vam::parse_dazmesh(&lib.read_file(&photocraft_vam::with_extension(&item.reference, "vab")).map_err(|e| e.to_string())?).map_err(|e| {
-        // Strand hair is made by the game at run time (RuntimeHairGeometryCreator); there is no mesh to read.
-        if e.to_string().contains("no DAZMesh section") { format!("{} is strand hair (not supported yet)", item.name) } else { format!("{}: {e}", item.name) }
-    })?;
-    if mesh.base.is_empty() {
-        return Err(format!("{} has no mesh (hair made of strands is not supported yet)", item.name));
+/// What a look says about the items it puts on: their material settings and their hair looks.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct ItemLooks<'a> {
+    pub(crate) parts: &'a [photocraft_vam::PartLook],
+    pub(crate) hair: &'a [(String, photocraft_vam::HairLook)],
+}
+
+/// The picture a strand hair material has: the colour from the root (top) to the tip, and an
+/// opacity that is full along the middle of the ribbon and falls to nothing at its edges.
+fn hair_gradient(look: &photocraft_vam::HairLook) -> photocraft_scene3d::model3d::TextureData {
+    const W: usize = 8;
+    const H: usize = 64;
+    let mut rgba = Vec::with_capacity(W * H * 4);
+    for y in 0..H {
+        let t = (y as f32 / (H - 1) as f32).powf(look.color_rolloff);
+        for x in 0..W {
+            let edge = 1.0 - (2.0 * (x as f32 + 0.5) / W as f32 - 1.0).abs();
+            for c in 0..3 {
+                let v = look.root_color[c] + (look.tip_color[c] - look.root_color[c]) * t;
+                rgba.push((v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+            }
+            rgba.push((edge.clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+        }
+    }
+    photocraft_scene3d::model3d::TextureData { width: W as u32, height: H as u32, rgba: Arc::new(rgba) }
+}
+
+/// The name a hair look's picture goes by (its colours, so a saved scene can make it again).
+fn hair_picture_uid(look: &photocraft_vam::HairLook) -> String {
+    let c = |v: [f32; 3]| format!("{:.3},{:.3},{:.3}", v[0], v[1], v[2]);
+    format!("hair:{}:{}:{:.2}", c(look.root_color), c(look.tip_color), look.color_rolloff)
+}
+
+/// The hair look a picture name stands for.
+fn hair_look_from_uid(uid: &str) -> Option<photocraft_vam::HairLook> {
+    let mut parts = uid.strip_prefix("hair:")?.split(':');
+    let rgb = |s: &str| -> Option<[f32; 3]> {
+        let v: Vec<f32> = s.split(',').filter_map(|n| n.parse().ok()).collect();
+        <[f32; 3]>::try_from(v).ok()
+    };
+    Some(photocraft_vam::HairLook { root_color: rgb(parts.next()?)?, tip_color: rgb(parts.next()?)?, color_rolloff: parts.next()?.parse().ok()?, ..Default::default() })
+}
+
+/// Puts strand hair on the figure: the guide strands bound to the body, drawn as ribbons.
+fn wear_hair(ed: &mut Scene3dEditor, lib: &GameLibrary, asset: u32, item: &Item, bytes: &[u8], looks: &ItemLooks, set_materials: bool) -> Result<(), String> {
+    let strands = photocraft_vam::parse_hair(bytes).map_err(|e| format!("{}: {e}", item.name))?;
+    if strands.strands.is_empty() {
+        return Err(format!("{} has no strands", item.name));
     }
     let meta: serde_json::Value = lib.read_file(&item.reference).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
     let text = |k: &str| meta.get(k).and_then(serde_json::Value::as_str).unwrap_or_default().to_string();
     let uid = Some(text("uid")).filter(|u| !u.is_empty()).unwrap_or_else(|| item.name.clone());
-    let internal = format!("{}:{uid}", text("creatorName"));
+    let internal = if uid.contains(':') { uid.clone() } else { format!("{}:{uid}", text("creatorName")) };
+    let vaj = lib.read_file(&photocraft_vam::with_extension(&item.reference, "vaj")).unwrap_or_default();
+    let sim_id = format!("{internal}Sim");
+    let known = looks.hair.iter().find(|(id, _)| *id == sim_id).map(|(_, h)| h.clone()).or_else(|| photocraft_vam::parse_item_hair(&vaj, &uid));
+    let hair_material = photocraft_scene3d::cloth::cloth_material_name(&item.name, "Hair");
+    // A saved scene keeps the look in the name of its picture.
+    let saved = ed.scene.material_overrides.iter().find(|o| o.asset == asset && o.material == hair_material).and_then(|o| o.texture.as_deref()).and_then(hair_look_from_uid);
+    let look = if set_materials { known.unwrap_or_default() } else { saved.or(known).unwrap_or_default() };
+    // The points of every strand, thinned (every other point) when a strand is long, as one list.
+    let step = if strands.segments > 24 { 2 } else { 1 };
+    let mut positions: Vec<[f32; 3]> = Vec::new();
+    let mut ranges: Vec<(u32, u32)> = Vec::new();
+    for s in &strands.strands {
+        let start = positions.len() as u32;
+        positions.extend(s.iter().step_by(step));
+        if (s.len() - 1) % step != 0 {
+            positions.extend(s.last());
+        }
+        ranges.push((start, positions.len() as u32 - start));
+    }
+    // Ribbons per guide: a fifth of the game's hairs per guide (the scene trims them to its budget).
+    let copies = (look.hair_multiplier / 5.0).round().clamp(1.0, 3.0) as u32;
+    let spread = look.spread.map(|f| f * look.max_spread * 0.5);
+    let spec = photocraft_scene3d::cloth::HairSpec { strands: ranges, half_width: 0.0010, copies, spread };
+    let input = ClothInput { name: item.name.clone(), positions, hair: Some(spec), pieces: vec![("Hair".to_string(), Vec::new()), ("Scalp".to_string(), Vec::new())], ..ClothInput::default() };
+    ed.scene.add_cloth(asset, &item.reference, input).map_err(|e| e.to_string())?;
+    let uid_picture = hair_picture_uid(&look);
+    ed.scene.add_texture_data(&uid_picture, Arc::new(hair_gradient(&look)));
+    if set_materials {
+        ed.scene.material_overrides.retain(|o| !o.material.starts_with(&format!("{}:", item.name)));
+        for part in ["Hair", "Scalp"] {
+            let material = photocraft_scene3d::cloth::cloth_material_name(&item.name, part);
+            ed.scene.material_overrides.push(photocraft_scene3d::morph::MaterialOverride { asset, material, texture: Some(uid_picture.clone()), mask_cutoff: Some(0.4), specular: Some(0.08), shininess: Some(60.0), ..Default::default() });
+        }
+    }
+    ed.scene.apply_morphs(asset).map_err(|e| e.to_string())?;
+    ed.touch();
+    ed.pending_change = true;
+    Ok(())
+}
+
+/// Puts an item on the figure: its mesh bound to the body, and its materials set from the item's own
+/// defaults and then from `look_parts` (what a look says about this item's materials).
+pub(crate) fn wear_item(ed: &mut Scene3dEditor, lib: &GameLibrary, asset: u32, item: &Item, looks: &ItemLooks, set_materials: bool) -> Result<(), String> {
+    let look_parts = looks.parts;
+    let bytes = lib.read_file(&photocraft_vam::with_extension(&item.reference, "vab")).map_err(|e| e.to_string())?;
+    let mesh = match photocraft_vam::parse_dazmesh(&bytes) {
+        Ok(m) => m,
+        // Strand hair is made of guide strands, not of a mesh.
+        Err(e) if e.to_string().contains("no DAZMesh section") => return wear_hair(ed, lib, asset, item, &bytes, looks, set_materials),
+        Err(e) => return Err(format!("{}: {e}", item.name)),
+    };
+    if mesh.base.is_empty() {
+        return Err(format!("{} has no mesh", item.name));
+    }
+    let meta: serde_json::Value = lib.read_file(&item.reference).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    let text = |k: &str| meta.get(k).and_then(serde_json::Value::as_str).unwrap_or_default().to_string();
+    let uid = Some(text("uid")).filter(|u| !u.is_empty()).unwrap_or_else(|| item.name.clone());
+    // Some items carry the creator in their uid already (`Creator:Name`).
+    let internal = if uid.contains(':') { uid.clone() } else { format!("{}:{uid}", text("creatorName")) };
     let vaj = lib.read_file(&photocraft_vam::with_extension(&item.reference, "vaj")).unwrap_or_default();
     let (surface_offset, thickness) = photocraft_vam::parse_wrap_params(&vaj, &uid);
     let wrap = mesh.wrap.iter().map(|w| photocraft_scene3d::cloth::WrapVert { vertices: w.vertices, normal: w.normal, tangent1: w.tangent1, tangent2: w.tangent2, normal_dot: w.normal_dot, tangent1_dot: w.tangent1_dot, tangent2_dot: w.tangent2_dot }).collect();
-    let input = ClothInput { wrap, surface_offset, thickness, name: item.name.clone(), positions: mesh.uv_positions(), uvs: mesh.uvs.iter().map(|uv| [uv[0], 1.0 - uv[1]]).collect(), uv_base: mesh.uv_base(), pieces: mesh.materials.iter().cloned().zip(mesh.triangles_by_material()).filter(|(_, t)| !t.is_empty()).collect() };
+    let input = ClothInput { hair: None, wrap, surface_offset, thickness, name: item.name.clone(), positions: mesh.uv_positions(), uvs: mesh.uvs.iter().map(|uv| [uv[0], 1.0 - uv[1]]).collect(), uv_base: mesh.uv_base(), pieces: mesh.materials.iter().cloned().zip(mesh.triangles_by_material()).filter(|(_, t)| !t.is_empty()).collect() };
     let pieces: Vec<String> = input.pieces.iter().map(|(m, _)| m.clone()).collect();
     ed.scene.add_cloth(asset, &item.reference, input).map_err(|e| e.to_string())?;
     if !set_materials {
@@ -675,8 +773,13 @@ pub(crate) fn wear_item(ed: &mut Scene3dEditor, lib: &GameLibrary, asset: u32, i
         if let Some(over) = look_parts.iter().find(|p| keys.contains(&p.id)) {
             part = Some(over.clone());
         }
+        // An item with one material can name its settings differently from its mesh material (hair:
+        // `<uid>KrayonScalpMaterial`, eye layers: `<uid>MaterialCombined`): the one it has is its.
+        if part.is_none() && pieces.len() == 1 {
+            part = look_parts.iter().find(|p| p.id.starts_with(&internal) && p.id.contains("Material")).cloned().or_else(|| defaults.first().filter(|_| defaults.len() == 1).map(|(_, p)| p.clone()));
+        }
         let Some(part) = part else { continue };
-        apply_part(ed, library, &mut failed, asset, &[photocraft_scene3d::cloth::cloth_material_name(&item.name, mat)], &part, &item.reference);
+        apply_part(ed, library, &mut failed, &PartTarget { asset, materials: &[photocraft_scene3d::cloth::cloth_material_name(&item.name, mat)], context: &item.reference, figure_part: false }, &part);
     }
     ed.scene.apply_morphs(asset).map_err(|e| e.to_string())?;
     ed.touch();
@@ -695,13 +798,41 @@ fn join_some(v: &[String], max: usize) -> String {
 
 /// Decodes a skin picture from the install into the scene's texture format.
 fn load_texture(lib: &GameLibrary, reference: &str) -> Result<Arc<photocraft_scene3d::model3d::TextureData>, String> {
-    let bytes = lib.read_file(reference).map_err(|e| e.to_string())?;
-    let img = photocraft_codecs::decode(&bytes).map_err(|e| format!("{reference}: {e}"))?;
+    let short = reference.rsplit(['/', '\\']).next().unwrap_or(reference).to_string();
+    let bytes = lib.read_file(reference).map_err(|_| format!("{short} (not in the install)"))?;
+    let img = photocraft_codecs::decode(&bytes).map_err(|e| format!("{short}: {e}"))?;
     let (width, height) = img.dimensions();
-    if width.max(height) > photocraft_scene3d::model3d::MAX_TEXTURE_EDGE {
-        return Err(format!("{reference}: {width}x{height} is larger than the {} pixels a picture may have", photocraft_scene3d::model3d::MAX_TEXTURE_EDGE));
+    let (w, h) = (width as usize, height as usize);
+    let max = photocraft_scene3d::model3d::MAX_TEXTURE_EDGE as usize;
+    if w == 0 || h == 0 || w.max(h) > 16_384 {
+        return Err(format!("{short}: {width}x{height} is not a picture size this editor takes"));
     }
-    Ok(Arc::new(photocraft_scene3d::model3d::TextureData { width, height, rgba: Arc::new(img.to_rgba8()) }))
+    let rgba = img.to_rgba8();
+    // A picture over the limit (some are 8192 wide) is shrunk by whole factors, averaging each block.
+    let k = w.max(h).div_ceil(max);
+    if k <= 1 {
+        return Ok(Arc::new(photocraft_scene3d::model3d::TextureData { width, height, rgba: Arc::new(rgba) }));
+    }
+    let (nw, nh) = (w / k, h / k);
+    let mut out = Vec::with_capacity(nw * nh * 4);
+    for y in 0..nh {
+        for x in 0..nw {
+            let mut sum = [0u32; 4];
+            for dy in 0..k {
+                for dx in 0..k {
+                    let i = ((y * k + dy) * w + x * k + dx) * 4;
+                    if let Some(p) = rgba.get(i..i + 4) {
+                        for (s, v) in sum.iter_mut().zip(p) {
+                            *s += u32::from(*v);
+                        }
+                    }
+                }
+            }
+            let n = (k * k) as u32;
+            out.extend(sum.map(|s| (s / n) as u8));
+        }
+    }
+    Ok(Arc::new(photocraft_scene3d::model3d::TextureData { width: nw as u32, height: nh as u32, rgba: Arc::new(out) }))
 }
 
 /// A one-pixel picture of the average colour of another (skipping transparent pixels).
@@ -744,7 +875,7 @@ type Picture = photocraft_scene3d::model3d::TextureData;
 /// A skin picture with its decal (a picture with see-through parts: tattoos, make-up) laid over it
 /// and its detail map (fine grain, grey = no change) multiplied in. Both are scaled to the base.
 /// With no base the tint (or white) is the ground, at the decal's size.
-fn bake_overlays(base: Option<&Picture>, tint: Option<[f32; 3]>, decal: Option<&Picture>, detail: Option<&Picture>, alpha: Option<&Picture>) -> Option<Picture> {
+fn bake_overlays(base: Option<&Picture>, tint: Option<[f32; 3]>, decal: Option<&Picture>, detail: Option<&Picture>, alpha: Option<&Picture>, adjust: f32) -> Option<Picture> {
     let size_of = |t: &Picture| (t.width as usize, t.height as usize);
     let (w, h) = base.map(size_of).or_else(|| decal.map(size_of)).or_else(|| detail.map(size_of)).or_else(|| alpha.map(size_of))?;
     if w == 0 || h == 0 || w.checked_mul(h)?.checked_mul(4)? > 512 * 1024 * 1024 {
@@ -773,9 +904,9 @@ fn bake_overlays(base: Option<&Picture>, tint: Option<[f32; 3]>, decal: Option<&
                     px[c] = (f32::from(px[c]) * k).clamp(0.0, 255.0) as u8;
                 }
             }
-            if let Some(m) = alpha.and_then(|m| at(m, x, y)) {
-                px[3] = m[0];
-            }
+            // Opacity: the alpha mask (else the picture's own alpha), plus `Alpha Adjust`.
+            let source = alpha.and_then(|m| at(m, x, y)).map(|m| m[0]).or_else(|| base.and_then(|b| at(b, x, y)).map(|b| b[3])).unwrap_or(255);
+            px[3] = ((f32::from(source) / 255.0 + adjust).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
             out.extend_from_slice(&px);
         }
     }
@@ -784,17 +915,29 @@ fn bake_overlays(base: Option<&Picture>, tint: Option<[f32; 3]>, decal: Option<&
 
 /// Sets what a material storable says on the figure's materials called `materials`: pictures (with
 /// decal and alpha mask baked in), tint, normal and specular maps. True when anything was set.
-fn apply_part(ed: &mut Scene3dEditor, lib: Option<&GameLibrary>, failed: &mut Vec<String>, asset: u32, materials: &[String], part: &photocraft_vam::PartLook, package: &str) -> bool {
+/// Where a material storable's settings go: the figure and the materials, the context its relative
+/// references are read against (a package or the item's `.vam`), and whether they are the figure's own.
+struct PartTarget<'a> {
+    asset: u32,
+    materials: &'a [String],
+    context: &'a str,
+    figure_part: bool,
+}
+
+fn apply_part(ed: &mut Scene3dEditor, lib: Option<&GameLibrary>, failed: &mut Vec<String>, target: &PartTarget, part: &photocraft_vam::PartLook) -> bool {
+    let PartTarget { asset, materials, context: package, figure_part } = *target;
     let r = |s: &str| photocraft_vam::item_reference(s, package);
     let (diffuse_url, decal_url, alpha_url) = (r(&part.diffuse), r(&part.decal), r(&part.alpha));
     let diffuse = fetch_picture(ed, lib, failed, &diffuse_url);
     let decal = fetch_picture(ed, lib, failed, &decal_url);
     let alpha = fetch_picture(ed, lib, failed, &alpha_url);
+    let adjust = part.alpha_adjust.filter(|a| a.abs() > 1e-4).unwrap_or(0.0);
     let mut picture = diffuse.as_ref().map(|_| diffuse_url.clone());
-    if decal.is_some() || alpha.is_some() {
-        let uid = format!("{diffuse_url}+{decal_url}+{alpha_url}");
+    // A decal, an alpha mask or an `Alpha Adjust` over a picture is baked into the picture's alpha.
+    if decal.is_some() || alpha.is_some() || (adjust != 0.0 && diffuse.is_some()) {
+        let uid = format!("{diffuse_url}+{decal_url}+{alpha_url}+{adjust}");
         if !ed.scene.has_texture_data(&uid)
-            && let Some(t) = bake_overlays(diffuse.as_deref(), part.color, decal.as_deref(), None, alpha.as_deref())
+            && let Some(t) = bake_overlays(diffuse.as_deref(), part.color, decal.as_deref(), None, alpha.as_deref(), adjust)
         {
             ed.scene.add_texture_data(&uid, Arc::new(t));
         }
@@ -802,11 +945,13 @@ fn apply_part(ed: &mut Scene3dEditor, lib: Option<&GameLibrary>, failed: &mut Ve
             picture = Some(uid);
         }
     }
+    // With no picture to carry it, the opacity is a number on the material.
+    let opacity = (picture.is_none() && adjust != 0.0).then(|| (1.0 + adjust).clamp(0.0, 1.0));
     let normal = Some(r(&part.normal)).filter(|u| fetch_picture(ed, lib, failed, u).is_some());
     let spec_map = [r(&part.specular), r(&part.gloss_map)].into_iter().find(|u| fetch_picture(ed, lib, failed, u).is_some());
     // White on a picture means no change; on a bare material it is the colour.
-    let tint = part.color.filter(|c| picture.is_none() || c.iter().any(|v| *v < 0.999));
-    if picture.is_none() && normal.is_none() && spec_map.is_none() && tint.is_none() {
+    let tint = part.color.filter(|c| (picture.is_none() && !figure_part) || c.iter().any(|v| *v < 0.999));
+    if picture.is_none() && normal.is_none() && spec_map.is_none() && tint.is_none() && opacity.is_none() && !part.hidden {
         return false;
     }
     for material in materials {
@@ -818,9 +963,14 @@ fn apply_part(ed: &mut Scene3dEditor, lib: Option<&GameLibrary>, failed: &mut Ve
             normal: normal.clone(),
             specular_map: spec_map.clone(),
             bump: part.bumpiness,
+            spec_bump: part.spec_bumpiness,
             specular: part.specular_intensity.map(|v| v * 0.04),
             shininess: part.gloss.map(|g| 4.0 + g * 8.0),
-            alpha_mask: !alpha_url.is_empty() && alpha.is_some(),
+            alpha_mask: (alpha.is_some() || adjust != 0.0) && picture.is_some(),
+            opacity,
+            hidden: part.hidden,
+            mask_cutoff: None,
+            tint_multiplies: figure_part,
         });
     }
     true
@@ -866,11 +1016,6 @@ pub(crate) fn import_look_from(ed: &mut Scene3dEditor, name: &str, bytes: &[u8],
     let lib = lib.as_deref();
     let mut pictures = 0;
     let mut failed = Vec::new();
-    // The normal maps' strength: VaM has one number for the diffuse light and one for the highlight.
-    let bump = match (look.diffuse_bumpiness, look.specular_bumpiness) {
-        (Some(a), Some(b)) => Some((a + b) / 2.0),
-        (a, b) => a.or(b),
-    };
     let url_of = |key: String| look.textures.iter().find(|(k, _)| *k == key).map(|(_, u)| u.clone()).unwrap_or_default();
     for region in regions {
         let diffuse_url = url_of(format!("{region}DiffuseUrl"));
@@ -884,9 +1029,11 @@ pub(crate) fn import_look_from(ed: &mut Scene3dEditor, name: &str, bytes: &[u8],
         let spec_map = [format!("{region}SpecularUrl"), format!("{region}GlossUrl")].into_iter().map(url_of).find(|u| fetch_picture(ed, lib, &mut failed, u).is_some());
         let mut picture = diffuse.as_ref().map(|_| diffuse_url.clone());
         if decal.is_some() || detail.is_some() {
-            let uid = format!("{diffuse_url}+{decal_url}+{detail_url}");
+            // With no picture of its own, the decal goes over the one the figure was made with.
+            let ground = diffuse.clone().or_else(|| photocraft_vam::skin_region_materials(gender, region).first().and_then(|m| ed.scene.original_picture(asset, m)));
+            let uid = format!("{}+{decal_url}+{detail_url}", if diffuse.is_some() { diffuse_url.clone() } else { format!("figure {region}") });
             if !ed.scene.has_texture_data(&uid)
-                && let Some(t) = bake_overlays(diffuse.as_deref(), look.skin_color, decal.as_deref(), detail.as_deref(), None)
+                && let Some(t) = bake_overlays(ground.as_deref(), look.skin_color, decal.as_deref(), detail.as_deref(), None, 0.0)
             {
                 ed.scene.add_texture_data(&uid, Arc::new(t));
             }
@@ -913,10 +1060,15 @@ pub(crate) fn import_look_from(ed: &mut Scene3dEditor, name: &str, bytes: &[u8],
                     tint: look.skin_color,
                     normal: normal.clone(),
                     specular_map: spec_map.clone(),
-                    bump,
+                    bump: look.diffuse_bumpiness,
+                    spec_bump: look.specular_bumpiness,
                     specular: look.specular_intensity.map(|v| v * 0.04),
                     shininess: look.gloss.map(|g| 4.0 + g * 8.0),
                     alpha_mask: false,
+                    opacity: None,
+                    hidden: false,
+                    mask_cutoff: None,
+                    tint_multiplies: false,
                 });
             }
         }
@@ -929,7 +1081,7 @@ pub(crate) fn import_look_from(ed: &mut Scene3dEditor, name: &str, bytes: &[u8],
     let mut parts = 0;
     for part in &look.parts {
         let names: Vec<String> = photocraft_vam::part_materials(&part.id).iter().map(|m| (*m).to_string()).collect();
-        if apply_part(ed, lib, &mut failed, asset, &names, part, package) {
+        if apply_part(ed, lib, &mut failed, &PartTarget { asset, materials: &names, context: package, figure_part: true }, part) {
             parts += 1;
         }
     }
@@ -944,7 +1096,7 @@ pub(crate) fn import_look_from(ed: &mut Scene3dEditor, name: &str, bytes: &[u8],
         for (id, on) in look.clothing.iter().chain(&look.hair).filter(|(id, on)| *on && id.contains(":/")) {
             let _ = on;
             match l.find_item(id) {
-                Some(item) => match wear_item(ed, l, asset, item, &look.item_parts, true) {
+                Some(item) => match wear_item(ed, l, asset, item, &ItemLooks { parts: &look.item_parts, hair: &look.hair_looks }, true) {
                     Ok(()) => worn_items += 1,
                     Err(e) if e.starts_with("Put on") => {
                         worn_items += 1;
@@ -969,9 +1121,15 @@ pub(crate) fn import_look_from(ed: &mut Scene3dEditor, name: &str, bytes: &[u8],
         failed.dedup();
         summary.push_str(&format!("; pictures not read: {}", join_some(&failed, 2)));
     }
+    if let Some(l) = lib {
+        let found = l.take_name_matches();
+        if found > 0 {
+            summary.push_str(&format!("; {found} pictures found by name in other places"));
+        }
+    }
     summary.push_str(&format!("; {worn_items} clothing/hair items put on"));
     if !absent.is_empty() {
-        summary.push_str(&format!("; items not found or not read: {}", join_some(&absent, 4)));
+        summary.push_str(&format!("; items not found or not read: {}", join_some(&absent, 14)));
     }
     Ok(summary)
 }

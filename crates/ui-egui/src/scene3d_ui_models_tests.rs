@@ -400,12 +400,49 @@ fn looks_from_packages_import_with_their_own_package_as_self() {
     let ctx = egui::Context::default();
     crate::scene3d_vam::open_library(&mut ed, &ctx);
     let lib = ed.vam.library.clone().unwrap();
+    eprintln!("LIBRARY: {} presets, {} items, {} packages", lib.presets.len(), lib.items.len(), lib.packages.len());
     let filter = std::env::var("PRESET").unwrap_or_else(|_| "Artoria".into());
-    for p in lib.presets_matching(&filter).into_iter().take(3) {
+    for p in lib.presets_matching(&filter).into_iter().take(std::env::var("TAKE").ok().and_then(|v| v.parse().ok()).unwrap_or(3)) {
         let bytes = lib.read_file(&p.reference).unwrap();
         let t0 = std::time::Instant::now();
         let r = crate::scene3d_vam::import_look_from(&mut ed, &p.name, &bytes, &p.package);
-        eprintln!("PRESET {} [{}] -> {:?} ({:?}); morph values now {}", p.name, p.package, r.map(|s| s.chars().take(700).collect::<String>()), t0.elapsed(), ed.scene.morphs.len());
+        eprintln!("PRESET {} [{}] -> {:?} ({:?}); morph values now {}", p.name, p.package, r.map(|s| s.chars().take(4000).collect::<String>()), t0.elapsed(), ed.scene.morphs.len());
+        if let Ok(drop) = std::env::var("DROP") {
+            let names: Vec<&str> = drop.split(',').collect();
+            if drop == "ALL" {
+                ed.scene.material_overrides.clear();
+            }
+            if drop == "MORPHS" {
+                ed.scene.reset_morphs(1).unwrap();
+            }
+            if drop == "CLOTH" {
+                for w in ed.scene.worn(1).iter().map(|w| w.reference.clone()).collect::<Vec<_>>() {
+                    ed.scene.remove_cloth(1, &w).unwrap();
+                }
+            }
+            ed.scene.material_overrides.retain(|o| !names.contains(&o.material.as_str()));
+            ed.scene.apply_morphs(1).unwrap();
+        }
+        for m in ed.scene.model(1).unwrap().meshes.iter().filter(|m| m.name.contains("(Scalp)") || m.name.contains("(Hair)")) {
+            eprintln!("HAIRMESH {} verts {} tris {} material {:?}", m.name, m.positions.len(), m.indices.len() / 3, m.material.map(|i| ed.scene.model(1).unwrap().materials[i].alpha_mode));
+        }
+        if std::env::var("MATS").is_ok() {
+            for m in ed.scene.model(1).unwrap().materials.iter().filter(|m| m.name.contains(':') || std::env::var("MATS").as_deref() == Ok("all")) {
+                eprintln!("MAT {} color {:?} tex {:?} normal {:?}x{} specmap {:?} spec {:?} shin {:?} mode {:?}", m.name, m.base_color, m.base_color_texture, m.normal_texture, m.normal_scale, m.specular_texture, m.specular, m.shininess, m.alpha_mode);
+            }
+        }
+        if let Ok(out) = std::env::var("PIC_DIR") {
+            for (cam, pos, target, size) in [("face", [0.0, 1.66, 0.75], [0.0, 1.645, 0.0], (700, 700)), ("body", [0.0, 1.0, 3.4], [0.0, 0.95, 0.0], (520, 800)), ("back", [0.0, 1.5, -1.5], [0.0, 1.45, 0.0], (700, 700))] {
+                let mut sc = ed.scene.clone();
+                sc.camera.position = pos;
+                sc.camera.target = target;
+                sc.camera.fov = if cam == "face" { 30.0 } else { 35.0 };
+                let t_render = std::time::Instant::now();
+                let img = photocraft_render3d::render(&sc, &photocraft_render3d::RenderOptions { ssaa: 2, ..photocraft_render3d::RenderOptions::new(size.0, size.1) }).unwrap();
+                eprintln!("RENDER {cam}: {:?}", t_render.elapsed());
+                std::fs::write(std::path::Path::new(&out).join(format!("{}_{cam}_{}x{}.rgba", p.name.replace(' ', "_"), size.0, size.1)), img.rgba).unwrap();
+            }
+        }
     }
 }
 
@@ -485,7 +522,7 @@ fn many_items_can_be_worn_and_drawn() {
     let (mut ok, mut failed) = (0, 0);
     for item in lib.items.iter().filter(|i| i.kind == photocraft_vam::ItemKind::Clothing && i.gender != Some(photocraft_vam::Gender::Male)).step_by(step).take(n) {
         let t0 = std::time::Instant::now();
-        let r = crate::scene3d_vam::wear_item(&mut ed, &lib, 1, item, &[], true);
+        let r = crate::scene3d_vam::wear_item(&mut ed, &lib, 1, item, &Default::default(), true);
         let mut s = ed.scene.clone();
         s.camera.position = [0.0, 1.0, 3.4];
         s.camera.target = [0.0, 0.95, 0.0];

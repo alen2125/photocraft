@@ -139,35 +139,39 @@ fn shade(d: &Draw, prep: &Prepared, pos: Vec3, mut n: Vec3, uv: [f32; 2], tangen
         return Some((albedo + d.emissive, opacity));
     }
     n = n.normalize_or_zero();
-    // A normal map bends the smooth normal in the surface's own frame (tangent, bitangent, normal).
-    if let (Some((t, b)), Some((m, _))) = (tangents, sample(d.normal_map.as_ref(), &prep.raw, uv)) {
-        let t = (t - n * n.dot(t)).normalize_or_zero();
-        let b = (b - n * n.dot(b) - t * t.dot(b)).normalize_or_zero();
-        if t != Vec3::ZERO && b != Vec3::ZERO {
-            let (x, y, z) = ((m.x * 2.0 - 1.0) * d.normal_scale, (m.y * 2.0 - 1.0) * d.normal_scale, (m.z * 2.0 - 1.0).max(0.05));
-            let bent = (t * x + b * y + n * z).normalize_or_zero();
-            if bent != Vec3::ZERO {
-                n = bent;
-            }
-        }
-    }
-    let spec_scale = sample(d.spec_map.as_ref(), &prep.raw, uv).map_or(1.0, |(s, _)| s.x);
     let v = (prep.eye - pos).normalize_or_zero();
     // Two-sided: planes, cut-open solids and thin cloth light correctly from behind.
     if n.dot(v) < 0.0 {
         n = -n;
     }
+    // A normal map bends the smooth normal in the surface's own frame (tangent, bitangent, normal):
+    // one bend (`normal_scale`) lights the surface, another (`spec_normal_scale`) shapes the shine.
+    let normal_map = tangents.and_then(|(t, b)| sample(d.normal_map.as_ref(), &prep.raw, uv).map(|(m, _)| (t, b, m)));
+    let bend = |scale: f32| -> Vec3 {
+        let Some((t, b, m)) = normal_map else { return n };
+        let t = (t - n * n.dot(t)).normalize_or_zero();
+        let b = (b - n * n.dot(b) - t * t.dot(b)).normalize_or_zero();
+        if t == Vec3::ZERO || b == Vec3::ZERO {
+            return n;
+        }
+        let (x, y, z) = ((m.x * 2.0 - 1.0) * scale, (m.y * 2.0 - 1.0) * scale, (m.z * 2.0 - 1.0).max(0.05));
+        let bent = (t * x + b * y + n * z).normalize_or_zero();
+        if bent == Vec3::ZERO { n } else { bent }
+    };
+    let n_light = bend(d.normal_scale);
+    let n_shine = if (d.spec_normal_scale - d.normal_scale).abs() < 1e-4 { n_light } else { bend(d.spec_normal_scale) };
+    let spec_scale = sample(d.spec_map.as_ref(), &prep.raw, uv).map_or(1.0, |(s, _)| s.x);
     let mut diffuse = prep.ambient;
     let mut spec = Vec3::ZERO;
     for l in &prep.lights {
         let (to_light, atten) = light_vec(l, pos);
-        let ndl = n.dot(to_light);
+        let ndl = n_light.dot(to_light);
         if ndl <= 0.0 || atten <= 0.0 {
             continue;
         }
         diffuse += l.radiance * (ndl * atten);
         let h = (to_light + v).normalize_or_zero();
-        spec += l.radiance * (n.dot(h).max(0.0).powf(d.shininess) * d.specular * spec_scale * atten);
+        spec += l.radiance * (n_shine.dot(h).max(0.0).powf(d.shininess) * d.specular * spec_scale * atten);
     }
     Some((albedo * diffuse + spec + d.emissive, opacity))
 }

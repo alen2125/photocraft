@@ -36,7 +36,13 @@ pub struct PartLook {
     pub color: Option<[f32; 3]>,
     pub specular_intensity: Option<f32>,
     pub gloss: Option<f32>,
+    /// `Diffuse Bumpiness` and `Specular Bumpiness`: how strongly a normal map shows in the light and in the shine.
     pub bumpiness: Option<f32>,
+    pub spec_bumpiness: Option<f32>,
+    /// `Alpha Adjust`: added to the opacity (the picture's alpha, the alpha mask, or 1); -1 hides the material.
+    pub alpha_adjust: Option<f32>,
+    /// `hideMaterial`: the material is not drawn.
+    pub hidden: bool,
 }
 
 /// The storable ids that are small materials of the figure.
@@ -55,8 +61,59 @@ pub fn part_materials(id: &str) -> &'static [&'static str] {
     }
 }
 
+/// How a strand hair item looks (its `<uid>Sim` storable).
+#[derive(Clone, Debug, PartialEq)]
+pub struct HairLook {
+    pub root_color: [f32; 3],
+    pub tip_color: [f32; 3],
+    /// How slowly the colour changes from the root: the colour at a fraction `t` of the strand is
+    /// the mix at `t` to this power.
+    pub color_rolloff: f32,
+    /// How many hairs the game grows round each guide strand, and how far from it they may be (metres).
+    pub hair_multiplier: f32,
+    pub max_spread: f32,
+    /// The spread at the root, the middle and the tip, as fractions of `max_spread`.
+    pub spread: [f32; 3],
+}
+
+impl Default for HairLook {
+    fn default() -> Self {
+        Self { root_color: [0.1, 0.07, 0.05], tip_color: [0.15, 0.1, 0.07], color_rolloff: 1.0, hair_multiplier: 8.0, max_spread: 0.02, spread: [1.0, 0.6, 0.6] }
+    }
+}
+
+/// Reads a `<uid>Sim` storable; `None` when it is not a hair look (no colours).
+pub fn hair_look(s: &Value) -> Option<HairLook> {
+    let color = |k: &str| s.get(k).filter(|c| c.is_object()).map(|c| hsv_to_rgb(number(c.get("h")).unwrap_or(0.0), number(c.get("s")).unwrap_or(0.0), number(c.get("v")).unwrap_or(1.0)));
+    let (root, tip) = (color("rootColor"), color("tipColor"));
+    if root.is_none() && tip.is_none() {
+        return None;
+    }
+    let d = HairLook::default();
+    let num = |k: &str, v: f32| number(s.get(k)).unwrap_or(v);
+    let root_color = root.or(tip).unwrap_or(d.root_color);
+    Some(HairLook {
+        root_color,
+        tip_color: tip.unwrap_or(root_color),
+        color_rolloff: num("colorRolloff", d.color_rolloff).clamp(0.1, 10.0),
+        hair_multiplier: num("hairMultiplier", d.hair_multiplier).clamp(1.0, 64.0),
+        max_spread: num("maxSpread", d.max_spread).clamp(0.0, 0.2),
+        spread: [num("spreadRoot", d.spread[0]), num("spreadMid", d.spread[1]), num("spreadTip", d.spread[2])].map(|v| v.clamp(0.0, 2.0)),
+    })
+}
+
+/// The hair look in an item's `.vaj` (the `<uid>Sim` storable).
+pub fn parse_item_hair(vaj: &[u8], uid: &str) -> Option<HairLook> {
+    let body = vaj.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(vaj);
+    let v = serde_json::from_slice::<Value>(body).ok()?;
+    let id = format!("{uid}Sim");
+    v.get("storables")?.as_array()?.iter().find(|s| s.get("id").and_then(Value::as_str) == Some(id.as_str())).and_then(hair_look)
+}
+
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Appearance {
+    /// What the preset says about each strand hair item, by its `<uid>Sim` storable id.
+    pub hair_looks: Vec<(String, HairLook)>,
     /// Eyes, teeth, tongue … : what the preset sets on each.
     pub parts: Vec<PartLook>,
     /// What the preset sets on the materials of worn items, by storable id (`Creator:ItemMaterialName`).
@@ -114,10 +171,6 @@ pub fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [f32; 3] {
 fn part_look(id: &str, s: &Value) -> PartLook {
     let text = |k: &str| s.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
     let color = s.get("Diffuse Color").filter(|c| c.is_object()).map(|c| hsv_to_rgb(number(c.get("h")).unwrap_or(0.0), number(c.get("s")).unwrap_or(0.0), number(c.get("v")).unwrap_or(1.0)));
-    let bump = match (number(s.get("Diffuse Bumpiness")), number(s.get("Specular Bumpiness"))) {
-        (Some(a), Some(b)) => Some((a + b) / 2.0),
-        (a, b) => a.or(b),
-    };
     PartLook {
         id: id.to_string(),
         diffuse: text("customTexture_MainTex"),
@@ -129,7 +182,10 @@ fn part_look(id: &str, s: &Value) -> PartLook {
         color,
         specular_intensity: number(s.get("Specular Intensity")),
         gloss: number(s.get("Gloss")),
-        bumpiness: bump,
+        bumpiness: number(s.get("Diffuse Bumpiness")),
+        spec_bumpiness: number(s.get("Specular Bumpiness")),
+        alpha_adjust: number(s.get("Alpha Adjust")),
+        hidden: flag(s.get("hideMaterial")),
     }
 }
 
@@ -273,6 +329,11 @@ pub fn parse_storables(storables: &[Value]) -> Appearance {
             }
             Some(id) if PART_IDS.contains(&id) => a.parts.push(part_look(id, s)),
             Some(id) if id.contains(':') && id.contains("Material") => a.item_parts.push(part_look(id, s)),
+            Some(id) if id.contains(':') && id.ends_with("Sim") => {
+                if let Some(h) = hair_look(s) {
+                    a.hair_looks.push((id.to_string(), h));
+                }
+            }
             _ => {}
         }
     }
@@ -330,6 +391,20 @@ mod tests {
         loose.localize("");
         assert_eq!(loose.parts[0].diffuse, "Custom/eye.png", "a loose preset's SELF is the game folder");
         assert_eq!(localize("Pkg.1:/x.png", "Maker.1"), "Pkg.1:/x.png");
+    }
+
+    #[test]
+    fn a_hair_look_gives_colours_and_density_and_other_sims_are_ignored() {
+        let json = br#"{"storables":[
+            {"id":"Maker:Bob Sim","rootColor":{"h":"0","s":"0","v":"0.1"},"tipColor":{"h":"0.1","s":"0.5","v":"0.5"},"colorRolloff":"3","hairMultiplier":"16","maxSpread":"0.022","spreadRoot":"1","spreadMid":"0.6","spreadTip":"0.5"},
+            {"id":"Maker:Cloth Sim","simEnabled":"true"} ]}"#;
+        let a = parse_vap(json).unwrap();
+        assert_eq!(a.hair_looks.len(), 1);
+        let h = &a.hair_looks[0].1;
+        assert_eq!((h.hair_multiplier, h.max_spread, h.spread, h.color_rolloff), (16.0, 0.022, [1.0, 0.6, 0.5], 3.0));
+        assert!((h.tip_color[0] - 0.5).abs() < 1e-5, "{:?}", h.tip_color);
+        let vaj = br#"{"storables":[{"id":"BobSim","rootColor":{"h":"0","s":"0","v":"1"}}]}"#;
+        assert!(parse_item_hair(vaj, "Bob").is_some() && parse_item_hair(vaj, "Other").is_none());
     }
 
     #[test]
