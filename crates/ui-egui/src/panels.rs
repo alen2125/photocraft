@@ -1921,6 +1921,7 @@ pub(crate) fn dock_body(app: &mut PhotocraftApp, ui: &mut egui::Ui, group: crate
         (Group::Character, tab) => crate::type_tool::character_panel(app, ui, tab == 1),
         (Group::Navigator, 0) => navigator(app, ui),
         (Group::Navigator, 1) => crate::tone::histogram_panel(app, ui),
+        (Group::Navigator, 3) => values_panel(app, ui),
         (Group::Navigator, _) => info_panel(app, ui),
         (Group::History, 0) => history(app, ui),
         (Group::History, 1) => crate::actions::panel(app, ui),
@@ -2060,6 +2061,18 @@ pub(crate) fn sampler_readouts(app: &mut PhotocraftApp) -> std::sync::Arc<Vec<Va
 }
 
 fn navigator(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
+    navigator_view(app, ui, false);
+}
+
+/// The Values panel: the Navigator's preview, zoom and view rectangle with the picture in grays
+/// (Rec. 709 luma), to judge tones without colour. The document itself stays as it is.
+fn values_panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
+    navigator_view(app, ui, true);
+}
+
+/// The Navigator (`gray` false) or the Values panel (`gray` true). Both can be open at once, so
+/// the Values panel keeps its own drag, wheel and layout state and leaves the Navigator's alone.
+fn navigator_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, gray: bool) {
     let t = Tokens::get(ui.ctx());
     let Some(idx) = app.session.active_index() else {
         empty(ui, tl!("No document"));
@@ -2068,17 +2081,27 @@ fn navigator(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
     let size = app.session.documents()[idx].doc.size;
     let avail = ui.available_width();
+    let scoped = |id: egui::Id| if gray { id.with("values") } else { id };
+    let (controls_id, drag_id) = (scoped(navigator_controls_id()), scoped(navigator_zoom_drag_id()));
     // The preview fills the group's height above the zoom controls (their height as measured
     // last frame), so it grows when the group is made taller, as in Photoshop (#2726).
-    let controls_h = ui.data(|d| d.get_temp::<f32>(navigator_controls_id())).unwrap_or(48.0);
+    let controls_h = ui.data(|d| d.get_temp::<f32>(controls_id)).unwrap_or(48.0);
     let left = ui.available_height() - controls_h;
     let box_h = if left.is_finite() { left.max(40.0) } else { 150.0 };
     let (frame, resp) = ui.allocate_exact_size(vec2(avail, box_h), Sense::click_and_drag());
     ui.painter().rect_filled(frame, t.radius_sm, t.canvas);
     let rect = navigator_fit(frame, size.width, size.height);
-    ui.data_mut(|d| d.insert_temp(navigator_preview_id(), rect));
-    // On the GPU canvas, its own texture at this size (#4518); otherwise the CPU thumbnail.
-    if let Some(params) = crate::canvas::navigator_gpu_view(app, idx, rect, &ctx) {
+    if !gray {
+        ui.data_mut(|d| d.insert_temp(navigator_preview_id(), rect));
+    }
+    // On the GPU canvas, its own texture at this size (#4518); otherwise the CPU thumbnail. The
+    // Values panel always draws a CPU thumbnail: the GPU texture can't be turned gray here.
+    if gray {
+        if let Some(tex) = crate::canvas::values_texture(app, &ctx, idx) {
+            widgets::checker(ui.painter(), rect, 6.0);
+            ui.painter().image(tex, rect, Rect::from_min_max(egui::Pos2::ZERO, pos2(1.0, 1.0)), Color32::WHITE);
+        }
+    } else if let Some(params) = crate::canvas::navigator_gpu_view(app, idx, rect, &ctx) {
         crate::gpu_canvas::GpuCanvas::paint(ui.painter(), rect, params);
     } else if crate::canvas::navigator_waits_for_gpu(app, idx, &ctx) {
         widgets::checker(ui.painter(), rect, 6.0);
@@ -2095,12 +2118,12 @@ fn navigator(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         let start = ctx.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos());
         ui.data_mut(|d| match start {
             Some(p) => {
-                d.insert_temp(navigator_zoom_drag_id(), p);
+                d.insert_temp(drag_id, p);
             }
-            None => d.remove::<Pos2>(navigator_zoom_drag_id()),
+            None => d.remove::<Pos2>(drag_id),
         });
     }
-    let zoom_from = ui.data(|d| d.get_temp::<Pos2>(navigator_zoom_drag_id()));
+    let zoom_from = ui.data(|d| d.get_temp::<Pos2>(drag_id));
     if let Some(from) = zoom_from {
         if let Some(to) = resp.interact_pointer_pos() {
             let r = Rect::from_two_pos(from, to).intersect(rect);
@@ -2112,7 +2135,7 @@ fn navigator(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             }
         }
         if resp.drag_stopped() || !resp.dragged() {
-            ui.data_mut(|d| d.remove::<Pos2>(navigator_zoom_drag_id()));
+            ui.data_mut(|d| d.remove::<Pos2>(drag_id));
         }
     } else if (resp.clicked() || resp.dragged())
         && let Some(pp) = resp.interact_pointer_pos()
@@ -2134,7 +2157,7 @@ fn navigator(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let touch_gestures = app.session.prefs().enhanced_controls.touch_gestures;
     if resp.hovered()
         && let Some(crate::wheel_nav::Wheel::Zoom(factor)) =
-            crate::wheel_nav::read_with(&ctx, true, pinch_zooms, egui::Id::new("pc-navigator-wheel"), true, true, touch_gestures)
+            crate::wheel_nav::read_with(&ctx, true, pinch_zooms, scoped(egui::Id::new("pc-navigator-wheel")), true, true, touch_gestures)
     {
         let view = &mut app.ui.views[idx];
         let next = crate::zoom_levels::clamp(view.zoom * factor, view.doc_size);
@@ -2197,8 +2220,10 @@ fn navigator(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     // From the preview's bottom, so the spacing above the controls counts too.
     let controls = Rect::from_min_max(pos2(frame.left(), frame.bottom()), pos2(frame.right(), controls.response.rect.bottom()));
     ui.data_mut(|d| {
-        d.insert_temp(navigator_controls_id(), controls.height());
-        d.insert_temp(navigator_controls_rect_id(), controls);
+        d.insert_temp(controls_id, controls.height());
+        if !gray {
+            d.insert_temp(navigator_controls_rect_id(), controls);
+        }
     });
 }
 

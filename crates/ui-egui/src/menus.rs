@@ -35,7 +35,7 @@ pub(crate) fn panel_alias(id: &str) -> Option<&'static str> {
         "history" => "window.toggle.history",
         "properties" | "adjustments" => "window.toggle.properties",
         "color" | "swatches" => "window.toggle.color",
-        "navigator" | "info" | "histogram" => "window.toggle.navigator",
+        "navigator" | "info" | "histogram" | "values" => "window.toggle.navigator",
         "tools" => "window.toggle.toolbar",
         "options" => "window.toggle.options",
         "brushSettings" => "window.toggle.brushSettings",

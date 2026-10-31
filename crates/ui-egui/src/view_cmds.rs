@@ -365,6 +365,7 @@ fn panel_tab(app: &PhotocraftApp, id: &str) -> Option<(&'static str, usize)> {
     let pro = app.ui.theme.is_pro();
     Some(match id {
         "window.panel.info" => ("navigator", 2),
+        "window.panel.values" => ("navigator", 3),
         "window.panel.histogram" => ("navigator", 1),
         "window.panel.navigator" => ("navigator", 0),
         "window.panel.actions" => ("history", 1),
@@ -456,6 +457,7 @@ pub fn handles(id: &str) -> bool {
             | "window.panel.character"
             | "window.panel.paragraph"
             | "window.panel.info"
+            | "window.panel.values"
             | "window.panel.histogram"
             | "window.panel.swatches"
             | "window.panel.adjustments"

@@ -1597,6 +1597,50 @@ pub fn navigator_texture(app: &mut PhotocraftApp, ctx: &egui::Context, idx: usiz
     Some(tex.id())
 }
 
+/// Rec. 709 luma of every pixel, as a gray image (the Values panel). The alpha stays, so a
+/// transparent area is still the checkerboard; premultiplied pixels scale linearly, so the same
+/// weights apply to them.
+fn gray_image(mut image: egui::ColorImage) -> egui::ColorImage {
+    for p in &mut image.pixels {
+        let luma = (2126 * p.r() as u32 + 7152 * p.g() as u32 + 722 * p.b() as u32 + 5000) / 10000;
+        *p = Color32::from_rgba_premultiplied(luma as u8, luma as u8, luma as u8, p.a());
+    }
+    image
+}
+
+/// The Values panel's image of document `idx`: the document's thumbnail in grays, cached per
+/// snapshot and preview key. A document never changes for it; only the preview is gray. Like the
+/// Navigator, it keeps its image while a drag or live stroke is under way.
+pub fn values_texture(app: &mut PhotocraftApp, ctx: &egui::Context, idx: usize) -> Option<egui::TextureId> {
+    let (snapshot, id, revision) = app.session.documents().get(idx).map(|st| (std::sync::Arc::downgrade(&st.doc), st.doc.id, st.revision))?;
+    let (doc, preview_key) = display_doc(app, idx);
+    let (display, display_key) = canvas_display(app, &doc, None);
+    let preview_key = preview_key ^ display_key;
+    let cached = app.values_textures.get(&id).cloned();
+    if let Some((r, p, _, t)) = &cached
+        && ((r.ptr_eq(&snapshot) && *p == preview_key) || navigator_waits_for_drag(app, idx))
+    {
+        return Some(t.id());
+    }
+    if let Some((r, _, _, t)) = &cached
+        && r.ptr_eq(&snapshot)
+        && crate::adjust_preview::settling(app, NAVIGATOR_SETTLE_MS)
+    {
+        ctx.request_repaint_after(std::time::Duration::from_millis(NAVIGATOR_SETTLE_MS as u64));
+        return Some(t.id());
+    }
+    let image = gray_image(display_image(display.as_deref(), &photocraft_compose::thumbnail_buffer(&doc, NAVIGATOR_SIDE)));
+    let tex = match cached {
+        Some((_, _, _, mut t)) => {
+            t.set(image, TextureOptions::LINEAR);
+            t
+        }
+        None => ctx.load_texture(format!("values-{}", id.0), image, TextureOptions::LINEAR),
+    };
+    app.values_textures.insert(id, (snapshot, preview_key, revision, tex.clone()));
+    Some(tex.id())
+}
+
 /// The CPU canvas texture's sampling (#4810). Zoomed in, a full-resolution texture shows each
 /// document pixel as a crisp square, as the GPU canvas's sharp nearest filter and Photoshop do;
 /// zoomed out it is still filtered. A reduced texture (`factor` > 1) stays bilinear: its texels

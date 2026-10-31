@@ -755,6 +755,7 @@ pub static CATALOG: &[(&[&str], &str, Option<&str>, &str)] = &[
     (&["Window"], "Histogram", None, "window.panel.histogram"),
     (&["Window"], "History", None, "window.panel.history"),
     (&["Window"], "Info", Some("F8"), "window.panel.info"),
+    (&["Window"], "Values", None, "window.panel.values"),
     (&["Window"], "Layer Comps", None, "window.panel.layerComps"),
     (&["Window"], "Layers", Some("F7"), "window.panel.layers"),
     (&["Window"], "Measurement Log", None, "window.panel.measurementLog"),
