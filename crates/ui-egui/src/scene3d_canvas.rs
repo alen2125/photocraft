@@ -47,6 +47,8 @@ pub(crate) struct GizmoDrag {
 #[derive(Clone, Debug)]
 pub(crate) enum PointerKind {
     Orbit,
+    /// Flying: turn the view about the camera's own position.
+    Look,
     Pan,
     Dolly,
     Bone(BoneDrag),
@@ -80,6 +82,7 @@ pub(crate) fn close(ed: &mut Scene3dEditor) {
     ed.play_base = None;
     ed.open = false;
     ed.owner = None;
+    ed.tween = None;
     ed.pointer = None;
     ed.preview = None;
 }
@@ -109,6 +112,7 @@ pub(crate) fn frame(app: &mut PhotocraftApp, ctx: &egui::Context) {
         ed.doc_size = size;
         ed.touch();
     }
+    crate::scene3d_fly::frame(ed, ctx);
     live_world(ed);
     if ed.physics.is_some() {
         tick(ed, ctx.input(|i| i.stable_dt));
@@ -177,9 +181,10 @@ pub(crate) fn stop(ed: &mut Scene3dEditor, keep: bool) {
         }
         ed.future.clear();
     } else {
-        let camera = ed.scene.camera.clone();
+        let (camera, views) = (ed.scene.camera.clone(), ed.scene.views.clone());
         ed.scene = base;
         ed.scene.camera = camera;
+        ed.scene.views = views;
     }
     ed.committed = Some(ed.scene.clone());
     ed.touch();
@@ -249,6 +254,7 @@ fn remember_edit(ed: &mut Scene3dEditor) {
         return;
     };
     prev.camera = ed.scene.camera.clone();
+    prev.views = ed.scene.views.clone();
     if *prev != ed.scene {
         let before = std::mem::replace(prev, ed.scene.clone());
         ed.history.push(before);
@@ -265,6 +271,7 @@ pub(crate) fn step_history(ed: &mut Scene3dEditor, undo: bool) -> bool {
     let Some(target) = (if undo { ed.history.pop() } else { ed.future.pop() }) else { return false };
     let current = std::mem::replace(&mut ed.scene, target);
     ed.scene.camera = current.camera.clone();
+    ed.scene.views = current.views.clone();
     if undo { ed.future.push(current) } else { ed.history.push(current) }
     ed.committed = Some(ed.scene.clone());
     if ed.selected.is_some_and(|id| ed.scene.node(id).is_none()) {
@@ -320,7 +327,10 @@ pub(crate) fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifi
     match ev {
         ToolEvent::Down { x, y, .. } => {
             let p = to_view(x, y);
-            let camera = if mods.shift { PointerKind::Pan } else if mods.command { PointerKind::Dolly } else { PointerKind::Orbit };
+            // Flying: a plain drag looks around from where the camera is instead of orbiting.
+            let plain = if ed.fly.active { PointerKind::Look } else { PointerKind::Orbit };
+            let camera = if mods.shift { PointerKind::Pan } else if mods.command { PointerKind::Dolly } else { plain };
+            ed.tween = None;
             let mut state = PointerState { kind: camera, start: p, last: p, moved: false, pending_click: true };
             // While a Play runs only a node that is On can be pulled about (its target moves, the
             // body follows); with the live physics any node can: it is On while it is held.
@@ -365,6 +375,10 @@ pub(crate) fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifi
                     PointerKind::Orbit => {
                         ed.orbit.yaw -= d.0 * 0.4;
                         ed.orbit.pitch = (ed.orbit.pitch + d.1 * 0.4).clamp(-89.0, 89.0);
+                        apply_camera(ed);
+                    }
+                    PointerKind::Look => {
+                        crate::scene3d_fly::look(&mut ed.orbit, d.0 * 0.4, d.1 * 0.4);
                         apply_camera(ed);
                     }
                     PointerKind::Pan => {
@@ -421,6 +435,17 @@ pub(crate) fn wheel(app: &mut PhotocraftApp, doc: [f64; 2], wheel: &crate::wheel
     if !ed.open {
         return false;
     }
+    // Flying: the wheel sets how fast the camera moves (up is faster).
+    if ed.fly.active {
+        let steps = match wheel {
+            Wheel::Pan(s) if s.y.is_finite() => s.y * 0.003,
+            Wheel::Zoom(f) if f.is_finite() && *f > 0.0 => f.ln(),
+            _ => return false,
+        };
+        crate::scene3d_fly::scale_speed(&mut ed.fly, steps.exp());
+        return true;
+    }
+    ed.tween = None;
     // Wheel up (positive) zooms in.
     let factor = match wheel {
         Wheel::Pan(s) if s.y.is_finite() => (-s.y * 0.003).exp(),
@@ -552,7 +577,12 @@ pub(crate) fn keys(app: &mut PhotocraftApp, ctx: &egui::Context) -> bool {
         return true;
     }
     if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
-        close(&mut app.scene3d);
+        // Flying: Esc lands first; a second one closes the mode.
+        if app.scene3d.fly.active {
+            app.scene3d.fly.active = false;
+        } else {
+            close(&mut app.scene3d);
+        }
         return true;
     }
     let redo = ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z) || i.consume_key(Modifiers::COMMAND, Key::Y));
@@ -563,6 +593,13 @@ pub(crate) fn keys(app: &mut PhotocraftApp, ctx: &egui::Context) -> bool {
     if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Z)) {
         step_history(&mut app.scene3d, true);
         return true;
+    }
+    // Tab (fly), the number keys (camera views) and, while flying, W A S D Z X C V.
+    if crate::scene3d_fly::keys(&mut app.scene3d, ctx) {
+        return true;
+    }
+    if app.scene3d.fly.active {
+        return false;
     }
     for (key, mode) in [(Key::Q, GizmoMode::Both), (Key::W, GizmoMode::Translate), (Key::E, GizmoMode::Rotate), (Key::R, GizmoMode::Scale)] {
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, key)) {

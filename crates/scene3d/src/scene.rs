@@ -369,15 +369,47 @@ pub struct Camera {
     pub fov: f32,
     pub near: f32,
     pub far: f32,
+    /// Bank around the view direction in degrees: positive tilts the camera to the right (the
+    /// horizon turns the other way on screen). 0 keeps the horizon level.
+    pub roll: f32,
 }
 
 impl Default for Camera {
     fn default() -> Self {
-        Self { position: [3.0, 2.0, 5.0], target: [0.0, 0.5, 0.0], fov: 45.0, near: 0.05, far: 200.0 }
+        Self { position: [3.0, 2.0, 5.0], target: [0.0, 0.5, 0.0], fov: 45.0, near: 0.05, far: 200.0, roll: 0.0 }
     }
 }
 
+/// Most camera views a scene keeps (keys 1–9).
+pub const MAX_VIEWS: usize = 9;
+/// The largest bank accepted, in degrees either way.
+pub const ROLL_LIMIT: f32 = 180.0;
+
 impl Camera {
+    /// The camera's right and up axes and its view direction in the world (all unit length,
+    /// at right angles). Any camera gives an answer: a zero-length or non-finite view looks down −Z,
+    /// and a view straight up or down keeps Z as the reference. `roll` banks the axes.
+    pub fn axes(&self) -> (Vec3, Vec3, Vec3) {
+        let finite = |v: [f32; 3]| v.iter().all(|x| x.is_finite());
+        let f = if finite(self.position) && finite(self.target) { (Vec3::from(self.target) - Vec3::from(self.position)).normalize_or_zero() } else { Vec3::ZERO };
+        let f = if f == Vec3::ZERO { Vec3::NEG_Z } else { f };
+        let reference = if f.dot(Vec3::Y).abs() > 0.999 { Vec3::Z } else { Vec3::Y };
+        let right = f.cross(reference).normalize_or_zero();
+        let right = if right == Vec3::ZERO { Vec3::X } else { right };
+        let up = right.cross(f);
+        let roll = if self.roll.is_finite() { self.roll.clamp(-ROLL_LIMIT, ROLL_LIMIT) } else { 0.0 };
+        if roll == 0.0 {
+            return (right, up, f);
+        }
+        let q = Quat::from_axis_angle(f, roll.to_radians());
+        (q * right, q * up, f)
+    }
+
+    /// The direction the top of the picture points to, banked by `roll`.
+    pub fn up_vector(&self) -> Vec3 {
+        self.axes().1
+    }
+
     /// Camera orbiting `target`: `yaw`/`pitch` in degrees, `distance` in scene units.
     pub fn orbit(target: [f32; 3], yaw: f32, pitch: f32, distance: f32) -> [f32; 3] {
         let (yaw, pitch) = (yaw.to_radians(), pitch.clamp(-89.0, 89.0).to_radians());
@@ -414,6 +446,9 @@ pub struct Scene {
     pub clothing: Vec<crate::cloth::ClothRef>,
     /// How much of the hair is drawn, 0 (the guide strands only) to 1 (all of it); a view setting kept with the scene.
     pub hair_quality: f32,
+    /// Saved camera views, slot 1–9 at index 0–8 (`None`: empty). Kept with the scene.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub views: Vec<Option<Camera>>,
     next_id: NodeId,
     #[serde(skip)]
     pub(crate) models: ModelCache,
@@ -423,7 +458,7 @@ pub struct Scene {
 
 impl Default for Scene {
     fn default() -> Self {
-        Self { version: FORMAT_VERSION, nodes: Vec::new(), camera: Camera::default(), background: [0.18, 0.19, 0.22], ambient: [0.18, 0.18, 0.2], assets: Vec::new(), poses: Vec::new(), controls: Vec::new(), morphs: Vec::new(), material_overrides: Vec::new(), clothing: Vec::new(), hair_quality: 1.0, next_id: 1, models: ModelCache::default(), morph_cache: Default::default() }
+        Self { version: FORMAT_VERSION, nodes: Vec::new(), camera: Camera::default(), background: [0.18, 0.19, 0.22], ambient: [0.18, 0.18, 0.2], assets: Vec::new(), poses: Vec::new(), controls: Vec::new(), morphs: Vec::new(), material_overrides: Vec::new(), clothing: Vec::new(), hair_quality: 1.0, views: Vec::new(), next_id: 1, models: ModelCache::default(), morph_cache: Default::default() }
     }
 }
 
@@ -432,6 +467,35 @@ impl Scene {
     /// overlay drawn over a picture that was made with that camera).
     pub fn with_camera_only(&self, camera: Camera) -> Scene {
         Scene { nodes: self.nodes.clone(), camera, ..Scene::default() }
+    }
+
+    /// The camera saved in `slot` (0–8), if any.
+    pub fn view(&self, slot: usize) -> Option<&Camera> {
+        self.views.get(slot)?.as_ref()
+    }
+
+    /// Saves `camera` in `slot` (0–8). False when the slot is out of range.
+    pub fn save_view(&mut self, slot: usize, camera: &Camera) -> bool {
+        if slot >= MAX_VIEWS {
+            return false;
+        }
+        if self.views.len() <= slot {
+            self.views.resize(slot + 1, None);
+        }
+        if let Some(v) = self.views.get_mut(slot) {
+            *v = Some(camera.clone());
+        }
+        true
+    }
+
+    /// Empties `slot`; the list shrinks when its tail is empty so an unused scene stores nothing.
+    pub fn clear_view(&mut self, slot: usize) {
+        if let Some(v) = self.views.get_mut(slot) {
+            *v = None;
+        }
+        while matches!(self.views.last(), Some(None)) {
+            self.views.pop();
+        }
     }
 
     /// An empty scene with one sun light, so a first primitive is visibly lit.
@@ -595,6 +659,7 @@ impl Scene {
             return Err(SceneError::TooNew(s.version));
         }
         s.validate()?;
+        s.views.truncate(MAX_VIEWS);
         s.drop_dangling_links();
         s.next_id = s.next_id.max(s.nodes.iter().map(|n| n.id).max().unwrap_or(0).saturating_add(1));
         Ok(s)

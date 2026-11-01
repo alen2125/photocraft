@@ -320,7 +320,8 @@ pub(crate) fn camera(scene: &Scene, aspect: f32) -> (Vec3, Mat4) {
         fwd = Vec3::NEG_Z;
     }
     let fwd = fwd.normalize();
-    let up = if fwd.dot(Vec3::Y).abs() > 0.999 { Vec3::Z } else { Vec3::Y };
+    // The same axes the editor uses for picking and the gizmo, banked by the camera's roll.
+    let up = photocraft_scene3d::Camera { position: eye.to_array(), target: (eye + fwd).to_array(), roll: c.roll, ..photocraft_scene3d::Camera::default() }.up_vector();
     let view = Mat4::look_at_rh(eye, eye + fwd, up);
     let fov = if c.fov.is_finite() { c.fov.clamp(1.0, 170.0) } else { 45.0 };
     let near = if c.near.is_finite() { c.near.clamp(1e-4, 1e6) } else { 0.05 };

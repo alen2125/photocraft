@@ -162,3 +162,25 @@ fn the_picture_does_not_depend_on_the_number_of_threads() {
     // A size that is not a multiple of the band height still fills every row.
     assert!(many.rgba.as_chunks::<4>().0.iter().any(|p| p[3] == 255));
 }
+
+#[test]
+fn camera_roll_turns_the_picture_about_the_view_axis() {
+    let mut s = Scene::new();
+    s.camera.position = [0.0, 0.0, 5.0];
+    s.camera.target = [0.0; 3];
+    let above = Vec3::new(0.0, 1.0, 0.0);
+    let (w, h) = (200, 200);
+    let (x, y) = project_point(&s, w, h, above).unwrap();
+    assert!((x - 100.0).abs() < 0.5 && y < 100.0, "level: a point above the target is above the centre ({x}, {y})");
+    // Banked right by 90° the world's up points to the left of the picture.
+    s.camera.roll = 90.0;
+    let (x, y) = project_point(&s, w, h, above).unwrap();
+    assert!(x < 100.0 && (y - 100.0).abs() < 0.5, "banked: it is left of the centre ({x}, {y})");
+    // The point on the view axis stays put, and a bank that is not a number is a level camera.
+    let (cx, cy) = project_point(&s, w, h, Vec3::ZERO).unwrap();
+    assert!((cx - 100.0).abs() < 0.5 && (cy - 100.0).abs() < 0.5);
+    s.camera.roll = f32::NAN;
+    let (x, y) = project_point(&s, w, h, above).unwrap();
+    assert!((x - 100.0).abs() < 0.5 && y < 100.0);
+    render(&s, &RenderOptions { ssaa: 1, ..RenderOptions::new(16, 16) }).unwrap();
+}

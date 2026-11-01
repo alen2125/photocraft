@@ -65,6 +65,10 @@ pub struct Scene3dEditor {
     pub scene: Scene,
     pub(crate) selected: Option<NodeId>,
     pub(crate) orbit: Orbit,
+    /// Fly mode (Tab) and its speed.
+    pub(crate) fly: crate::scene3d_fly::FlyState,
+    /// The glide to a saved camera view, while there is one.
+    pub(crate) tween: Option<crate::scene3d_fly::ViewTween>,
     pub(crate) preview: Option<Preview>,
     /// Bumped on every change to the scene or camera; the preview re-renders when it moves.
     pub(crate) rev: u64,
@@ -172,6 +176,8 @@ impl Default for Scene3dEditor {
             scene,
             selected: None,
             orbit,
+            fly: Default::default(),
+            tween: None,
             preview: None,
             rev: 1,
             status: String::new(),
@@ -222,6 +228,7 @@ impl Scene3dEditor {
     /// Replaces the scene (a loaded file), keeping the camera it was saved with.
     pub fn load(&mut self, scene: Scene, file_name: Option<String>) {
         self.orbit = Orbit::from_camera(&scene.camera);
+        self.tween = None;
         self.scene = scene;
         self.selected = None;
         self.file_name = file_name;
@@ -720,11 +727,7 @@ pub(crate) fn nearest_bone(bones: &[(NodeId, Option<NodeId>, (f32, f32))], x: f3
 
 /// The camera's right and up axes and its view direction in the world.
 pub(crate) fn camera_axes(c: &Camera) -> (Vec3, Vec3, Vec3) {
-    let f = (Vec3::from(c.target) - Vec3::from(c.position)).normalize_or_zero();
-    let f = if f == Vec3::ZERO { Vec3::NEG_Z } else { f };
-    let right = f.cross(Vec3::Y).normalize_or_zero();
-    let right = if right == Vec3::ZERO { Vec3::X } else { right };
-    (right, right.cross(f), f)
+    c.axes()
 }
 
 /// Applies one pointer step of a bone drag: pull it to the pointer (IK, or sliding the top
@@ -820,6 +823,7 @@ fn side_panels(ui: &mut egui::Ui, ed: &mut Scene3dEditor) {
         }
     });
     quality_panel(ui, ed);
+    crate::scene3d_fly::panel(ui, ed);
     // How the physics feels; takes effect at once, also while it runs.
     ui.horizontal(|ui| {
         let g = ui.add(egui::Slider::new(&mut ed.gravity_scale, 0.0..=3.0).text(tl!("Gravity")).max_decimals(2));

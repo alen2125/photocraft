@@ -30,7 +30,7 @@ pub use link::{Link, LinkSpace};
 pub use photocraft_model3d as model3d;
 pub use scene::{
     Asset, Camera, FORMAT_VERSION, LIGHT_INTENSITY_MAX, LIGHT_POINT_BIAS_MAX, LIGHT_RANGE_MAX, LIGHT_SPOT_ANGLE_MAX, LIGHT_SPOT_ANGLE_MIN, Light, LightKind,
-    LightRender, MAX_DEPTH, MAX_FILE_BYTES, MAX_NODES, Material, ModelCache, ModelMesh, Node, NodeId, NodeKind, Pose,
+    LightRender, MAX_DEPTH, MAX_FILE_BYTES, MAX_NODES, MAX_VIEWS, Material, ModelCache, ModelMesh, Node, NodeId, NodeKind, Pose,
     PoseBone, Primitive, RotationLimits, Scene, SceneError, Transform,
 };
 
@@ -54,6 +54,9 @@ mod tests_joint;
 
 #[cfg(test)]
 mod tests_vam;
+
+#[cfg(test)]
+mod tests_camera;
 
 #[cfg(test)]
 mod tests_hold;
