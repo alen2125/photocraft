@@ -140,6 +140,24 @@ pub enum LightKind {
     Spot { angle: f32 },
 }
 
+/// How a light is evaluated (Unity's `LightRenderMode`, as Virt-a-Mate offers it).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LightRender {
+    /// Lit at the vertices and blended across each triangle (Gouraud). Casts no shadows.
+    #[default]
+    ForceVertex,
+    /// Lit at every pixel. The only mode that casts shadows.
+    ForcePixel,
+}
+
+/// Slider ranges of Virt-a-Mate's light (read from its `AdjustLightV2`).
+pub const LIGHT_INTENSITY_MAX: f32 = 8.0;
+pub const LIGHT_RANGE_MAX: f32 = 25.0;
+pub const LIGHT_SPOT_ANGLE_MIN: f32 = 1.0;
+pub const LIGHT_SPOT_ANGLE_MAX: f32 = 180.0;
+pub const LIGHT_POINT_BIAS_MAX: f32 = 0.03;
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Light {
@@ -149,11 +167,28 @@ pub struct Light {
     pub intensity: f32,
     /// Reach of point and spot lights in scene units.
     pub range: f32,
+    pub render_mode: LightRender,
+    /// Whether the light throws shadows (only in [`LightRender::ForcePixel`]).
+    pub cast_shadows: bool,
+    /// How dark a shadow gets: 0 none, 1 black (0–1).
+    pub shadow_strength: f32,
+    /// Depth bias of a *point* light's shadow, in scene units (0–0.03). Spot and sun lights use fixed
+    /// biases, as in Virt-a-Mate.
+    pub point_bias: f32,
 }
 
 impl Default for Light {
     fn default() -> Self {
-        Self { kind: LightKind::Point, color: [1.0; 3], intensity: 1.0, range: 20.0 }
+        Self {
+            kind: LightKind::Point,
+            color: [1.0; 3],
+            intensity: 1.0,
+            range: 20.0,
+            render_mode: LightRender::default(),
+            cast_shadows: true,
+            shadow_strength: 1.0,
+            point_bias: 0.001,
+        }
     }
 }
 

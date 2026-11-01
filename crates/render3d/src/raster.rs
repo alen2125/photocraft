@@ -14,6 +14,8 @@ struct Vert {
     pos: Vec3,
     nrm: Vec3,
     uv: [f32; 2],
+    /// Light from the vertex-lit lights (diffuse, highlight), blended across the triangle.
+    vlight: [Vec3; 2],
 }
 
 fn lerp_vert(a: Vert, b: Vert, t: f32) -> Vert {
@@ -22,6 +24,7 @@ fn lerp_vert(a: Vert, b: Vert, t: f32) -> Vert {
         pos: a.pos.lerp(b.pos, t),
         nrm: a.nrm.lerp(b.nrm, t),
         uv: [a.uv[0] + (b.uv[0] - a.uv[0]) * t, a.uv[1] + (b.uv[1] - a.uv[1]) * t],
+        vlight: [a.vlight[0].lerp(b.vlight[0], t), a.vlight[1].lerp(b.vlight[1], t)],
     }
 }
 
@@ -129,7 +132,7 @@ fn sample(t: Option<&TexRef>, lut: &[f32; 256], uv: [f32; 2]) -> Option<(Vec3, f
 }
 
 /// The pixel's colour, or `None` when its alpha falls under the material's cutoff.
-fn shade(d: &Draw, prep: &Prepared, pos: Vec3, mut n: Vec3, uv: [f32; 2], tangents: Option<(Vec3, Vec3)>) -> Option<(Vec3, f32)> {
+fn shade(d: &Draw, prep: &Prepared, pos: Vec3, mut n: Vec3, uv: [f32; 2], tangents: Option<(Vec3, Vec3)>, vlight: [Vec3; 2]) -> Option<(Vec3, f32)> {
     let (tex_rgb, tex_a) = sample(d.texture.as_ref(), &prep.lut, uv).unwrap_or((Vec3::ONE, 1.0));
     if let Some(cut) = d.cutoff
         && d.alpha * tex_a < cut
@@ -164,19 +167,48 @@ fn shade(d: &Draw, prep: &Prepared, pos: Vec3, mut n: Vec3, uv: [f32; 2], tangen
     let n_light = bend(d.normal_scale);
     let n_shine = if (d.spec_normal_scale - d.normal_scale).abs() < 1e-4 { n_light } else { bend(d.spec_normal_scale) };
     let spec_scale = sample(d.spec_map.as_ref(), &prep.raw, uv).map_or(1.0, |(s, _)| s.x);
-    let mut diffuse = prep.ambient;
-    let mut spec = Vec3::ZERO;
-    for l in &prep.lights {
-        let (to_light, atten) = light_vec(l, pos);
+    // The vertex-lit lights arrive already summed and blended; the pixel lights are summed here.
+    let mut diffuse = prep.ambient + vlight[0];
+    let mut spec = vlight[1] * spec_scale;
+    for l in prep.lights.iter().filter(|l| l.pixel) {
+        let (to_light, mut atten) = light_vec(l, pos);
         let ndl = n_light.dot(to_light);
         if ndl <= 0.0 || atten <= 0.0 {
             continue;
+        }
+        if let Some(s) = &l.shadow {
+            atten *= 1.0 - l.shadow_strength * s.occlusion(l, pos, n);
+            if atten <= 0.0 {
+                continue;
+            }
         }
         diffuse += l.radiance * (ndl * atten);
         let h = (to_light + v).normalize_or_zero();
         spec += l.radiance * (n_shine.dot(h).max(0.0).powf(d.shininess) * d.specular * spec_scale * atten);
     }
     Some((albedo * diffuse + spec + d.emissive, opacity))
+}
+
+/// What the vertex-lit lights give at one vertex: (diffuse, highlight). The normal map cannot act
+/// per vertex, so it plays no part here.
+fn vertex_light(d: &Draw, prep: &Prepared, pos: Vec3, nrm: Vec3) -> [Vec3; 2] {
+    let mut n = nrm.normalize_or_zero();
+    let v = (prep.eye - pos).normalize_or_zero();
+    if n.dot(v) < 0.0 {
+        n = -n;
+    }
+    let (mut diffuse, mut spec) = (Vec3::ZERO, Vec3::ZERO);
+    for l in prep.lights.iter().filter(|l| !l.pixel) {
+        let (to_light, atten) = light_vec(l, pos);
+        let ndl = n.dot(to_light);
+        if ndl <= 0.0 || atten <= 0.0 {
+            continue;
+        }
+        diffuse += l.radiance * (ndl * atten);
+        let h = (to_light + v).normalize_or_zero();
+        spec += l.radiance * (n.dot(h).max(0.0).powf(d.shininess) * d.specular * atten);
+    }
+    [diffuse, spec]
 }
 
 /// Unit vector from the surface to the light, and the light's strength there (0–1).
@@ -295,7 +327,7 @@ fn setup_lines(prep: &Prepared, d: &Draw, sw: usize, sh: usize) -> Vec<SetupSeg>
             }
             (true, true) => {}
         }
-        let screen = |c: Vec4| to_screen(&Vert { clip: c, pos: Vec3::ZERO, nrm: Vec3::ZERO, uv: [0.0; 2] }, fw, fh);
+        let screen = |c: Vec4| to_screen(&Vert { clip: c, pos: Vec3::ZERO, nrm: Vec3::ZERO, uv: [0.0; 2], vlight: [Vec3::ZERO; 2] }, fw, fh);
         let (a, b) = (screen(c0)?, screen(c1)?);
         let (lo, hi) = (a.y.min(b.y), a.y.max(b.y));
         if hi < 0.0 || lo >= fh || a.x.max(b.x) < 0.0 || a.x.min(b.x) >= fw {
@@ -378,7 +410,8 @@ fn draw_triangle(band: &mut Band, d: &Draw, prep: &Prepared, t: &SetupTri) {
             let nrm = tri[0].nrm * p0 + tri[1].nrm * p1 + tri[2].nrm * p2;
             let uv = [tri[0].uv[0] * p0 + tri[1].uv[0] * p1 + tri[2].uv[0] * p2, tri[0].uv[1] * p0 + tri[1].uv[1] * p1 + tri[2].uv[1] * p2];
             // A dropped (transparent) texel leaves the depth buffer alone.
-            let Some((col, opacity)) = shade(d, prep, pos, nrm, uv, tangents) else { continue };
+            let vlight = [0, 1].map(|k| tri[0].vlight[k] * p0 + tri[1].vlight[k] * p1 + tri[2].vlight[k] * p2);
+            let Some((col, opacity)) = shade(d, prep, pos, nrm, uv, tangents, vlight) else { continue };
             if d.blend {
                 // Mixed over what is there, and the depth is left alone, so what is behind still draws.
                 if opacity > 0.004
@@ -422,12 +455,19 @@ fn setup_draw(prep: &Prepared, di: usize, d: &Draw, sw: usize, sh: usize) -> Vec
     if d.lines {
         return Vec::new();
     }
+    let vertex_lit = !d.unlit && prep.lights.iter().any(|l| !l.pixel);
     let verts: Vec<Vert> = d
         .positions
         .iter()
         .zip(&d.normals)
         .enumerate()
-        .map(|(i, (pos, nrm))| Vert { clip: prep.view_proj * pos.extend(1.0), pos: *pos, nrm: *nrm, uv: d.uvs.get(i).copied().unwrap_or([0.0; 2]) })
+        .map(|(i, (pos, nrm))| Vert {
+            clip: prep.view_proj * pos.extend(1.0),
+            pos: *pos,
+            nrm: *nrm,
+            uv: d.uvs.get(i).copied().unwrap_or([0.0; 2]),
+            vlight: if vertex_lit { vertex_light(d, prep, *pos, *nrm) } else { [Vec3::ZERO; 2] },
+        })
         .collect();
     let mut out = Vec::with_capacity(d.indices.len() / 3);
     for &[i0, i1, i2] in d.indices.as_chunks::<3>().0 {

@@ -167,7 +167,7 @@ fn lit_quad(normal: Option<[u8; 4]>, spec: Option<[u8; 4]>) -> Image {
     let mut s = bright_scene(Arc::new(model));
     s.ambient = [0.0; 3];
     s.nodes.retain(|n| !matches!(n.kind, NodeKind::Light(_)));
-    let mut light = Node { kind: NodeKind::Light(photocraft_scene3d::Light { kind: photocraft_scene3d::LightKind::Directional, intensity: 2.0, ..Default::default() }), ..Node::default() };
+    let mut light = Node { kind: NodeKind::Light(photocraft_scene3d::Light { kind: photocraft_scene3d::LightKind::Directional, intensity: 2.0, render_mode: photocraft_scene3d::LightRender::ForcePixel, ..Default::default() }), ..Node::default() };
     // Directional lights shine along their own -Z: turn it to travel along -X (from the right).
     light.transform.rotation = [0.0, 90.0, 0.0];
     s.add(light).unwrap();
@@ -198,7 +198,7 @@ fn a_specular_map_scales_the_highlight() {
         let mut s = bright_scene(Arc::new(model));
         s.ambient = [0.0; 3];
         s.nodes.retain(|n| !matches!(n.kind, NodeKind::Light(_)));
-        let mut light = Node { kind: NodeKind::Light(photocraft_scene3d::Light { kind: photocraft_scene3d::LightKind::Directional, intensity: 2.0, ..Default::default() }), ..Node::default() };
+        let mut light = Node { kind: NodeKind::Light(photocraft_scene3d::Light { kind: photocraft_scene3d::LightKind::Directional, intensity: 2.0, render_mode: photocraft_scene3d::LightRender::ForcePixel, ..Default::default() }), ..Node::default() };
         light.transform.rotation = [0.0, 0.0, 0.0];
         s.add(light).unwrap();
         px(&render(&s, &opts()).unwrap(), 32, 32)
@@ -235,7 +235,7 @@ fn the_two_normal_strengths_shape_the_light_and_the_shine_separately() {
         let mut s = bright_scene(Arc::new(model));
         s.ambient = [0.0; 3];
         s.nodes.retain(|n| !matches!(n.kind, NodeKind::Light(_)));
-        let mut light = Node { kind: NodeKind::Light(photocraft_scene3d::Light { kind: photocraft_scene3d::LightKind::Directional, intensity: 2.0, ..Default::default() }), ..Node::default() };
+        let mut light = Node { kind: NodeKind::Light(photocraft_scene3d::Light { kind: photocraft_scene3d::LightKind::Directional, intensity: 2.0, render_mode: photocraft_scene3d::LightRender::ForcePixel, ..Default::default() }), ..Node::default() };
         light.transform.rotation = [0.0, 90.0, 0.0];
         s.add(light).unwrap();
         px(&render(&s, &opts()).unwrap(), 32, 32)

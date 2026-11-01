@@ -125,7 +125,7 @@ fn spot_light_only_lights_inside_its_cone() {
     s.add_primitive(Primitive::Plane { size: [20.0, 20.0] }, Transform::default()).unwrap();
     s.add(Node {
         transform: Transform { translation: [0.0, 4.0, 0.0], rotation: [-90.0, 0.0, 0.0], scale: [1.0; 3] },
-        kind: NodeKind::Light(Light { kind: LightKind::Spot { angle: 30.0 }, intensity: 3.0, range: 30.0, ..Light::default() }),
+        kind: NodeKind::Light(Light { kind: LightKind::Spot { angle: 30.0 }, intensity: 3.0, range: 30.0, render_mode: photocraft_scene3d::LightRender::ForcePixel, ..Light::default() }),
         ..Node::default()
     })
     .unwrap();

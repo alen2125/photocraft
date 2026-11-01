@@ -9,7 +9,8 @@ use std::sync::Arc;
 
 use egui::{Color32, pos2};
 use photocraft_scene3d::glam::{Quat, Vec3};
-use photocraft_scene3d::{Camera, GizmoMode, Light, LightKind, Material, Node, NodeId, NodeKind, Primitive, RotationLimits, Scene, Transform};
+use photocraft_scene3d::{
+    Camera, GizmoMode, LIGHT_INTENSITY_MAX, LIGHT_POINT_BIAS_MAX, LIGHT_RANGE_MAX, LIGHT_SPOT_ANGLE_MAX, LIGHT_SPOT_ANGLE_MIN, Light, LightKind, LightRender, Material, Node, NodeId, NodeKind, Primitive, RotationLimits, Scene, Transform};
 use serde_json::json;
 
 use crate::PhotocraftApp;
@@ -491,13 +492,36 @@ fn node_inspector(ui: &mut egui::Ui, ed: &mut Scene3dEditor, id: NodeId) {
                 ui.label(tl!("Color"));
                 changed |= ui.color_edit_button_rgb(&mut l.color).changed();
             });
-            changed |= ui.add(egui::Slider::new(&mut l.intensity, 0.0..=10.0).text(tl!("Intensity"))).changed();
+            // The ranges are Virt-a-Mate's sliders.
+            changed |= ui.add(egui::Slider::new(&mut l.intensity, 0.0..=LIGHT_INTENSITY_MAX).max_decimals(3).text(tl!("Intensity"))).changed();
             if !matches!(l.kind, LightKind::Directional) {
-                changed |= ui.add(egui::Slider::new(&mut l.range, 0.5..=100.0).logarithmic(true).text(tl!("Range"))).changed();
+                changed |= ui.add(egui::Slider::new(&mut l.range, 0.0..=LIGHT_RANGE_MAX).max_decimals(2).text(tl!("Range"))).changed();
             }
             if let LightKind::Spot { angle } = &mut l.kind {
-                changed |= ui.add(egui::Slider::new(angle, 5.0..=170.0).text(tl!("Cone angle"))).changed();
+                changed |= ui.add(egui::Slider::new(angle, LIGHT_SPOT_ANGLE_MIN..=LIGHT_SPOT_ANGLE_MAX).max_decimals(2).text(tl!("Spot angle"))).changed();
             }
+            egui::ComboBox::from_label(tl!("Render mode"))
+                .selected_text(match l.render_mode {
+                    LightRender::ForceVertex => tl!("Force vertex"),
+                    LightRender::ForcePixel => tl!("Force pixel"),
+                })
+                .show_ui(ui, |ui| {
+                    changed |= ui.selectable_value(&mut l.render_mode, LightRender::ForceVertex, tl!("Force vertex")).changed();
+                    changed |= ui.selectable_value(&mut l.render_mode, LightRender::ForcePixel, tl!("Force pixel")).changed();
+                });
+            // Only pixel lights throw shadows, so the shadow settings wait for that mode.
+            let pixel = l.render_mode == LightRender::ForcePixel;
+            let needs_pixel = tl!("Shadows come only from pixel lights.");
+            changed |= ui.add_enabled(pixel, egui::Checkbox::new(&mut l.cast_shadows, tl!("Cast shadows"))).on_disabled_hover_text(needs_pixel).changed();
+            let strength = egui::Slider::new(&mut l.shadow_strength, 0.0..=1.0).max_decimals(3).text(tl!("Shadow strength"));
+            changed |= ui.add_enabled(pixel, strength).on_disabled_hover_text(needs_pixel).changed();
+            // Virt-a-Mate's Point Bias reaches point lights only; spots and suns have fixed biases.
+            let is_point = matches!(l.kind, LightKind::Point);
+            let bias = egui::Slider::new(&mut l.point_bias, 0.0..=LIGHT_POINT_BIAS_MAX).max_decimals(3).text(tl!("Point bias"));
+            changed |= ui
+                .add_enabled(pixel && is_point, bias)
+                .on_disabled_hover_text(if is_point { needs_pixel } else { tl!("The bias applies to point lights only.") })
+                .changed();
         }
     }
     if let Some(p) = reparent {

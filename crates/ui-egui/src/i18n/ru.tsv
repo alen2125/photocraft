@@ -4719,3 +4719,12 @@ shape	Appearance	Оформление
 	How much of the hair is drawn: all of it at 1, the guide strands only at 0. Lower it if it is slow.	Сколько волос рисуется: все при 1, только направляющие пряди при 0. Уменьшите, если тормозит.
 	Folder with the exported figures	Папка с выгруженными фигурами
 	Pick a look: the body it needs is put in the scene.	Выберите образ: нужное ему тело появится в сцене.
+	Render mode	Режим рендера
+	Force vertex	По вершинам
+	Force pixel	По пикселям
+	Cast shadows	Отбрасывать тени
+	Shadow strength	Сила тени
+	Point bias	Смещение тени (Point)
+	Spot angle	Угол конуса
+	Shadows come only from pixel lights.	Тени дают только света в режиме «по пикселям».
+	The bias applies to point lights only.	Смещение действует только на точечные света.

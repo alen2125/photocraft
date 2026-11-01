@@ -20,7 +20,7 @@ fn floor_and_spot() -> (Scene, photocraft_scene3d::NodeId, photocraft_scene3d::N
     let spot = s
         .add(Node {
             transform: Transform::at(0.0, 4.0, 0.0),
-            kind: NodeKind::Light(Light { kind: LightKind::Spot { angle: 30.0 }, intensity: 3.0, range: 40.0, ..Light::default() }),
+            kind: NodeKind::Light(Light { kind: LightKind::Spot { angle: 30.0 }, intensity: 3.0, range: 40.0, render_mode: photocraft_scene3d::LightRender::ForcePixel, ..Light::default() }),
             ..Node::default()
         })
         .unwrap();

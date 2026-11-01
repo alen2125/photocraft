@@ -98,3 +98,15 @@ fn non_finite_transforms_do_not_poison_matrices() {
     let t = Transform { translation: [f32::NAN, 1.0, f32::INFINITY], rotation: [f32::NAN; 3], scale: [f32::NAN, 2.0, 1.0] };
     assert!(t.matrix().to_cols_array().iter().all(|v| v.is_finite()));
 }
+
+#[test]
+fn light_files_without_the_render_and_shadow_fields_load_with_vam_defaults() {
+    let l: Light = serde_json::from_str(r#"{"kind":"spot","angle":40.0,"intensity":2.0}"#).unwrap();
+    assert_eq!(l.render_mode, LightRender::ForceVertex);
+    assert!(l.cast_shadows);
+    assert_eq!(l.shadow_strength, 1.0);
+    assert_eq!(l.point_bias, 0.001);
+    let changed = Light { render_mode: LightRender::ForcePixel, cast_shadows: false, shadow_strength: 0.49, point_bias: 0.015, ..l };
+    let back: Light = serde_json::from_str(&serde_json::to_string(&changed).unwrap()).unwrap();
+    assert_eq!(back, changed);
+}

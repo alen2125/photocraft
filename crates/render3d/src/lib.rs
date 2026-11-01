@@ -9,12 +9,13 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 mod raster;
+mod shadow;
 
 use std::sync::Arc;
 
 use photocraft_scene3d::glam::{Mat3, Mat4, Vec3, Vec4};
 use photocraft_scene3d::model3d::{AlphaMode, ModelData};
-use photocraft_scene3d::{Light, LightKind, Material, ModelMesh, NodeId, NodeKind, Scene};
+use photocraft_scene3d::{Light, LightKind, LightRender, Material, ModelMesh, NodeId, NodeKind, Scene};
 
 /// Largest output edge in pixels.
 pub const MAX_EDGE: u32 = 16_384;
@@ -116,6 +117,15 @@ pub(crate) struct LightW {
     /// Direction the light travels (unit).
     pub dir: Vec3,
     pub range: f32,
+    /// Lit per pixel (`ForcePixel`); otherwise at the vertices and blended across the triangle.
+    pub pixel: bool,
+    pub cast_shadows: bool,
+    /// 0–1, how dark a shadow gets.
+    pub shadow_strength: f32,
+    /// Depth bias of a point light's shadow, in scene units.
+    pub point_bias: f32,
+    /// Built by [`shadow::attach`] for pixel lights that cast shadows.
+    pub shadow: Option<shadow::ShadowMap>,
 }
 
 pub(crate) struct Prepared {
@@ -285,7 +295,19 @@ fn light_world(world: &std::collections::HashMap<NodeId, Mat4>, id: NodeId, l: &
     }
     let k = if l.intensity.is_finite() { l.intensity.max(0.0) } else { 0.0 };
     let range = if l.range.is_finite() { l.range.max(1e-3) } else { 20.0 };
-    Some(LightW { kind: l.kind, radiance: lin3(l.color) * k, pos, dir, range })
+    let unit = |v: f32, default: f32| if v.is_finite() { v.clamp(0.0, 1.0) } else { default };
+    Some(LightW {
+        kind: l.kind,
+        radiance: lin3(l.color) * k,
+        pos,
+        dir,
+        range,
+        pixel: l.render_mode == LightRender::ForcePixel,
+        cast_shadows: l.cast_shadows,
+        shadow_strength: unit(l.shadow_strength, 1.0),
+        point_bias: if l.point_bias.is_finite() { l.point_bias.clamp(0.0, photocraft_scene3d::LIGHT_POINT_BIAS_MAX) } else { 0.001 },
+        shadow: None,
+    })
 }
 
 /// Eye position and view-projection matrix of the scene's camera; sanitised so any camera works.
@@ -369,7 +391,8 @@ fn check(opts: &RenderOptions) -> Result<(u32, u64), RenderError> {
 /// Renders the scene through its camera.
 pub fn render(scene: &Scene, opts: &RenderOptions) -> Result<Image, RenderError> {
     let (ss, samples) = check(opts)?;
-    let prep = prepare(scene, opts.width as f32 / opts.height as f32);
+    let mut prep = prepare(scene, opts.width as f32 / opts.height as f32);
+    shadow::attach(&mut prep);
     raster::render(&prep, opts, ss, samples)
 }
 
@@ -459,3 +482,6 @@ mod tests_models;
 
 #[cfg(test)]
 mod tests_links;
+
+#[cfg(test)]
+mod tests_light;
