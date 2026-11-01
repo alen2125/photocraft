@@ -1295,6 +1295,20 @@ pub enum ColorPanelSliderMode {
     #[default]
     Hsb,
     Rgb,
+    Lab,
+    Cmyk,
+    Bw,
+}
+
+/// Which hue ring the wheel view draws (`color_mixer_ui`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WheelRing {
+    /// Red at the right, hue growing counter-clockwise.
+    #[default]
+    Hsv,
+    /// Yellow on top, red upper left, green upper right: C, M, Y sit as a triangle.
+    Cmy,
 }
 
 /// Color panel state.
@@ -1318,6 +1332,9 @@ pub struct ColorPanelState {
     /// Hue ring + triangle instead of the square field (`color_mixer_ui`).
     #[serde(default)]
     pub wheel: bool,
+    /// The hue ring the wheel draws.
+    #[serde(default)]
+    pub wheel_ring: WheelRing,
     /// Mixer row stays as it was until the colour changes elsewhere (off: it follows the colours).
     #[serde(default)]
     pub mixer_fixed: bool,

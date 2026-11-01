@@ -53,7 +53,8 @@
 
 | Файл | Место | Что изменено |
 |---|---|---|
-| `crates/ui-egui/src/lib.rs` | список `pub mod` | `pub mod color_mixer_ui;` |
+| `crates/ui-egui/src/lib.rs` | список `pub mod` | `pub mod color_mixer_ui;`, `pub mod color_wheel_sliders;` |
+| `crates/ui-egui/src/color_wheel_sliders.rs` | новый файл | в режиме «Колесо» под кругом слайдеры RGB / HSV / LAB / CMYK / B/W и ряд «Режим:»; кнопка слева внизу круга переключает кольцо (`WheelRing`: HSV — красный справа, CMY — жёлтый сверху). `ColorPanelSliderMode` получил `Lab`, `Cmyk`, `Bw`, `ColorPanelState` — `wheel_ring` |
 | `crates/ui-egui/src/state.rs` | `ColorPanelState` | поля `mixer_steps`, `lock_brightness`, `wheel` (старые настройки грузятся) |
 | `crates/ui-egui/src/panels.rs` | `dock_body`, ветка `(Group::Color, 0) if pro` | строка `crate::color_mixer_ui::panel(app, ui);` после `color_field` |
 | `crates/ui-egui/src/panels.rs` | `color_field` | высота поля уменьшена на `MIXER_HEIGHT`; ранний выход в `wheel_field` после чипов; `apply_lock` после выбора оттенка на полоске |

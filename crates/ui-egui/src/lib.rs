@@ -75,6 +75,7 @@ pub mod crop_size;
 pub mod crop_straighten;
 pub mod crop_ui;
 pub mod color_mixer_ui;
+pub mod color_wheel_sliders;
 pub mod color_panel_memory;
 pub mod custom_shape_ui;
 mod scene3d_canvas;

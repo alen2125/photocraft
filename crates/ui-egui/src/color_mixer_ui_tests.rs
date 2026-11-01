@@ -5,6 +5,28 @@ use super::*;
 use crate::panels::hsva_srgb;
 
 #[test]
+fn rings_put_the_hues_where_the_picture_has_them() {
+    // Turns counter-clockwise from the right: top = 0.25, 10 o'clock = 150/360.
+    let near = |a: f32, b: f32| (a - b).abs() < 1e-4;
+    assert!(near(ring_angle(WheelRing::Hsv, 0.0), 0.0));
+    assert!(near(ring_angle(WheelRing::Cmy, 60.0 / 360.0), 0.25), "yellow on top");
+    assert!(near(ring_angle(WheelRing::Cmy, 0.0), 150.0 / 360.0), "red upper left");
+    assert!(near(ring_angle(WheelRing::Cmy, 120.0 / 360.0), 30.0 / 360.0), "green upper right");
+    assert!(near(ring_angle(WheelRing::Cmy, 240.0 / 360.0), -0.25), "blue at the bottom");
+}
+
+#[test]
+fn ring_hue_inverts_ring_angle() {
+    for kind in [WheelRing::Hsv, WheelRing::Cmy] {
+        for k in 0..36 {
+            let h = k as f32 / 36.0;
+            assert!((ring_hue(kind, ring_angle(kind, h)) - h).abs() < 1e-4, "{kind:?} {h}");
+        }
+    }
+    assert!(ring_hue(WheelRing::Cmy, -5.0) < 1.0);
+}
+
+#[test]
 fn mix_steps_run_from_the_first_colour_to_the_second() {
     let a = [1.0, 0.0, 0.0, 1.0];
     let b = [0.0, 0.0, 1.0, 1.0];

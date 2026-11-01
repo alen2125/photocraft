@@ -8,6 +8,7 @@ use egui::{Color32, Rect, Sense, Stroke, StrokeKind, Vec2, pos2, vec2};
 
 use crate::PhotocraftApp;
 use crate::panels::{hsva_color32, hsva_srgb};
+use crate::state::WheelRing;
 use crate::theme::Tokens;
 
 /// Height the mixer rows take under the colour field (the field gives it up in `color_field_height`).
@@ -59,12 +60,12 @@ pub fn v_for_luma(h: f32, s: f32, target: f32) -> f32 {
     0.5 * (lo + hi)
 }
 
-fn active(app: &PhotocraftApp) -> [f32; 4] {
+pub(crate) fn active(app: &PhotocraftApp) -> [f32; 4] {
     if app.ui.color_panel.background { app.session.tools.background } else { app.session.tools.foreground }
 }
 
 /// Sets the colour the panel edits, with the hooks `color_field` runs for the foreground.
-fn set_active(app: &mut PhotocraftApp, gesture: Option<String>, c: [f32; 4]) {
+pub(crate) fn set_active(app: &mut PhotocraftApp, gesture: Option<String>, c: [f32; 4]) {
     if app.ui.color_panel.background {
         app.session.tools.background = c;
     } else {
@@ -216,7 +217,9 @@ pub(crate) fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             cp.wheel = !cp.wheel;
         }
         // HSB/RGB sliders: the small menu button, with the rest of the row.
-        crate::panels::color_slider_mode_row(app, ui);
+        if !app.ui.color_panel.wheel {
+            crate::panels::color_slider_mode_row(app, ui);
+        }
     });
     ui.add_space(4.0);
     let colors = strip(app);
@@ -291,6 +294,60 @@ pub fn point_from_sv(v: [egui::Pos2; 3], s: f32, value: f32) -> egui::Pos2 {
     pos2(wa * v[0].x + wb * v[1].x + wc * v[2].x, wa * v[0].y + wb * v[1].y + wc * v[2].y)
 }
 
+/// Where hue `h` (0..1) sits on the ring `kind`, as a turn counter-clockwise from the right.
+/// `Hsv`: red at the right, hue counter-clockwise. `Cmy`: red at 10 o'clock, yellow on top, hue
+/// clockwise, so green is at 2, cyan at 4, blue at the bottom and magenta at 8.
+pub fn ring_angle(kind: WheelRing, h: f32) -> f32 {
+    match kind {
+        WheelRing::Hsv => h,
+        WheelRing::Cmy => 150.0 / 360.0 - h,
+    }
+}
+
+/// The hue (0..1) at the turn `angle` of the ring `kind`; the inverse of [`ring_angle`].
+pub fn ring_hue(kind: WheelRing, angle: f32) -> f32 {
+    let h = match kind {
+        WheelRing::Hsv => angle,
+        WheelRing::Cmy => 150.0 / 360.0 - angle,
+    };
+    h.rem_euclid(1.0).min(0.9999)
+}
+
+/// The small round button at the lower left of the wheel that switches the ring (as in Coolorus):
+/// a miniature of the ring the click gives.
+fn ring_button(app: &mut PhotocraftApp, ui: &mut egui::Ui, rect: Rect) {
+    let t = Tokens::get(ui.ctx());
+    let kind = app.ui.color_panel.wheel_ring;
+    let r = 11.0;
+    let c = pos2(rect.left() + r + 2.0, rect.bottom() - r - 2.0);
+    let resp = ui.interact(Rect::from_center_size(c, Vec2::splat(2.0 * r)), egui::Id::new("color-wheel-ring-button"), Sense::click());
+    let other = match kind {
+        WheelRing::Hsv => WheelRing::Cmy,
+        WheelRing::Cmy => WheelRing::Hsv,
+    };
+    let n = 24;
+    let (outer, inner) = (r, r * 0.6);
+    let mut mesh = egui::Mesh::default();
+    for k in 0..=n {
+        let h = k as f32 / n as f32;
+        let a = ring_angle(other, h) * std::f32::consts::TAU;
+        let col = hsva_color32(Hsva::new(h.min(0.9999), 1.0, 1.0, 1.0));
+        mesh.colored_vertex(pos2(c.x + outer * a.cos(), c.y - outer * a.sin()), col);
+        mesh.colored_vertex(pos2(c.x + inner * a.cos(), c.y - inner * a.sin()), col);
+    }
+    for k in 0..n {
+        let a = (k * 2) as u32;
+        mesh.add_triangle(a, a + 1, a + 3);
+        mesh.add_triangle(a, a + 3, a + 2);
+    }
+    ui.painter().add(mesh);
+    let ring = if resp.hovered() { t.text } else { t.separator };
+    ui.painter().circle_stroke(c, outer + 1.0, Stroke::new(1.0, ring));
+    if resp.on_hover_text(tl!("Wheel type")).clicked() {
+        app.ui.color_panel.wheel_ring = other;
+    }
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum Zone {
     None,
@@ -309,8 +366,10 @@ pub(crate) fn wheel_field(app: &mut PhotocraftApp, ui: &mut egui::Ui, size: Vec2
     let ring_w = (outer * 0.16).clamp(6.0, 22.0).min(outer);
     let inner = outer - ring_w;
     let tri_r = (inner - 4.0).max(0.0);
+    let kind = app.ui.color_panel.wheel_ring;
+    // A hue's place on the ring, which depends on the ring in use.
     let dir = |h: f32, r: f32| {
-        let a = h * std::f32::consts::TAU;
+        let a = ring_angle(kind, h) * std::f32::consts::TAU;
         pos2(c.x + r * a.cos(), c.y - r * a.sin())
     };
 
@@ -369,8 +428,8 @@ pub(crate) fn wheel_field(app: &mut PhotocraftApp, ui: &mut egui::Ui, size: Vec2
     {
         match zone {
             Zone::Ring => {
-                let h = (-(p.y - c.y)).atan2(p.x - c.x) / std::f32::consts::TAU;
-                hsva.h = h.rem_euclid(1.0).min(0.9999);
+                let turn = (-(p.y - c.y)).atan2(p.x - c.x) / std::f32::consts::TAU;
+                hsva.h = ring_hue(kind, turn);
                 hsva = apply_lock(app, ui, hsva, resp.drag_started() || !resp.dragged());
                 changed = true;
             }
@@ -392,6 +451,8 @@ pub(crate) fn wheel_field(app: &mut PhotocraftApp, ui: &mut egui::Ui, size: Vec2
         ui.painter().circle_stroke(m, 5.0, Stroke::new(1.5, Color32::WHITE));
         ui.painter().circle_stroke(m, 6.5, Stroke::new(1.0, Color32::from_black_alpha(160)));
     }
+
+    ring_button(app, ui, rect);
 
     if changed {
         set_active(app, crate::shape_fill_ui::gesture(ui), hsva_srgb(hsva));
