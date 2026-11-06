@@ -633,6 +633,16 @@ fn channel_restrictions_and_bevel_elements_roundtrip() {
 }
 
 #[test]
+fn parallel_layer_flag_roundtrips() {
+    let mut doc = rich_doc(ColorMode::Rgb, SampleType::U8);
+    assert!(!doc.layers[0].side);
+    doc.layers[0].side = true;
+    let back = load_from_bytes(&save_to_bytes(&doc, &SaveOptions::default()).unwrap()).unwrap();
+    assert_eq!(back, doc);
+    assert!(back.layers[0].side);
+}
+
+#[test]
 fn blend_if_roundtrips() {
     use photocraft_doc::{BlendIf, BlendRange};
     let mut doc = rich_doc(ColorMode::Rgb, SampleType::U16);

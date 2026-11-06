@@ -225,7 +225,7 @@ pub fn specs() -> Vec<CommandSpec> {
         label: "Sample Color",
         menu: &[],
         shortcut: None,
-        params: r##"{"x":f64,"y":f64,"size":"point"|1|3|5|11|31|51|101=1,"sampleLayer":"current"|"currentAndBelow"|"all"|"allNoAdjustments"|"currentAndBelowNoAdjustments"="all"} → [r,g,b,a] (the Eyedropper's Sample Size and Sample: the composite pixel, or the average of the size×size square centred on it, clipped to the canvas; transparent off the canvas)"##,
+        params: r##"{"x":f64,"y":f64,"size":"point"|1|3|5|11|31|51|101=1,"sampleLayer":"current"|"currentAndBelow"|"all"|"allNoAdjustments"|"currentAndBelowNoAdjustments"="all","side":bool=false (sample the side canvas, the parallel layers' view)} → [r,g,b,a] (the Eyedropper's Sample Size and Sample: the composite pixel, or the average of the size×size square centred on it, clipped to the canvas; transparent off the canvas)"##,
         enabled: |s| s.active().map(|_| ()).ok_or_else(|| "no document open".into()),
         run: |s: &mut Session, p: &Value| {
             const CMD: &str = "document.sampleColor";
@@ -233,7 +233,14 @@ pub fn specs() -> Vec<CommandSpec> {
             let size = size_param(CMD, p)?;
             let which = layers_param(CMD, p)?;
             let d = s.active().ok_or(EngineError::NoDocument)?;
-            Ok(json!(sample_color(&d.doc, d.active_layer, x, y, size, which)))
+            if p.get("side").and_then(Value::as_bool) == Some(true) {
+                // The side canvas: no parallel layer means nothing is there to sample.
+                let Some(side) = d.doc.side_view() else { return Ok(json!([0.0f32, 0.0, 0.0, 0.0])) };
+                return Ok(json!(sample_color(&side, d.active_layer, x, y, size, which)));
+            }
+            // The document's own composite leaves the parallel layers out.
+            let main = d.doc.main_view();
+            Ok(json!(sample_color(main.as_ref().unwrap_or(&d.doc), d.active_layer, x, y, size, which)))
         },
         journal: false,
     }]

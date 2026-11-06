@@ -504,6 +504,11 @@ fn export_stages(doc: &Document, name_or_ext: &str, opts: &ExportOptions, ctl: &
             "XCF is GIMP's own format and PhotoCraft only opens it; save as .pcraft to keep the layers, or export a flat image".into(),
         ));
     }
+    // Parallel layers are not part of the picture: they stay in the file (hidden, or flagged in a
+    // .pcraft) but out of every composite.
+    let original = doc;
+    let main = doc.main_view();
+    let doc = main.as_ref().unwrap_or(doc);
     if ext == "ora" {
         return ora::export(doc);
     }
@@ -511,17 +516,17 @@ fn export_stages(doc: &Document, name_or_ext: &str, opts: &ExportOptions, ctl: &
         return pdf::export(doc);
     }
     if ext == photocraft_format::EXTENSION {
-        let doc = named_for_file(doc, name_or_ext);
-        let thumbnail = Some(photocraft_compose::thumbnail(doc.as_ref(), 256));
+        let saved = named_for_file(original, name_or_ext);
+        let thumbnail = Some(photocraft_compose::thumbnail(doc, 256));
         ctl.check().map_err(|_| IoError::Cancelled)?;
         ctl.progress(PCRAFT_THUMBNAIL_DONE);
-        let composite = Some(photocraft_compose::thumbnail(doc.as_ref(), 1024));
+        let composite = Some(photocraft_compose::thumbnail(doc, 1024));
         ctl.check().map_err(|_| IoError::Cancelled)?;
         ctl.progress(PCRAFT_PREVIEWS_DONE);
         let previews = photocraft_format::SaveOptions { thumbnail, composite };
         let bytes = match &opts.pcraft_cache {
-            Some(cache) => cache.encode(doc.as_ref(), &previews)?,
-            None => photocraft_format::save_to_bytes(doc.as_ref(), &previews)?,
+            Some(cache) => cache.encode(saved.as_ref(), &previews)?,
+            None => photocraft_format::save_to_bytes(saved.as_ref(), &previews)?,
         };
         return Ok(ExportResult { bytes, warnings: Vec::new() });
     }

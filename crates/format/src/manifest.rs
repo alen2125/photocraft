@@ -245,6 +245,9 @@ pub struct LayerM {
     /// The layer's own XMP packet (missing in older files = none).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub xmp: Option<String>,
+    /// Parallel layer (shown on the side canvas; missing in older files = a normal layer).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub side: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -358,6 +361,10 @@ pub struct ChannelM {
 
 fn is_zero_u32(v: &u32) -> bool {
     *v == 0
+}
+
+fn is_false(v: &bool) -> bool {
+    !*v
 }
 
 fn default_channel_color() -> Color {

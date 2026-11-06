@@ -727,6 +727,12 @@ impl Ex {
             },
             None => raw.retain(|(k, _)| k != b"brst"),
         }
+        // Parallel layer: PhotoCraft's own block, written from the field (other apps ignore it).
+        match (l.side, raw.iter_mut().find(|(k, _)| k == b"pcSd")) {
+            (true, Some(e)) => e.1 = vec![0, 0, 0, 1],
+            (true, None) => raw.push((*b"pcSd", vec![0, 0, 0, 1])),
+            (false, _) => raw.retain(|(k, _)| k != b"pcSd"),
+        }
         // Advanced Blending: written from the field (in place when the block was imported).
         crate::blocks::put_advanced(&l.advanced, &mut raw);
         if !matches!(l.content, LayerContent::Shape(_)) {

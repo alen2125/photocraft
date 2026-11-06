@@ -663,8 +663,10 @@ fn layer_pixels_equal(a: &Layer, b: &Layer) -> bool {
         advanced,
         video: _,
         xmp: _,
+        side,
     } = a;
     *id == b.id
+        && *side == b.side
         && *visible == b.visible
         && *blend == b.blend
         && *opacity == b.opacity
@@ -925,7 +927,7 @@ pub fn step_damage(a: &Document, b: &Document) -> Option<Rect> {
             }
             // Clipping and channel exclusion change how *other* layers render, outside this
             // layer's own bounds; they have no bounded damage.
-            if x.clipped != y.clipped || x.excluded_channels != y.excluded_channels {
+            if x.clipped != y.clipped || x.excluded_channels != y.excluded_channels || x.side != y.side {
                 return false;
             }
             if !layer_pixels_equal(x, y) {

@@ -37,6 +37,8 @@ pub enum Indicator {
     Fx,
     SmartFilters,
     Link,
+    /// A parallel layer: shown on the side canvas, not in the document.
+    Side,
     Blend,
 }
 
@@ -102,6 +104,9 @@ pub fn reserved_width(l: &Layer) -> f32 {
         w += ICON_W + GAP;
     }
     if l.link_group.is_some() {
+        w += ICON_W + GAP;
+    }
+    if l.side {
         w += ICON_W + GAP;
     }
     w
@@ -178,6 +183,9 @@ pub fn indicators(
     if l.link_group.is_some() {
         items.push((Indicator::Link, ICON_W));
     }
+    if l.side {
+        items.push((Indicator::Side, ICON_W));
+    }
     if let Some(g) = &blend_galley {
         items.push((Indicator::Blend, g.size().x));
     }
@@ -194,6 +202,10 @@ pub fn indicators(
             }
             Indicator::Lock => icons::paint(ui, Rect::from_center_size(r.center(), vec2(ICON_W, ICON_W)), "lock", 12.0, t.text_faint),
             Indicator::Link => icons::paint(ui, Rect::from_center_size(r.center(), vec2(ICON_W, ICON_W)), "link-2", 12.0, t.text_faint),
+            Indicator::Side => {
+                icons::paint(ui, Rect::from_center_size(r.center(), vec2(ICON_W, ICON_W)), "panel-right", 12.0, t.text_faint);
+                ui.interact(r, ui.id().with(("row-side", l.id.0)), Sense::hover()).on_hover_text(tl!("Parallel layer: shown on the side canvas, not in the document"));
+            }
             Indicator::Fx => {
                 if let Some(g) = fx_galley.clone() {
                     painter.galley(pos2(r.left(), cy - g.size().y / 2.0), g, t.text_dim);

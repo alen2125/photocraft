@@ -607,3 +607,19 @@ fn psd_16bit_layers_with_compatibility_section_open_visible() {
     assert!(imported.layers[0].surface().unwrap().tile_count() > 0);
     assert!(imported.layers[1].surface().unwrap().tile_count() > 0);
 }
+
+#[test]
+fn parallel_layer_round_trips_as_pcsd() {
+    use photocraft_doc::{Document, Layer, Size};
+    let mut d = Document::new("c", Size::new(8, 8), ColorMode::Rgb, SampleType::U8);
+    let mut a = Layer::raster("a", d.pixel_format());
+    a.side = true;
+    d.layers = vec![a, Layer::raster("b", d.pixel_format())];
+    let back = roundtrip(&d);
+    assert!(back.layers[0].side);
+    assert!(!back.layers[1].side);
+    // Turned off again, the block is not written back from the imported copy.
+    let mut cleared = back.clone();
+    cleared.layers[0].side = false;
+    assert!(!roundtrip(&cleared).layers[0].side);
+}

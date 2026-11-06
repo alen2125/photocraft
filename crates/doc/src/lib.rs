@@ -16,6 +16,7 @@ pub mod comps;
 pub mod effects;
 pub mod mode;
 pub mod pattern;
+pub mod side;
 pub mod slices;
 pub mod text;
 pub mod text_styles;
@@ -663,6 +664,9 @@ pub struct Layer {
     /// embedding apps keep data about the layer under their own namespaces. Copied by
     /// [`Layer::duplicate`], as in Photoshop. PSD `shmd` › `cust` › `layerXMP`.
     pub xmp: Option<Arc<str>>,
+    /// Parallel layer: left out of the document's own composite and shown on the side canvas
+    /// instead, together with every layer below it (see [`Document::side_view`]).
+    pub side: bool,
 }
 
 impl Layer {
@@ -697,6 +701,7 @@ impl Layer {
             advanced: AdvancedBlending::default(),
             video: None,
             xmp: None,
+            side: false,
         }
     }
     pub fn raster(name: impl Into<String>, format: PixelFormat) -> Self {

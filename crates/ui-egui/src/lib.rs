@@ -184,6 +184,7 @@ pub mod parity;
 pub mod patch_preview;
 pub(crate) mod pattern_fill_ui;
 pub mod pattern_preview;
+pub mod side_canvas;
 pub mod perspective_crop_ui;
 pub mod perspective_ui;
 pub mod pixel_grid;
@@ -709,6 +710,13 @@ pub struct PhotocraftApp {
     /// `canvas::display_doc`'s live-adjust and Duotone documents per document: (snapshot,
     /// preview key, the document shown).
     display_memo: HashMap<DocId, (std::sync::Weak<Document>, u64, std::sync::Arc<Document>)>,
+    /// `side_canvas::main_view`: each document without its parallel layers, per snapshot and key.
+    side_memo: HashMap<DocId, (std::sync::Weak<Document>, u64, std::sync::Arc<Document>)>,
+    /// The side canvas texture of each document with a parallel layer.
+    side_textures: HashMap<DocId, side_canvas::SideTexture>,
+    /// Whether the pointer gesture in progress (or hover) is on the side canvas: the Eyedropper
+    /// then samples it.
+    side_input: bool,
     /// The main canvas's last GPU view of each document while it shows the plain document on
     /// the GPU canvas: the Navigator draws the same texture at its own size (#4518).
     navigator_gpu: HashMap<DocId, crate::gpu_canvas::ViewParams>,
@@ -1032,6 +1040,9 @@ impl PhotocraftApp {
             navigator_textures: HashMap::new(),
             values_textures: HashMap::new(),
             display_memo: HashMap::new(),
+            side_memo: HashMap::new(),
+            side_textures: HashMap::new(),
+            side_input: false,
             navigator_gpu: HashMap::new(),
             navigator_plain: std::collections::HashSet::new(),
             info_samplers: None,

@@ -488,3 +488,22 @@ cargo xtask wasm
 | `crates/ui-egui/src/state.rs` | `UiState::lasso_shift` (⇧ с последнего события холста; для закрытия двойным кликом и Enter) |
 | `crates/ui-egui/src/canvas.rs`, `magnetic_lasso_ui.rs` | передача Shift в `after_select` |
 | `crates/ui-egui/src/i18n/ru.tsv` | «Рисование», «Шейдинг» |
+
+## Параллельный слой (боковой холст)
+
+Слой с флагом `Layer::side` не попадает в композит документа и показывается на втором холсте слева от документа вместе со всеми слоями ниже него (слои выше не показываются). Рисование, вставка, пипетка и фильтры работают на боковом холсте как на обычном. Всё вне границ документа на боковом холсте не видно. Параллельные слои не попадают в экспорт (в PSD/ORA они остаются скрытыми, в `.pcraft` и PSD сохраняется флаг: в PSD это свой блок `pcSd`, другие программы его игнорируют). Боковой холст при рисовании перерисовывается только по области изменения (`damage_since`, как CPU-холст документа).
+
+Новые файлы: `crates/doc/src/side.rs` (`main_view`, `side_view`, `has_side_layers`), `crates/engine/src/side_cmds.rs` (команда `layer.parallelLayer`), `crates/ui-egui/src/side_canvas.rs` (рисование бокового холста, перевод координат указателя, выбор параллельного слоя при клике).
+
+| Файл | Место | Что изменено |
+|---|---|---|
+| `crates/doc/src/lib.rs` | `struct Layer`, `Layer::new`, список `pub mod` | поле `side`, `pub mod side;` |
+| `crates/format/src/manifest.rs`, `convert.rs` | `LayerM`, `layer_m`, загрузка слоя | поле `side` (`serde(default)`) |
+| `crates/engine/src/layer_multi_cmds.rs` | `layer_pixels_equal`, `step_damage` | `side` сравнивается; смена флага = полная перерисовка |
+| `crates/engine/src/sample_cmds.rs` | команда `document.sampleColor` | параметр `side`; основной холст берёт `main_view` |
+| `crates/engine/src/lib.rs`, `commands.rs` | `pub mod side_cmds;`, `v.extend(...)` | по одной строке |
+| `crates/io/src/lib.rs` | `export_stages` | экспорт идёт из `main_view`, `.pcraft` хранит исходный документ |
+| `crates/ui-egui/src/canvas.rs` | `display_doc` | переименован в `display_doc_raw`, новый `display_doc` отдаёт `main_view`; `fit_view` учитывает боковой холст; в `canvas_view` `tool_xf` вместо `xf` для координат инструментов; вызов `side_canvas::paint`; `sample_color` шлёт `side`; несколько функций стали `pub(crate)` |
+| `crates/ui-egui/src/lib.rs` | `PhotocraftApp`, `pub mod` | поля `side_memo`, `side_textures`, `side_input` |
+| `crates/ui-egui/src/layer_menu_ui.rs`, `layer_row_ui.rs` | меню слоя, индикаторы строки | пункт «Parallel Layer», индикатор `Indicator::Side` |
+| `crates/io/src/psd_export.rs`, `psd_import.rs` | `content_blocks`, импорт слоя, `LAYER_INFO_KEYS` | блок `pcSd` для флага `side` |

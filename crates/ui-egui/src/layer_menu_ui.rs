@@ -106,6 +106,7 @@ pub fn entries(l: &Layer, multi: bool, has_selection: bool) -> Vec<Entry> {
     v.push(None);
     v.push(Some((tl!("Link Layers"), "layer.linkLayers")));
     v.push(Some((tl!("Select Linked Layers"), "layer.selectLinkedLayers")));
+    v.push(Some((if l.side { tl!("Make Layer Regular") } else { tl!("Parallel Layer") }, "layer.parallelLayer")));
     v.push(None);
     v.push(Some((tl!("Copy Layer Style"), "layer.layerStyle.copyLayerStyle")));
     v.push(Some((tl!("Paste Layer Style"), "layer.layerStyle.pasteLayerStyle")));

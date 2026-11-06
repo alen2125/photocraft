@@ -319,6 +319,13 @@ impl Ctx<'_> {
             let f = |s: &[u8]| f64::from_be_bytes(s.try_into().unwrap_or([0; 8]));
             l.effects.reference = Some((f(x), f(y)));
         }
+        // Parallel layer (`pcSd`, PhotoCraft's own block); export rewrites it from the field.
+        // Export hides parallel layers for other apps (they are not part of the picture); here the
+        // flag does that.
+        l.side = rec.block(b"pcSd").is_some();
+        if l.side {
+            l.visible = true;
+        }
         // Advanced Blending channel restrictions (`brst`: the u32 ids of channels left out);
         // also kept in `psd_blocks`, where export rewrites it from the field.
         if let Some(b) = rec.block(b"brst") {
@@ -640,10 +647,10 @@ pub(crate) fn group_depth(file: &PsdFile) -> usize {
 /// Additional-layer-information keys (Adobe PSD spec, plus `cust`, `vowv` and `SoLE` seen in
 /// Photoshop's files) that are not an adjustment of their own: names, ids, locks, effects,
 /// masks, metadata, and the fill, type, placed and shape content read before.
-const LAYER_INFO_KEYS: [&[u8; 4]; 50] = [
+const LAYER_INFO_KEYS: [&[u8; 4]; 51] = [
     b"luni", b"lyid", b"lnsr", b"lsct", b"lsdk", b"lspf", b"lclr", b"iOpa", b"clbl", b"infx", b"knko", b"tsly", b"lmgm", b"vmgm", b"brst", b"shmd", b"fxrp",
     b"lfx2", b"lfxs", b"lmfx", b"lrFX", b"lyvr", b"sn2P", b"cust", b"CgEd", b"vmsk", b"vsms", b"vogk", b"vowv", b"vstk", b"vscg", b"artb", b"artd", b"abdd",
-    b"FMsk", b"PxSc", b"PxSD", b"cinf", b"ffxi", b"shpa", b"anFX", b"SoCo", b"GdFl", b"PtFl", b"TySh", b"tySh", b"SoLd", b"SoLE", b"PlLd", b"plLd",
+    b"pcSd", b"FMsk", b"PxSc", b"PxSD", b"cinf", b"ffxi", b"shpa", b"anFX", b"SoCo", b"GdFl", b"PtFl", b"TySh", b"tySh", b"SoLd", b"SoLE", b"PlLd", b"plLd",
 ];
 
 /// The key of an adjustment layer whose type no mapper knows (#6575), e.g. Photoshop 4's
