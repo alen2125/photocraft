@@ -21,6 +21,13 @@ pub const SHELL_COMMANDS: &[(&str, &str, &[&str], Option<&str>)] = &[
     ("ui.customShape.fit.cycle", "Custom Shape: Cycle Fit (Box / Leaf / Zipper)", &[], None),
     ("ui.customShape.random.toggle", "Custom Shape: Toggle Randomize", &[], None),
     ("ui.customShape.erase.toggle", "Custom Shape: Toggle Erase (Pixels)", &[], None),
+    // Lasso modes (Mode: Off / Clear / Draw / Shading / Custom Shape), for the keys the user gives them (`lasso_modes_ui::invoke`).
+    ("ui.lasso.mode.off", "Lasso: Mode Off", &[], None),
+    ("ui.lasso.mode.clear", "Lasso: Mode Clear", &[], None),
+    ("ui.lasso.mode.draw", "Lasso: Mode Draw", &[], None),
+    ("ui.lasso.mode.shade", "Lasso: Mode Shading", &[], None),
+    ("ui.lasso.mode.shape", "Lasso: Mode Custom Shape", &[], None),
+    ("ui.lasso.mode.cycle", "Lasso: Cycle Mode (Off / Clear / Draw / Shading / Custom Shape)", &[], None),
     // Color panel mixer row: step the selected swatch (`color_mixer_ui::invoke`).
     ("ui.colorMixer.next", "Color Mixer: Next Step (towards background)", &[], None),
     ("ui.colorMixer.prev", "Color Mixer: Previous Step (towards foreground)", &[], None),

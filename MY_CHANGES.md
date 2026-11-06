@@ -471,3 +471,20 @@ cargo xtask wasm
 | Лицо | `AutoExpressions`, `EyelidControl`, `JawControl` | нет | поза лица |
 | Шейдер кожи | подповерхностное рассеяние, IBL | Блинн–Фонг, две нормали | заметно на свету |
 | Тени | карты теней | нет | заметно |
+
+## Режимы лассо «Рисование» и «Шейдинг»
+
+Поле Mode у всех трёх лассо: Off / Clear / Draw / Shading / Custom Shape.
+
+- **Draw (Рисование):** выделенная область заливается основным цветом (`edit.fill`). С **Shift** при замыкании контура вместо заливки основным цветом становится доминантный цвет области (`select.dominantColor` → `tools.setColors`), пиксели не меняются.
+- **Shading (Шейдинг):** область заливается средним между двумя доминантными цветами (`edit.fillShade`); если цвет один, заливается им.
+- Доминантный цвет считается по видимому изображению: гистограмма 5 бит на канал, ближайшие корзины сливаются; второй цвет должен заметно отличаться от первого.
+
+| Файл | Что изменено |
+|---|---|
+| `crates/engine/src/lasso_mode_cmds.rs` (новый) | команды `select.dominantColor`, `edit.fillShade` + тесты |
+| `crates/engine/src/lib.rs`, `commands.rs` | `pub mod lasso_mode_cmds;`, `v.extend(lasso_mode_cmds::specs())` |
+| `crates/ui-egui/src/lasso_modes_ui.rs` | режимы `draw`, `shade`; `after_select(app, shift)` |
+| `crates/ui-egui/src/state.rs` | `UiState::lasso_shift` (⇧ с последнего события холста; для закрытия двойным кликом и Enter) |
+| `crates/ui-egui/src/canvas.rs`, `magnetic_lasso_ui.rs` | передача Shift в `after_select` |
+| `crates/ui-egui/src/i18n/ru.tsv` | «Рисование», «Шейдинг» |

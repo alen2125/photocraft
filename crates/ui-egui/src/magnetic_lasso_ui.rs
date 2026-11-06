@@ -330,7 +330,8 @@ fn commit(app: &mut PhotocraftApp) {
     let o = &app.ui.tool_options;
     let p = json!({"points": m.path, "trace": false, "mode": mode, "antiAlias": o.anti_alias, "feather": o.feather});
     if app.run("select.magneticLasso", p).is_ok() {
-        crate::lasso_modes_ui::after_select(app);
+        let shift = app.ui.lasso_shift;
+            crate::lasso_modes_ui::after_select(app, shift);
     }
 }
 

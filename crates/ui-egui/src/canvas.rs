@@ -4084,6 +4084,7 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
         }
     } else if primary && !stroke_dismissal {
         let mods = ui.input(|i| i.modifiers);
+        app.ui.lasso_shift = mods.shift;
         // An ⌥-click the window manager took never arrives; say so (alt_grab.rs).
         crate::alt_grab::watch(app, &ctx, egui::Id::new(("pc-alt-grab", idx)), rect, tool, !under_dialog);
         // Tools follow the left button; the right one opens the Brush Preset picker or erases
@@ -4357,6 +4358,7 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
                 click_mods
             };
             let d = xf.to_doc(p);
+            app.ui.lasso_shift = click_mods.shift;
             match tool {
                 Tool::Zoom if !transform_owns_pointer => {
                     let nz = crate::zoom_levels::step(view.zoom, if zoom_out(click_mods.alt) { -1 } else { 1 }, view.doc_size);
@@ -6566,7 +6568,7 @@ pub(crate) fn finish_gesture(app: &mut PhotocraftApp, d: Drag) {
                 if made.is_ok() && d.tool != Tool::Lasso {
                     crate::retouch_ui::patch_hint(app);
                 } else if made.is_ok() {
-                    crate::lasso_modes_ui::after_select(app);
+                    crate::lasso_modes_ui::after_select(app, d.modifiers.shift);
                 }
             } else if app.session.is_enabled("select.deselect") {
                 let _ = app.run("select.deselect", json!({}));
@@ -6712,7 +6714,8 @@ pub fn commit_polygon(app: &mut PhotocraftApp) {
         let mode = crate::lasso_modes_ui::mode(app, Tool::PolygonLasso, mode);
         let o = &app.ui.tool_options;
         if app.run("select.lasso", json!({"points": pts, "mode": mode, "antiAlias": o.anti_alias, "feather": o.feather})).is_ok() {
-            crate::lasso_modes_ui::after_select(app);
+            let shift = app.ui.lasso_shift;
+            crate::lasso_modes_ui::after_select(app, shift);
         }
     }
 }

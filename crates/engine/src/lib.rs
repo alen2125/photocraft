@@ -107,6 +107,7 @@ pub mod redeye_cmds;
 pub mod render_cmds;
 pub mod retouch_cmds;
 pub mod scene3d_cmds;
+pub mod lasso_mode_cmds;
 pub mod sample_cmds;
 pub mod sampler_cmds;
 pub mod select_extra_cmds;

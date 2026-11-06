@@ -96,6 +96,9 @@ pub(crate) fn invoke_unguarded(app: &mut PhotocraftApp, ctx: &egui::Context, id:
     if let Some(r) = crate::tool_reset::invoke(app, id, &params) {
         return r;
     }
+    if let Some(r) = crate::lasso_modes_ui::invoke(app, id) {
+        return r;
+    }
     if let Some(r) = crate::custom_shape_ui::invoke(app, id) {
         return r;
     }
@@ -722,7 +725,7 @@ pub fn is_enabled(app: &PhotocraftApp, id: &str) -> bool {
     if let Some(e) = crate::view_cmds::is_enabled(app, id) {
         return e;
     }
-    if crate::custom_shape_ui::handles(id) || crate::color_mixer_ui::handles(id) || crate::scene3d_ui::handles(id) {
+    if crate::custom_shape_ui::handles(id) || crate::lasso_modes_ui::handles(id) || crate::color_mixer_ui::handles(id) || crate::scene3d_ui::handles(id) {
         return true;
     }
     if let Some(e) = crate::plugin_ui::is_enabled(app, id) {

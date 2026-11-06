@@ -728,7 +728,7 @@ pub struct ToolOptions {
     pub leaf_width_px: f32,
     /// Custom Shape in Pixels mode erases (lowers alpha) instead of painting.
     pub custom_shape_erase: bool,
-    /// Lasso tools: "off", "clear" (delete the pixels inside) or "shape" (fill with custom shapes),
+    /// Lasso tools: "off", "clear" (delete the pixels inside), "draw" (paint them with the foreground; ⇧ picks the dominant colour), "shade" (paint the mean of the two dominant colours) or "shape" (fill with custom shapes),
     /// and the height (px) of a shape's cell.
     pub lasso_mode: String,
     pub lasso_cell_px: f32,
@@ -1563,6 +1563,10 @@ pub struct UiState {
     /// modifiers held at its first click.
     #[serde(default)]
     pub polygon_mode: String,
+    /// ⇧ as of the last canvas event: the polygonal and magnetic lasso close without a pointer
+    /// event of their own (Enter, double click), and Lasso Draw's ⇧ picks a colour.
+    #[serde(skip)]
+    pub lasso_shift: bool,
     /// The document the polygon is drawn on (set at its first click): another document becoming
     /// active drops it (`canvas::polygon_cancel_stale`).
     #[serde(default)]
@@ -1685,6 +1689,7 @@ impl Default for UiState {
             tool_options: ToolOptions::default(),
             polygon: Vec::new(),
             polygon_mode: String::new(),
+            lasso_shift: false,
             polygon_doc: None,
             magnetic: Default::default(),
             crop_rect: None,

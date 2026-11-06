@@ -4729,3 +4729,10 @@ shape	Appearance	Оформление
 	Spot angle	Угол конуса
 	Shadows come only from pixel lights.	Тени дают только света в режиме «по пикселям».
 	The bias applies to point lights only.	Смещение действует только на точечные света.
+	Draw	Рисование
+	Shading	Шейдинг
+	Lasso: Off	Лассо: выкл
+	Lasso: Clear	Лассо: Очистить
+	Lasso: Draw	Лассо: Рисование
+	Lasso: Shading	Лассо: Шейдинг
+	Lasso: Custom Shape	Лассо: Свои фигуры

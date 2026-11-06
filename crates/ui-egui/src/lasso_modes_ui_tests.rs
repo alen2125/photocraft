@@ -121,7 +121,7 @@ fn shapes_are_laid_in_rows_from_the_top_left_of_the_outline() {
 fn a_lasso_without_a_selection_does_nothing() {
     let mut app = app();
     app.ui.tool_options.lasso_mode = CLEAR.into();
-    after_select(&mut app);
+    after_select(&mut app, false);
     assert_eq!(alpha_at(&app, 150, 150), 1.0, "no selection means nothing is cleared");
 }
 
@@ -132,4 +132,88 @@ fn mode_replaces_only_when_an_action_is_on() {
     app.ui.tool_options.lasso_mode = SHAPE.into();
     assert_eq!(mode(&app, Tool::Lasso, "add"), "replace");
     assert_eq!(mode(&app, Tool::Patch, "add"), "add", "other tools keep theirs");
+}
+
+fn rgb_at(app: &PhotocraftApp, x: i32, y: i32) -> [f32; 4] {
+    let st = app.session.active().unwrap();
+    st.doc.layer(st.active_layer.unwrap()).unwrap().surface().unwrap().rgba(x, y)
+}
+
+fn foreground(app: &PhotocraftApp) -> [f32; 4] {
+    app.session.tools.foreground
+}
+
+fn lasso_square_with(app: &mut PhotocraftApp, modifiers: egui::Modifiers) {
+    app.ui.tool = Tool::Lasso;
+    let pts = [[100.0, 100.0], [200.0, 100.0], [200.0, 200.0], [100.0, 200.0]];
+    let d = Drag::new(Tool::Lasso, pts[0], pts.iter().map(|p| [p[0], p[1], 1.0]).collect(), modifiers, false);
+    finish_gesture(app, d);
+}
+
+#[test]
+fn draw_paints_the_outline_with_the_foreground() {
+    let mut app = app();
+    app.run("tools.setColors", json!({"foreground": [1.0, 0.0, 0.0, 1.0]})).unwrap();
+    app.ui.tool_options.lasso_mode = DRAW.into();
+    lasso_square(&mut app);
+    assert!(rgb_at(&app, 150, 150)[0] > 0.95, "inside is the foreground");
+    assert!(rgb_at(&app, 50, 50)[0] < 0.05, "outside is untouched");
+    assert!(!has_selection(&app), "the outline is dropped");
+}
+
+#[test]
+fn shift_draw_picks_the_dominant_colour_and_leaves_the_pixels() {
+    let mut app = app();
+    app.run("tools.setColors", json!({"foreground": [1.0, 0.0, 0.0, 1.0]})).unwrap();
+    app.ui.tool_options.lasso_mode = DRAW.into();
+    lasso_square_with(&mut app, egui::Modifiers::SHIFT);
+    let f = foreground(&app);
+    assert!(f[0] < 0.05 && f[1] < 0.05 && f[2] < 0.05, "the black layer became the foreground: {f:?}");
+    assert!(rgb_at(&app, 150, 150)[0] < 0.05, "nothing was painted");
+    assert!(!has_selection(&app));
+}
+
+#[test]
+fn shading_fills_with_the_mean_of_the_two_dominant_colours() {
+    let mut app = app();
+    app.run("tools.setColors", json!({"foreground": [1.0, 0.0, 0.0, 1.0]})).unwrap();
+    app.run("select.rect", json!({"x": 0, "y": 0, "width": 150, "height": 300})).unwrap();
+    app.run("edit.fill", json!({"contents": "foreground"})).unwrap();
+    app.run("select.deselect", json!({})).unwrap();
+    app.ui.tool_options.lasso_mode = SHADE.into();
+    lasso_square(&mut app);
+    for x in [110, 190] {
+        let c = rgb_at(&app, x, 150);
+        assert!((c[0] - 0.5).abs() < 0.05 && c[1] < 0.05 && c[2] < 0.05, "x={x}: {c:?}");
+    }
+    assert!(rgb_at(&app, 50, 50)[0] > 0.95, "outside is untouched");
+    assert!(!has_selection(&app));
+}
+
+#[test]
+fn draw_and_shading_replace_the_selection() {
+    let mut app = app();
+    for m in [DRAW, SHADE] {
+        app.ui.tool_options.lasso_mode = m.into();
+        assert_eq!(mode(&app, Tool::Lasso, "add"), "replace");
+        assert_eq!(mode(&app, Tool::MagneticLasso, "subtract"), "replace");
+    }
+}
+
+#[test]
+fn mode_keys_set_and_cycle_the_mode() {
+    let mut app = app();
+    assert!(handles("ui.lasso.mode.cycle") && !handles("ui.lasso.mode.nope"));
+    assert!(invoke(&mut app, "edit.undo").is_none());
+    invoke(&mut app, "ui.lasso.mode.draw").unwrap().unwrap();
+    assert_eq!(app.ui.tool_options.lasso_mode, DRAW);
+    assert!(!app.ui.status.is_empty());
+    let mut seen = vec![];
+    for _ in 0..5 {
+        invoke(&mut app, "ui.lasso.mode.cycle").unwrap().unwrap();
+        seen.push(app.ui.tool_options.lasso_mode.clone());
+    }
+    assert_eq!(seen, [SHADE, SHAPE, OFF, CLEAR, DRAW]);
+    invoke(&mut app, "ui.lasso.mode.off").unwrap().unwrap();
+    assert_eq!(app.ui.tool_options.lasso_mode, OFF);
 }
