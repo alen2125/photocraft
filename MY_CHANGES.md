@@ -493,7 +493,7 @@ cargo xtask wasm
 
 Слой с флагом `Layer::side` не попадает в композит документа и показывается на втором холсте слева от документа вместе со всеми слоями ниже него (слои выше не показываются). Рисование, вставка, пипетка и фильтры работают на боковом холсте как на обычном. Всё вне границ документа на боковом холсте не видно. Параллельные слои не попадают в экспорт (в PSD/ORA они остаются скрытыми, в `.pcraft` и PSD сохраняется флаг: в PSD это свой блок `pcSd`, другие программы его игнорируют). Боковой холст при рисовании перерисовывается только по области изменения (`damage_since`, как CPU-холст документа).
 
-Новые файлы: `crates/doc/src/side.rs` (`main_view`, `side_view`, `has_side_layers`), `crates/engine/src/side_cmds.rs` (команда `layer.parallelLayer`), `crates/ui-egui/src/side_canvas.rs` (рисование бокового холста, перевод координат указателя, выбор параллельного слоя при клике).
+Новые файлы: `crates/doc/src/side.rs` (`main_view`, `side_view`, `has_side_layers`), `crates/engine/src/side_cmds.rs` (команда `layer.parallelLayer`), `crates/ui-egui/src/side_canvas.rs` (рисование бокового холста, перевод координат указателя; слой при клике не переключается, его выбирает только панель «Слои»; боковой холст «мёртвый» для всех инструментов кроме пипетки, если активный слой не параллельный: `inert_side` в `canvas_view`; зум при включении параллельного слоя не меняется).
 
 | Файл | Место | Что изменено |
 |---|---|---|
@@ -507,3 +507,12 @@ cargo xtask wasm
 | `crates/ui-egui/src/lib.rs` | `PhotocraftApp`, `pub mod` | поля `side_memo`, `side_textures`, `side_input` |
 | `crates/ui-egui/src/layer_menu_ui.rs`, `layer_row_ui.rs` | меню слоя, индикаторы строки | пункт «Parallel Layer», индикатор `Indicator::Side` |
 | `crates/io/src/psd_export.rs`, `psd_import.rs` | `content_blocks`, импорт слоя, `LAYER_INFO_KEYS` | блок `pcSd` для флага `side` |
+
+## Переключатели видимости слоёв по цвету метки
+
+Новый файл `crates/engine/src/layer_label_toggle_cmds.rs`: команды `layer.label.toggleRed` … `toggleGray` (11 цветов) показывают или скрывают все слои с этой меткой (Layer Color); клавиши по умолчанию нет, назначаются в Правка → Сочетания клавиш (раздел Layer).
+
+| Файл | Место | Что изменено |
+|---|---|---|
+| `crates/engine/src/lib.rs`, `commands.rs` | `pub mod`, `v.extend(...)` | по одной строке |
+| `crates/ui-egui/src/prefs_ui.rs` | `shortcut_items` (условие `c.shortcut.is_some()`) и список вкладки «Комбинации клавиш» | `\|\| layer_label_toggle_cmds::is_toggle(...)`, чтобы команды без меню и без клавиши по умолчанию были видны |

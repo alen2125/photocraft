@@ -62,33 +62,28 @@ pub(crate) fn contains(xf: &ViewXform, size: [u32; 2], p: egui::Pos2) -> bool {
 /// The mapping tools take their document points through this frame, and whether the pointer is on
 /// the side canvas: that is, when a gesture began there (until it ends), or the pointer hovers
 /// there with none going on. Always `xf` itself without a visible parallel layer.
-pub(crate) fn input_xf(ctx: &egui::Context, xf: &ViewXform, doc: &Document, canvas_rect: egui::Rect) -> (ViewXform, bool) {
+pub(crate) fn input_xf(ctx: &egui::Context, xf: &ViewXform, doc: &Document, canvas_rect: egui::Rect, idx: usize) -> (ViewXform, bool) {
     if !doc.has_side_layers() {
         return (*xf, false);
     }
     let size = [doc.size.width, doc.size.height];
-    let at = ctx.input(|i| {
+    let on = |p: Option<egui::Pos2>| p.is_some_and(|p| canvas_rect.contains(p) && contains(xf, size, p));
+    // Where a gesture began is remembered until it ends: the frame it is released has no press
+    // origin any more, and its last point must map the same way as the rest.
+    let id = egui::Id::new(("pc-side-gesture", idx));
+    let (pressed, going, press, hover) = ctx.input(|i| {
         let p = &i.pointer;
-        if p.any_down() || p.any_released() { p.press_origin() } else { p.hover_pos() }
+        (p.any_pressed(), p.any_down() || p.any_released(), p.press_origin().or(p.interact_pos()), p.hover_pos())
     });
-    match at.filter(|p| canvas_rect.contains(*p)) {
-        Some(p) if contains(xf, size, p) => (shifted(xf, size), true),
-        _ => (*xf, false),
-    }
-}
-
-/// Make the topmost visible parallel layer the active one, unless a parallel layer already is:
-/// drawing on the side canvas paints there, whichever layer was selected before.
-pub(crate) fn activate_side_layer(app: &mut PhotocraftApp) {
-    let Some(st) = app.session.active() else { return };
-    let active_is_side = st.active_layer.and_then(|id| st.doc.layer(id)).is_some_and(|l| l.side);
-    if active_is_side {
-        return;
-    }
-    let Some(top) = st.doc.walk().into_iter().rev().find(|(_, _, l)| l.side && l.visible).map(|(_, _, l)| l.id) else { return };
-    if let Err(e) = app.run("layer.select", serde_json::json!({"layer": top.0})) {
-        log::warn!("side canvas: selecting the parallel layer failed: {e}");
-    }
+    let side = if pressed {
+        on(press)
+    } else if going {
+        ctx.data(|d| d.get_temp::<bool>(id)).unwrap_or_else(|| on(press))
+    } else {
+        on(hover)
+    };
+    ctx.data_mut(|d| d.insert_temp(id, side));
+    if side { (shifted(xf, size), true) } else { (*xf, false) }
 }
 
 /// The document as the main canvas shows it: `doc` without its parallel layers, built once per

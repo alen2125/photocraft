@@ -1,4 +1,4 @@
-//! Document canvas:     if ctx.data(|d| d.get_temp::<bool>(side_seen)).is_some_and(|before| before != has_side) {isplay texture cache, view transform, tool input, extra document windows.
+//! Document canvas: display texture cache, view transform, tool input, extra document windows.
 //!
 //! Rendering is CPU (`photocraft-compose`) for now, uploaded into an egui texture. Brush strokes
 //! update only their damage rectangle (`set_partial`). The wgpu compositor (M5) will replace this
@@ -3506,13 +3506,6 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
     }
     // View › Pixel Aspect Ratio Correction: document pixels are shown this much wider.
     let aspect = app.ui.view.display_aspect();
-    // The first parallel layer (or the last one going) changes what the document area holds: Fit.
-    let side_seen = egui::Id::new(("pc-side-seen", idx));
-    let has_side = doc.has_side_layers();
-    if ctx.data(|d| d.get_temp::<bool>(side_seen)).is_some_and(|before| before != has_side) {
-        view.fit_pending = true;
-    }
-    ctx.data_mut(|d| d.insert_temp(side_seen, has_side));
     if view.fit_pending && rect.width() > 50.0 {
         fit_view(&mut view, &doc, rect.size(), ppp, aspect);
     }
@@ -3542,12 +3535,9 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
     let stroke_dismissal = primary && crate::shape_stroke_ui::dismiss_from_canvas(app, &response);
     let painter = ui.painter_at(rect);
     // Tools take their points through this frame: the side canvas's when the pointer is on it.
-    let (tool_xf, on_side) = crate::side_canvas::input_xf(&ctx, &xf, &doc, rect);
+    let (tool_xf, on_side) = crate::side_canvas::input_xf(&ctx, &xf, &doc, rect, idx);
     if primary {
         app.side_input = on_side;
-        if on_side && ctx.input(|i| i.pointer.primary_pressed()) {
-            crate::side_canvas::activate_side_layer(app);
-        }
     }
 
     match crate::prefs_ui::pasteboard_color(app) {
@@ -3934,6 +3924,10 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
         None if middle => Tool::Hand,
         None => app.ui.tool,
     };
+    let inert_side = on_side
+        && !app.session.active().and_then(|st| st.active_layer.and_then(|id| st.doc.layer(id))).is_some_and(|l| l.side)
+        && tool != Tool::Eyedropper
+        && !alt_samples(tool, ctx.input(|i| i.modifiers));
     // ⌘ held: this frame's gestures go to the Move tool (`PhotocraftApp::active_tool`). The Hand
     // and Zoom never reach `tool_event`, so only the Move needs the state machine to know.
     app.tool_override = (temporary == Some(crate::hold_keys::Temporary::Move)).then_some(Tool::Move);
@@ -4107,6 +4101,9 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
             let d = tool_xf.to_doc(p);
             crate::layer_picker::sample_at(app, d[0], d[1]);
         }
+    } else if primary && inert_side {
+        // The side canvas is only there to pick colours from: a gesture that began on it does
+        // nothing for any other tool, unless the active layer is the parallel layer itself.
     } else if primary && !stroke_dismissal {
         let mods = ui.input(|i| i.modifiers);
         app.ui.lasso_shift = mods.shift;

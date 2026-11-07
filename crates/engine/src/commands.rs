@@ -1535,6 +1535,7 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::fill_key_cmds::specs());
     v.extend(crate::sample_cmds::specs());
     v.extend(crate::side_cmds::specs());
+    v.extend(crate::layer_label_toggle_cmds::specs());
     v.extend(crate::lasso_mode_cmds::specs());
     v.extend(crate::face_cmds::specs());
     v.extend(crate::sampler_cmds::specs());

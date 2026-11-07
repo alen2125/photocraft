@@ -813,7 +813,7 @@ pub fn shortcut_items(app: &PhotocraftApp) -> Vec<(String, String, Vec<String>, 
     let mut tools = Vec::new();
     let mut layer = Vec::new();
     for c in photocraft_engine::command_specs() {
-        if seen.insert(c.id.to_string()) && c.shortcut.is_some() {
+        if seen.insert(c.id.to_string()) && (c.shortcut.is_some() || photocraft_engine::layer_label_toggle_cmds::is_toggle(c.id)) {
             let item = (c.id.to_string(), c.label.to_string(), c.menu.iter().map(|s| s.to_string()).collect::<Vec<_>>(), c.shortcut.map(Into::into));
             if c.menu.is_empty() && tools_key(c.id) {
                 tools.push((item.0, item.1, vec!["Tools".to_string()], item.3));
@@ -2064,7 +2064,7 @@ fn shortcuts_body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String
                 if !needle.is_empty() && !hay.contains(&needle) && !id.to_ascii_lowercase().contains(&needle) {
                     continue;
                 }
-                if tab == 0 && path.is_empty() && def.is_none() && cur.is_none() && alts.is_empty() && !crate::custom_shape_ui::handles(id) && !crate::lasso_modes_ui::handles(id) && !crate::color_mixer_ui::handles(id) {
+                if tab == 0 && path.is_empty() && def.is_none() && cur.is_none() && alts.is_empty() && !crate::custom_shape_ui::handles(id) && !crate::lasso_modes_ui::handles(id) && !crate::color_mixer_ui::handles(id) && !photocraft_engine::layer_label_toggle_cmds::is_toggle(id) {
                     continue;
                 }
                 let top = shown_path.first().cloned().unwrap_or_else(|| tl!("Other").into());
